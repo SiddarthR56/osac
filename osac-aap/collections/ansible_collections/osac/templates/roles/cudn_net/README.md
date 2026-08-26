@@ -2,13 +2,17 @@
 
 Provisions networking resources using ClusterUserDefinedNetwork (CUDN) on OpenShift.
 
-> **Note:** SecurityGroup enforcement (NetworkPolicy) has been extracted to the standalone
-> `osac.templates.network_policy` role so it can be reused across any K8s-based NetworkClass.
-> `cudn_net`'s `create_security_group`/`delete_security_group` entrypoints delegate to that
-> role directly (see [Task Files](#task-files)) — the dispatcher resolves `SecurityGroup` to
-> this NetworkClass's fabric manager (`cudn_net`) the same way it does for `VirtualNetwork`
-> and `Subnet`, so `cudn_net` must provide these entrypoints even though the underlying
-> enforcement mechanism lives in `network_policy`.
+> **Note:** Some resource families are implemented by reusable K8s-native roles rather than
+> directly in `cudn_net`.
+>
+> - SecurityGroup enforcement (NetworkPolicy) lives in the standalone
+>   `osac.templates.network_policy` role.
+> - ExternalIPPool / ExternalIP / ExternalIPAttachment lifecycle lives in
+>   `osac.templates.metallb_l2`.
+>
+> The dispatcher still resolves those resource kinds to this NetworkClass's fabric manager
+> (`cudn_net`), so `cudn_net` must expose matching task entrypoints and delegate internally
+> (see [Task Files](#task-files)).
 
 ## Resources
 
@@ -64,6 +68,12 @@ This role implements the `cudn_net` NetworkClass strategy using OpenShift's Clus
 - `tasks/delete_subnet.yaml` - Removes namespace
 - `tasks/create_security_group.yaml` - Delegates to `osac.templates.network_policy` (`create_security_group`)
 - `tasks/delete_security_group.yaml` - Delegates to `osac.templates.network_policy` (`delete_security_group`)
+- `tasks/create_external_ip_pool.yaml` - Delegates to `osac.templates.metallb_l2` (`create_external_ip_pool`)
+- `tasks/delete_external_ip_pool.yaml` - Delegates to `osac.templates.metallb_l2` (`delete_external_ip_pool`)
+- `tasks/create_external_ip.yaml` - Delegates to `osac.templates.metallb_l2` (`create_external_ip`)
+- `tasks/delete_external_ip.yaml` - Delegates to `osac.templates.metallb_l2` (`delete_external_ip`)
+- `tasks/attach_external_ip.yaml` - Delegates to `osac.templates.metallb_l2` (`attach_external_ip`)
+- `tasks/detach_external_ip.yaml` - Delegates to `osac.templates.metallb_l2` (`detach_external_ip`)
 
 ## Usage
 

@@ -46,6 +46,15 @@ def _load_metadata(roles_dir: Path, role_name: str) -> Metadata:
     pytest.fail(f"osac.yaml not found for role {role_name}")
 
 
+def _load_task_file(roles_dir: Path, role_name: str, task_name: str) -> list[dict]:
+    candidate = roles_dir / role_name / "tasks" / f"{task_name}.yaml"
+    assert candidate.exists(), f"task file not found: {candidate}"
+    with candidate.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    assert isinstance(data, list), f"task file should contain a task list: {candidate}"
+    return data
+
+
 # ---------------------------------------------------------------------------
 # TestTemplateParameterDefinitionDefaults
 # ---------------------------------------------------------------------------
@@ -391,6 +400,25 @@ class TestMetadataTemplateTypes:
 
 class TestRegressions:
     """Regression tests for specific bugs caught in production."""
+
+    @pytest.mark.parametrize(
+        "task_name",
+        [
+            "create_external_ip_pool",
+            "delete_external_ip_pool",
+            "create_external_ip",
+            "delete_external_ip",
+            "attach_external_ip",
+            "detach_external_ip",
+        ],
+    )
+    def test_cudn_net_exposes_external_ip_entrypoints(self, roles_dir, task_name):
+        """OSAC-4267: cudn_net must expose ExternalIP-family entrypoints for dispatcher."""
+        tasks = _load_task_file(roles_dir, "cudn_net", task_name)
+        assert len(tasks) == 1
+        include_role = tasks[0]["ansible.builtin.include_role"]
+        assert include_role["name"] == "osac.templates.metallb_l2"
+        assert include_role["tasks_from"] == task_name
 
     def test_list_default_accepted_osac_2816(self):
         """OSAC-2816: list defaults were silently dropped."""
