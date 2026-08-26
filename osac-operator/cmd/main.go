@@ -667,8 +667,8 @@ func setupNetworkingControllers(
 	}
 
 	// Build a shared dispatcher Resolver for controllers that support the two-manager
-	// model (VirtualNetwork, Subnet, SecurityGroup). Only available when a
-	// fulfillment-service connection and networking namespace are both configured;
+	// model (VirtualNetwork, Subnet, SecurityGroup, ExternalIP family). Only available
+	// when a fulfillment-service connection and networking namespace are both configured;
 	// nil otherwise, in which case those controllers always use the legacy
 	// implementation-strategy path.
 	var resolver *dispatcher.Resolver
@@ -713,20 +713,23 @@ func setupNetworkingControllers(
 	}
 	if err := setupExternalIPPoolControllers(
 		mgr, localMgr, grpcConn, networkingNamespace,
-		networkingProvider, statusPollInterval, maxJobHistory, targetCluster,
+		networkingProvider, statusPollInterval, maxJobHistory, targetCluster, resolver,
+		networkClassesClient,
 	); err != nil {
 		return err
 	}
 	if err := setupExternalIPControllers(
 		mgr, localMgr, grpcConn, networkingNamespace,
-		networkingProvider, statusPollInterval, maxJobHistory, targetCluster,
+		networkingProvider, statusPollInterval, maxJobHistory, targetCluster, resolver,
+		networkClassesClient,
 	); err != nil {
 		return err
 	}
 	if err := setupExternalIPAttachmentControllers(
 		mgr, localMgr, grpcConn,
 		networkingNamespace, computeInstanceNamespace, clusterOrderNamespace, bareMetalInstanceNamespace,
-		externalIPAttachmentProvider, statusPollInterval, maxJobHistory, targetCluster,
+		externalIPAttachmentProvider, statusPollInterval, maxJobHistory, targetCluster, resolver,
+		networkClassesClient,
 	); err != nil {
 		return err
 	}
@@ -837,6 +840,7 @@ func setupExternalIPPoolControllers(
 	mgr mcmanager.Manager, localMgr ctrl.Manager, grpcConn *grpc.ClientConn,
 	networkingNamespace string, provider provisioning.ProvisioningProvider,
 	statusPollInterval time.Duration, maxJobHistory int, targetCluster multicluster.ClusterName,
+	resolver *dispatcher.Resolver, networkClassesClient privatev1.NetworkClassesClient,
 ) error {
 	if grpcConn != nil {
 		if err := controller.NewExternalIPPoolFeedbackReconciler(
@@ -847,6 +851,7 @@ func setupExternalIPPoolControllers(
 	}
 	if err := controller.NewExternalIPPoolReconciler(
 		mgr, networkingNamespace, provider, statusPollInterval, maxJobHistory, targetCluster,
+		resolver, networkClassesClient,
 	).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("externalippool controller: %w", err)
 	}
@@ -857,9 +862,11 @@ func setupExternalIPControllers(
 	mgr mcmanager.Manager, localMgr ctrl.Manager, grpcConn *grpc.ClientConn,
 	networkingNamespace string, provider provisioning.ProvisioningProvider,
 	statusPollInterval time.Duration, maxJobHistory int, targetCluster multicluster.ClusterName,
+	resolver *dispatcher.Resolver, networkClassesClient privatev1.NetworkClassesClient,
 ) error {
 	if err := controller.NewExternalIPReconciler(
 		mgr, networkingNamespace, provider, statusPollInterval, maxJobHistory, targetCluster,
+		resolver, networkClassesClient,
 	).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("externalip controller: %w", err)
 	}
@@ -878,11 +885,13 @@ func setupExternalIPAttachmentControllers(
 	networkingNamespace, computeInstanceNamespace, clusterOrderNamespace, baremetalInstanceNamespace string,
 	provider provisioning.ProvisioningProvider,
 	statusPollInterval time.Duration, maxJobHistory int, targetCluster multicluster.ClusterName,
+	resolver *dispatcher.Resolver, networkClassesClient privatev1.NetworkClassesClient,
 ) error {
 	if err := controller.NewExternalIPAttachmentReconciler(
 		mgr, networkingNamespace, computeInstanceNamespace,
 		clusterOrderNamespace, baremetalInstanceNamespace,
 		provider, statusPollInterval, maxJobHistory, targetCluster,
+		resolver, networkClassesClient,
 	).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("externalipattachment controller: %w", err)
 	}
