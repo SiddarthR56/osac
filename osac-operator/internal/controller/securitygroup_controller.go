@@ -212,7 +212,7 @@ func (r *SecurityGroupReconciler) handleUpdate(ctx context.Context, sg *v1alpha1
 	// Resolve implementation strategy exclusively from the dispatcher.
 	// When no manager is configured the controller blocks with
 	// ReasonNoManagerConfigured instead of silently proceeding with an empty strategy.
-	implementationStrategy, err := resolveImplementationStrategy(ctx, r.Resolver, "SecurityGroup", networkClassID, "")
+	implementationStrategy, err := resolveImplementationStrategy(ctx, r.Resolver, "SecurityGroup", networkClassID)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

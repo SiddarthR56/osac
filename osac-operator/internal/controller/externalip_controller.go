@@ -240,7 +240,7 @@ func (r *ExternalIPReconciler) handleUpdate(ctx context.Context, externalIP *v1a
 		return ctrl.Result{}, err
 	}
 	implementationStrategy, err := resolveImplementationStrategy(
-		ctx, r.Resolver, "ExternalIP", networkClassID, "")
+		ctx, r.Resolver, "ExternalIP", networkClassID)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

@@ -172,7 +172,7 @@ func (r *VirtualNetworkReconciler) handleUpdate(ctx context.Context, vnet *v1alp
 	// Determine implementation strategy from the dispatcher-resolved manager for this
 	// VirtualNetwork's NetworkClass (fabric_manager, falling back to k8s_manager).
 	implementationStrategy, err := resolveImplementationStrategy(
-		ctx, r.Resolver, "VirtualNetwork", vnet.Spec.NetworkClass, "")
+		ctx, r.Resolver, "VirtualNetwork", vnet.Spec.NetworkClass)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

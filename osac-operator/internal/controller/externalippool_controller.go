@@ -195,7 +195,7 @@ func (r *ExternalIPPoolReconciler) handleUpdate(ctx context.Context, pool *v1alp
 		return ctrl.Result{}, err
 	}
 	implementationStrategy, err := resolveImplementationStrategy(
-		ctx, r.Resolver, "ExternalIPPool", networkClassID, "")
+		ctx, r.Resolver, "ExternalIPPool", networkClassID)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
