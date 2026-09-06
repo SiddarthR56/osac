@@ -174,6 +174,60 @@ var _ = Describe("Bare metal instances server", func() {
 			Expect(status.Code(err)).To(Equal(codes.NotFound))
 		})
 
+		It("rejects private updates to cluster-managed objects", func() {
+			privateServer := server.delegate.(*PrivateBareMetalInstancesServer)
+			managed, err := privateServer.generic.dao.Create().SetObject(
+				privatev1.BareMetalInstance_builder{
+					Metadata: privatev1.Metadata_builder{
+						Name:   "cluster-managed-bmi-update",
+						Tenant: testTenant,
+					}.Build(),
+					Spec: privatev1.BareMetalInstanceSpec_builder{}.Build(),
+					Status: privatev1.BareMetalInstanceStatus_builder{
+						Cluster: privatev1.ClusterLocalReference_builder{Id: "cluster-1"}.Build(),
+					}.Build(),
+				}.Build(),
+			).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = privateServer.Update(ctx, privatev1.BareMetalInstancesUpdateRequest_builder{
+				Object: privatev1.BareMetalInstance_builder{
+					Id: managed.GetObject().GetId(),
+					Spec: privatev1.BareMetalInstanceSpec_builder{
+						RunStrategy: new(privatev1.BareMetalInstanceRunStrategy_BARE_METAL_INSTANCE_RUN_STRATEGY_ALWAYS),
+					}.Build(),
+				}.Build(),
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.run_strategy"}},
+			}.Build())
+			Expect(status.Code(err)).To(Equal(codes.NotFound))
+		})
+
+		It("rejects private deletes of cluster-managed objects", func() {
+			privateServer := server.delegate.(*PrivateBareMetalInstancesServer)
+			managed, err := privateServer.generic.dao.Create().SetObject(
+				privatev1.BareMetalInstance_builder{
+					Metadata: privatev1.Metadata_builder{
+						Name:   "cluster-managed-bmi-delete",
+						Tenant: testTenant,
+					}.Build(),
+					Spec: privatev1.BareMetalInstanceSpec_builder{}.Build(),
+					Status: privatev1.BareMetalInstanceStatus_builder{
+						Cluster: privatev1.ClusterLocalReference_builder{Id: "cluster-1"}.Build(),
+					}.Build(),
+				}.Build(),
+			).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = privateServer.Delete(ctx, privatev1.BareMetalInstancesDeleteRequest_builder{
+				Id: managed.GetObject().GetId(),
+			}.Build())
+			Expect(status.Code(err)).To(Equal(codes.NotFound))
+
+			getResponse, err := privateServer.generic.dao.Get().SetId(managed.GetObject().GetId()).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(getResponse.GetObject().GetStatus().GetCluster().GetId()).To(Equal("cluster-1"))
+		})
+
 		It("Gets object", func() {
 			createResponse, err := server.Create(ctx, publicv1.BareMetalInstancesCreateRequest_builder{
 				Object: publicv1.BareMetalInstance_builder{
