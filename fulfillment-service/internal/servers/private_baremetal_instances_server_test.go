@@ -1807,6 +1807,55 @@ var _ = Describe("Private bare metal instances server", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
+		It("Rejects Create when the subnet reference does not exist", func() {
+			_, err := server.Create(ctx, privatev1.BareMetalInstancesCreateRequest_builder{
+				Object: privatev1.BareMetalInstance_builder{
+					Metadata: privatev1.Metadata_builder{
+						Name: fmt.Sprintf("test-%s", uuid.NewString()[:8]),
+					}.Build(),
+					Spec: privatev1.BareMetalInstanceSpec_builder{
+						CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: catIDWithHT}.Build(),
+						SshPublicKey: new(testSSHPublicKey),
+						NetworkAttachments: []*privatev1.BareMetalNetworkAttachment{
+							privatev1.BareMetalNetworkAttachment_builder{
+								Subnet: privatev1.SubnetLocalReference_builder{Id: "foreign-subnet-id"}.Build(),
+							}.Build(),
+						},
+					}.Build(),
+				}.Build(),
+			}.Build())
+			Expect(err).To(HaveOccurred())
+			Expect(grpcstatus.Code(err)).To(Equal(grpccodes.InvalidArgument))
+			Expect(err.Error()).To(ContainSubstring("foreign-subnet-id"))
+			Expect(err.Error()).To(ContainSubstring("does not exist"))
+		})
+
+		It("Rejects Create when the security group reference does not exist", func() {
+			_, err := server.Create(ctx, privatev1.BareMetalInstancesCreateRequest_builder{
+				Object: privatev1.BareMetalInstance_builder{
+					Metadata: privatev1.Metadata_builder{
+						Name: fmt.Sprintf("test-%s", uuid.NewString()[:8]),
+					}.Build(),
+					Spec: privatev1.BareMetalInstanceSpec_builder{
+						CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: catIDWithHT}.Build(),
+						SshPublicKey: new(testSSHPublicKey),
+						NetworkAttachments: []*privatev1.BareMetalNetworkAttachment{
+							privatev1.BareMetalNetworkAttachment_builder{
+								Subnet: privatev1.SubnetLocalReference_builder{Id: subnetID1}.Build(),
+								SecurityGroups: []*privatev1.SecurityGroupLocalReference{
+									privatev1.SecurityGroupLocalReference_builder{Id: "foreign-security-group-id"}.Build(),
+								},
+							}.Build(),
+						},
+					}.Build(),
+				}.Build(),
+			}.Build())
+			Expect(err).To(HaveOccurred())
+			Expect(grpcstatus.Code(err)).To(Equal(grpccodes.InvalidArgument))
+			Expect(err.Error()).To(ContainSubstring("foreign-security-group-id"))
+			Expect(err.Error()).To(ContainSubstring("does not exist"))
+		})
+
 		It("Accepts single attachment with valid interface", func() {
 			_, err := server.Create(ctx, privatev1.BareMetalInstancesCreateRequest_builder{
 				Object: privatev1.BareMetalInstance_builder{
@@ -2117,6 +2166,26 @@ var _ = Describe("Private bare metal instances server", func() {
 		})
 
 		It("Accepts update that changes only security_groups", func() {
+			subnetResponse, err := server.subnetsDao.Get().SetId(subnetID1).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			virtualNetworkID := refKey(subnetResponse.GetObject().GetSpec().GetVirtualNetwork())
+			for _, securityGroupID := range []string{"sg-1", "sg-2"} {
+				_, err = server.securityGroupsDao.Create().SetObject(privatev1.SecurityGroup_builder{
+					Id: securityGroupID,
+					Metadata: privatev1.Metadata_builder{
+						Name:   securityGroupID,
+						Tenant: testTenant,
+					}.Build(),
+					Spec: privatev1.SecurityGroupSpec_builder{
+						VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: virtualNetworkID}.Build(),
+					}.Build(),
+					Status: privatev1.SecurityGroupStatus_builder{
+						State: privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY,
+					}.Build(),
+				}.Build()).Do(ctx)
+				Expect(err).ToNot(HaveOccurred())
+			}
+
 			createResp, err := server.Create(ctx, privatev1.BareMetalInstancesCreateRequest_builder{
 				Object: privatev1.BareMetalInstance_builder{
 					Metadata: privatev1.Metadata_builder{

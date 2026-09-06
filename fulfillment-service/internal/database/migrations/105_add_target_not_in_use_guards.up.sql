@@ -116,6 +116,7 @@ begin
       select id into found_id
       from subnets
       where id = subnet_id
+        and tenant = new.tenant
         and deletion_timestamp = 'epoch'
       for share;
 
