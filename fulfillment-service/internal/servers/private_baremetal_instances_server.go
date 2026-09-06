@@ -351,6 +351,9 @@ func (s *PrivateBareMetalInstancesServer) prepareCreate(ctx context.Context, can
 	if err = s.validateNetworkAttachments(ctx, candidate); err != nil {
 		return
 	}
+	if err = s.validateNetworkReferencesTenancy(ctx, candidate); err != nil {
+		return
+	}
 	if err = s.validateNetworkAttachmentsRequireFabricManager(ctx, candidate); err != nil {
 		return
 	}
@@ -1011,6 +1014,54 @@ func (s *PrivateBareMetalInstancesServer) validateNetworkAttachments(ctx context
 		}
 	}
 
+	return nil
+}
+
+func (s *PrivateBareMetalInstancesServer) validateNetworkReferencesTenancy(ctx context.Context,
+	bmi *privatev1.BareMetalInstance) error {
+	attachments := bmi.GetSpec().GetNetworkAttachments()
+	if len(attachments) == 0 {
+		return nil
+	}
+	bmiTenant, err := resolveObjectTenant(ctx, bmi.GetMetadata(), s.tenancyLogic)
+	if err != nil {
+		return err
+	}
+
+	for _, attachment := range attachments {
+		subnetKey := refKey(attachment.GetSubnet())
+		if subnetKey != "" {
+			response, getErr := s.subnetsDao.Get().SetId(subnetKey).Do(ctx)
+			if getErr == nil {
+				if err := validateTenantMatch(bmiTenant, response.GetObject(), "Subnet", subnetKey); err != nil {
+					return err
+				}
+			} else {
+				var notFoundErr *dao.ErrNotFound
+				if !errors.As(getErr, &notFoundErr) {
+					return grpcstatus.Errorf(grpccodes.Internal, "failed to validate subnet")
+				}
+			}
+		}
+
+		for _, securityGroup := range attachment.GetSecurityGroups() {
+			securityGroupKey := refKey(securityGroup)
+			if securityGroupKey == "" {
+				continue
+			}
+			response, getErr := s.securityGroupsDao.Get().SetId(securityGroupKey).Do(ctx)
+			if getErr == nil {
+				if err := validateTenantMatch(bmiTenant, response.GetObject(), "SecurityGroup", securityGroupKey); err != nil {
+					return err
+				}
+			} else {
+				var notFoundErr *dao.ErrNotFound
+				if !errors.As(getErr, &notFoundErr) {
+					return grpcstatus.Errorf(grpccodes.Internal, "failed to validate security group")
+				}
+			}
+		}
+	}
 	return nil
 }
 
