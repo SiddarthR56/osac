@@ -160,6 +160,7 @@ message BareMetalInstanceStatus {
   // Physical hardware metadata fetched from the inventory backend at allocation time.
   // Absent until the inventory backend provides NIC data.
   optional BareMetalHardware hardware = 5;
+
 }
 
 // Runtime networking state for a single bare metal network attachment.
