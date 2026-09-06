@@ -142,6 +142,38 @@ var _ = Describe("Bare metal instances server", func() {
 			Expect(response.GetItems()).To(HaveLen(count))
 		})
 
+		It("hides cluster-managed objects from the public API", func() {
+			privateServer := server.delegate.(*PrivateBareMetalInstancesServer)
+			managed, err := privateServer.generic.dao.Create().SetObject(
+				privatev1.BareMetalInstance_builder{
+					Metadata: privatev1.Metadata_builder{
+						Name:   "cluster-managed-bmi",
+						Tenant: testTenant,
+					}.Build(),
+					Status: privatev1.BareMetalInstanceStatus_builder{
+						Cluster: privatev1.ClusterLocalReference_builder{Id: "cluster-1", Name: "cluster-1"}.Build(),
+					}.Build(),
+				}.Build(),
+			).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			listResponse, err := server.List(ctx, publicv1.BareMetalInstancesListRequest_builder{}.Build())
+			Expect(err).ToNot(HaveOccurred())
+			for _, item := range listResponse.GetItems() {
+				Expect(item.GetId()).ToNot(Equal(managed.GetObject().GetId()))
+			}
+
+			_, err = server.List(ctx, publicv1.BareMetalInstancesListRequest_builder{
+				Filter: new("has(this.status.cluster)"),
+			}.Build())
+			Expect(status.Code(err)).To(Equal(codes.InvalidArgument))
+
+			_, err = server.Get(ctx, publicv1.BareMetalInstancesGetRequest_builder{
+				Id: managed.GetObject().GetId(),
+			}.Build())
+			Expect(status.Code(err)).To(Equal(codes.NotFound))
+		})
+
 		It("Gets object", func() {
 			createResponse, err := server.Create(ctx, publicv1.BareMetalInstancesCreateRequest_builder{
 				Object: publicv1.BareMetalInstance_builder{

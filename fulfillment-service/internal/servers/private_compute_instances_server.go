@@ -916,6 +916,10 @@ func (s *PrivateComputeInstancesServer) validateNetworkReferencesTenancy(
 	if len(attachments) == 0 {
 		return nil
 	}
+	vmTenant, err := resolveObjectTenant(ctx, vm.GetMetadata(), s.tenancyLogic)
+	if err != nil {
+		return err
+	}
 
 	for _, att := range attachments {
 		subnetRef := att.GetSubnet()
@@ -926,10 +930,9 @@ func (s *PrivateComputeInstancesServer) validateNetworkReferencesTenancy(
 		subnetIDStr := refKey(subnetRef)
 
 		// Validate tenant isolation for subnet.
-		// TenancyLogic in DAO filters out cross-tenant resources, making them appear as NotFound.
-		// We allow NotFound during deletion (resource may be deleted or cross-tenant).
-		// The key is that we ALWAYS call DAO Get() so tenant filtering happens.
-		_, getErr := s.subnetsDao.Get().SetId(subnetIDStr).Do(ctx)
+		// Keep NotFound compatible with deprovisioning, but explicitly compare tenants whenever
+		// the referenced object is visible (for example under private total visibility).
+		subnetResponse, getErr := s.subnetsDao.Get().SetId(subnetIDStr).Do(ctx)
 		if getErr != nil {
 			var notFoundErr *dao.ErrNotFound
 			if errors.As(getErr, &notFoundErr) {
@@ -944,6 +947,9 @@ func (s *PrivateComputeInstancesServer) validateNetworkReferencesTenancy(
 				slog.Any("error", getErr))
 			return grpcstatus.Errorf(grpccodes.Internal, "failed to validate subnet")
 		}
+		if err := validateTenantMatch(vmTenant, subnetResponse.GetObject(), "Subnet", subnetIDStr); err != nil {
+			return err
+		}
 
 		// Validate tenant isolation for security groups.
 		for _, sgRef := range securityGroupRefs {
@@ -951,7 +957,7 @@ func (s *PrivateComputeInstancesServer) validateNetworkReferencesTenancy(
 				continue
 			}
 			sgIDStr := refKey(sgRef)
-			_, getErr := s.securityGroupsDao.Get().SetId(sgIDStr).Do(ctx)
+			sgResponse, getErr := s.securityGroupsDao.Get().SetId(sgIDStr).Do(ctx)
 			if getErr != nil {
 				var notFoundErr *dao.ErrNotFound
 				if errors.As(getErr, &notFoundErr) {
@@ -965,6 +971,9 @@ func (s *PrivateComputeInstancesServer) validateNetworkReferencesTenancy(
 					slog.String("security_group_id", sgIDStr),
 					slog.Any("error", getErr))
 				return grpcstatus.Errorf(grpccodes.Internal, "failed to validate security group")
+			}
+			if err := validateTenantMatch(vmTenant, sgResponse.GetObject(), "SecurityGroup", sgIDStr); err != nil {
+				return err
 			}
 		}
 	}

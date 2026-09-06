@@ -24,6 +24,7 @@ import "osac/private/v1/baremetal_instance_catalog_item_type.proto";
 import "osac/private/v1/baremetal_instance_common_type.proto";
 import "osac/private/v1/baremetal_instance_template_type.proto";
 import "osac/private/v1/baremetal_instance_type_type.proto";
+import "osac/private/v1/cluster_type.proto";
 import "osac/private/v1/condition_status_type.proto";
 import "osac/private/v1/disk_image_type.proto";
 import "osac/private/v1/metadata_type.proto";
@@ -166,6 +167,13 @@ message BareMetalInstanceStatus {
 
   // Identifier of the hub that was selected for this bare metal instance.
   string hub = 6 [(cleanapi.field).private = true];
+
+  // Cluster that owns this instance when it is managed as cluster infrastructure.
+  // This relationship is set by the system and is not exposed through the public API.
+  ClusterLocalReference cluster = 7 [
+    (cleanapi.field).private = true,
+    (google.api.field_behavior) = OUTPUT_ONLY
+  ];
 }
 
 // Runtime networking state for a single bare metal network attachment.
