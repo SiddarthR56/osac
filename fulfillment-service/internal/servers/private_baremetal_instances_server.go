@@ -420,6 +420,9 @@ func (s *PrivateBareMetalInstancesServer) resolveCreationSource(ctx context.Cont
 
 func (s *PrivateBareMetalInstancesServer) Update(ctx context.Context,
 	request *privatev1.BareMetalInstancesUpdateRequest) (response *privatev1.BareMetalInstancesUpdateResponse, err error) {
+	if _, err = s.getUnmanagedForMutation(ctx, request.GetObject().GetId()); err != nil {
+		return
+	}
 	err = s.generic.UpdateWithCandidatePreparation(ctx, request, &response, func(ctx context.Context, current, candidate *privatev1.BareMetalInstance) error {
 		if err := validateBareMetalImmutability(current, candidate, request.GetUpdateMask()); err != nil {
 			return err
@@ -462,16 +465,11 @@ func (s *PrivateBareMetalInstancesServer) Delete(ctx context.Context,
 	request *privatev1.BareMetalInstancesDeleteRequest) (response *privatev1.BareMetalInstancesDeleteResponse, err error) {
 	id := request.GetId()
 	if id != "" {
-		getResponse, getErr := s.generic.dao.Get().SetId(id).Do(ctx)
+		getResponse, getErr := s.getUnmanagedForMutation(ctx, id)
 		if getErr != nil {
-			var notFoundErr *dao.ErrNotFound
-			if !errors.As(getErr, &notFoundErr) {
-				err = getErr
-				return
-			}
-			s.logger.DebugContext(ctx, "BMI not found during delete, skipping auto-EIP cleanup",
-				slog.String("bmi_id", id))
-		} else if getResponse.GetObject().GetSpec().GetAutoExternalIpAttachment() {
+			return nil, getErr
+		}
+		if getResponse.GetSpec().GetAutoExternalIpAttachment() {
 			s.logger.InfoContext(ctx, "BMI has auto_external_ip_attachment, running cascade cleanup",
 				slog.String("bmi_id", id))
 			err = s.autoCleanupExternalIP(ctx, id)
@@ -487,6 +485,38 @@ func (s *PrivateBareMetalInstancesServer) Delete(ctx context.Context,
 	}
 	err = s.generic.Delete(ctx, request, &response)
 	return
+}
+
+// getUnmanagedForMutation obtains the row lock before checking cluster ownership.
+// The lock remains held by the transaction while the caller performs its mutation,
+// closing the check-then-mutate race with cluster management.
+func (s *PrivateBareMetalInstancesServer) getUnmanagedForMutation(ctx context.Context,
+	id string) (*privatev1.BareMetalInstance, error) {
+	getResponse, err := s.generic.dao.Get().SetId(id).SetLock(true).Do(ctx)
+	if err != nil {
+		var notFoundErr *dao.ErrNotFound
+		if errors.As(err, &notFoundErr) {
+			return nil, grpcstatus.Errorf(grpccodes.NotFound, "bare metal instance '%s' not found", id)
+		}
+		var deniedErr *dao.ErrDenied
+		if errors.As(err, &deniedErr) {
+			return nil, grpcstatus.Errorf(grpccodes.PermissionDenied, "%s", deniedErr.Reason)
+		}
+		var deadlockErr *dao.ErrDeadlock
+		if errors.As(err, &deadlockErr) {
+			return nil, grpcstatus.Errorf(grpccodes.Aborted, "%s", deadlockErr.Error())
+		}
+		s.logger.ErrorContext(ctx, "Failed to get bare metal instance for mutation",
+			slog.String("id", id), slog.Any("error", err))
+		return nil, grpcstatus.Errorf(grpccodes.Internal,
+			"failed to get bare metal instance with identifier '%s'", id)
+	}
+
+	object := getResponse.GetObject()
+	if object.GetStatus().GetCluster() != nil {
+		return nil, grpcstatus.Errorf(grpccodes.NotFound, "bare metal instance '%s' not found", id)
+	}
+	return object, nil
 }
 
 func (s *PrivateBareMetalInstancesServer) autoCleanupExternalIP(ctx context.Context, bmiID string) error {
@@ -1028,7 +1058,7 @@ func (s *PrivateBareMetalInstancesServer) validateNetworkReferencesTenancy(ctx c
 		return err
 	}
 
-	for _, attachment := range attachments {
+	for i, attachment := range attachments {
 		subnetKey := refKey(attachment.GetSubnet())
 		if subnetKey != "" {
 			response, getErr := s.subnetsDao.Get().SetId(subnetKey).Do(ctx)
@@ -1038,9 +1068,11 @@ func (s *PrivateBareMetalInstancesServer) validateNetworkReferencesTenancy(ctx c
 				}
 			} else {
 				var notFoundErr *dao.ErrNotFound
-				if !errors.As(getErr, &notFoundErr) {
-					return grpcstatus.Errorf(grpccodes.Internal, "failed to validate subnet")
+				if errors.As(getErr, &notFoundErr) {
+					return grpcstatus.Errorf(grpccodes.InvalidArgument,
+						"network_attachments[%d]: subnet '%s' does not exist", i, subnetKey)
 				}
+				return grpcstatus.Errorf(grpccodes.Internal, "failed to validate subnet")
 			}
 		}
 
@@ -1056,9 +1088,11 @@ func (s *PrivateBareMetalInstancesServer) validateNetworkReferencesTenancy(ctx c
 				}
 			} else {
 				var notFoundErr *dao.ErrNotFound
-				if !errors.As(getErr, &notFoundErr) {
-					return grpcstatus.Errorf(grpccodes.Internal, "failed to validate security group")
+				if errors.As(getErr, &notFoundErr) {
+					return grpcstatus.Errorf(grpccodes.InvalidArgument,
+						"network_attachments[%d]: security group '%s' does not exist", i, securityGroupKey)
 				}
+				return grpcstatus.Errorf(grpccodes.Internal, "failed to validate security group")
 			}
 		}
 	}
@@ -1068,9 +1102,9 @@ func (s *PrivateBareMetalInstancesServer) validateNetworkReferencesTenancy(ctx c
 // validateNetworkAttachmentsRequireFabricManager rejects Create when any network_attachments entry
 // resolves (Subnet -> VirtualNetwork -> NetworkClass) to a NetworkClass with no fabric_manager.
 // BareMetalInstance provisioning is a fabric-level operation with no k8sManager fallback. Attachments
-// whose subnet, virtual network, or network class cannot be found are skipped rather than rejected:
-// resolution to a concrete instance (via AAP) already fails independently for a dangling reference, and
-// many existing fixtures use placeholder subnet IDs that predate this check.
+// A missing subnet is rejected because it cannot be provisioned. Missing virtual networks or network
+// classes are still skipped here because this check only determines whether a resolved network class
+// requires a fabric manager; their reference validation is handled elsewhere.
 func (s *PrivateBareMetalInstancesServer) validateNetworkAttachmentsRequireFabricManager(
 	ctx context.Context, bmi *privatev1.BareMetalInstance) error {
 	for i, a := range bmi.GetSpec().GetNetworkAttachments() {
@@ -1083,7 +1117,8 @@ func (s *PrivateBareMetalInstancesServer) validateNetworkAttachmentsRequireFabri
 		if err != nil {
 			var notFoundErr *dao.ErrNotFound
 			if errors.As(err, &notFoundErr) {
-				continue
+				return grpcstatus.Errorf(grpccodes.InvalidArgument,
+					"network_attachments[%d]: subnet '%s' does not exist", i, subnetKey)
 			}
 			s.logger.ErrorContext(ctx, "Failed to lookup subnet for fabric manager validation",
 				slog.String("subnet_id", subnetKey), slog.Any("error", err))
