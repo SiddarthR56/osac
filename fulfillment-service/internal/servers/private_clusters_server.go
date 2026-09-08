@@ -1074,10 +1074,6 @@ func (s *PrivateClustersServer) validateNetworkAttachmentState(ctx context.Conte
 	if att == nil {
 		return nil
 	}
-	clusterTenant, err := s.resolveTargetTenant(ctx, cluster)
-	if err != nil {
-		return err
-	}
 
 	subnetRef := att.GetSubnet()
 	subnetKey := refKey(subnetRef)
@@ -1098,9 +1094,6 @@ func (s *PrivateClustersServer) validateNetworkAttachmentState(ctx context.Conte
 		return grpcstatus.Errorf(grpccodes.Internal, "failed to validate subnet")
 	}
 	subnet := getResponse.GetObject()
-	if err := validateTenantMatch(clusterTenant, subnet, "Subnet", subnetKey); err != nil {
-		return err
-	}
 	if subnet == nil {
 		return grpcstatus.Errorf(grpccodes.InvalidArgument,
 			"spec.network_attachment: subnet '%s' does not exist", subnetKey)
@@ -1137,9 +1130,6 @@ func (s *PrivateClustersServer) validateNetworkAttachmentState(ctx context.Conte
 			return grpcstatus.Errorf(grpccodes.Internal, "failed to validate security group")
 		}
 		sg := sgResponse.GetObject()
-		if err := validateTenantMatch(clusterTenant, sg, "SecurityGroup", sgKey); err != nil {
-			return err
-		}
 		if sg == nil {
 			return grpcstatus.Errorf(grpccodes.InvalidArgument,
 				"spec.network_attachment.security_groups[%d]: security group '%s' does not exist",

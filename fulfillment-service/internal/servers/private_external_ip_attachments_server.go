@@ -207,12 +207,8 @@ func (s *PrivateExternalIPAttachmentsServer) Create(ctx context.Context,
 		return
 	}
 
-	var target tenantMetadataObject
-	target, err = s.validateTargetReference(ctx, spec)
+	err = s.validateTargetReference(ctx, spec)
 	if err != nil {
-		return
-	}
-	if err = validateTenantOrShared(attachmentTenant, target, "target", s.getTargetID(spec), auth.SharedTenant); err != nil {
 		return
 	}
 
@@ -433,7 +429,7 @@ func (s *PrivateExternalIPAttachmentsServer) validateExternalIPReference(
 }
 
 func (s *PrivateExternalIPAttachmentsServer) validateTargetReference(
-	ctx context.Context, spec *privatev1.ExternalIPAttachmentSpec) (tenantMetadataObject, error) {
+	ctx context.Context, spec *privatev1.ExternalIPAttachmentSpec) error {
 	switch {
 	case spec.HasComputeInstance():
 		return s.validateComputeInstanceReference(ctx, spec.GetComputeInstance())
@@ -442,72 +438,72 @@ func (s *PrivateExternalIPAttachmentsServer) validateTargetReference(
 	case spec.HasBaremetalInstance():
 		return s.validateBareMetalInstanceReference(ctx, spec.GetBaremetalInstance())
 	default:
-		return nil, grpcstatus.Errorf(grpccodes.InvalidArgument,
+		return grpcstatus.Errorf(grpccodes.InvalidArgument,
 			"exactly one target must be set (compute_instance, cluster, or baremetal_instance)")
 	}
 }
 
 func (s *PrivateExternalIPAttachmentsServer) validateComputeInstanceReference(
-	ctx context.Context, ref *privatev1.ComputeInstanceLocalReference) (*privatev1.ComputeInstance, error) {
+	ctx context.Context, ref *privatev1.ComputeInstanceLocalReference) error {
 	key := refKey(ref)
-	response, err := s.computeInstanceDao.Get().
+	_, err := s.computeInstanceDao.Get().
 		SetId(key).
 		SetLock(true).
 		Do(ctx)
 	if err != nil {
 		var notFoundErr *dao.ErrNotFound
 		if errors.As(err, &notFoundErr) {
-			return nil, grpcstatus.Errorf(grpccodes.InvalidArgument,
+			return grpcstatus.Errorf(grpccodes.InvalidArgument,
 				"ComputeInstance '%s' does not exist", key)
 		}
 		s.logger.ErrorContext(ctx, "Failed to query ComputeInstance",
 			slog.String("compute_instance_id", key),
 			slog.Any("error", err))
-		return nil, grpcstatus.Errorf(grpccodes.Internal, "failed to validate compute_instance")
+		return grpcstatus.Errorf(grpccodes.Internal, "failed to validate compute_instance")
 	}
-	return response.GetObject(), nil
+	return nil
 }
 
 func (s *PrivateExternalIPAttachmentsServer) validateClusterReference(
-	ctx context.Context, ref *privatev1.ClusterLocalReference) (*privatev1.Cluster, error) {
+	ctx context.Context, ref *privatev1.ClusterLocalReference) error {
 	key := refKey(ref)
-	response, err := s.clusterDao.Get().
+	_, err := s.clusterDao.Get().
 		SetId(key).
 		SetLock(true).
 		Do(ctx)
 	if err != nil {
 		var notFoundErr *dao.ErrNotFound
 		if errors.As(err, &notFoundErr) {
-			return nil, grpcstatus.Errorf(grpccodes.InvalidArgument,
+			return grpcstatus.Errorf(grpccodes.InvalidArgument,
 				"Cluster '%s' does not exist", key)
 		}
 		s.logger.ErrorContext(ctx, "Failed to query Cluster",
 			slog.String("cluster_id", key),
 			slog.Any("error", err))
-		return nil, grpcstatus.Errorf(grpccodes.Internal, "failed to validate cluster")
+		return grpcstatus.Errorf(grpccodes.Internal, "failed to validate cluster")
 	}
-	return response.GetObject(), nil
+	return nil
 }
 
 func (s *PrivateExternalIPAttachmentsServer) validateBareMetalInstanceReference(
-	ctx context.Context, ref *privatev1.BareMetalInstanceLocalReference) (*privatev1.BareMetalInstance, error) {
+	ctx context.Context, ref *privatev1.BareMetalInstanceLocalReference) error {
 	key := refKey(ref)
-	response, err := s.bareMetalInstanceDao.Get().
+	_, err := s.bareMetalInstanceDao.Get().
 		SetId(key).
 		SetLock(true).
 		Do(ctx)
 	if err != nil {
 		var notFoundErr *dao.ErrNotFound
 		if errors.As(err, &notFoundErr) {
-			return nil, grpcstatus.Errorf(grpccodes.InvalidArgument,
+			return grpcstatus.Errorf(grpccodes.InvalidArgument,
 				"BareMetalInstance '%s' does not exist", key)
 		}
 		s.logger.ErrorContext(ctx, "Failed to query BareMetalInstance",
 			slog.String("baremetal_instance_id", key),
 			slog.Any("error", err))
-		return nil, grpcstatus.Errorf(grpccodes.Internal, "failed to validate baremetal_instance")
+		return grpcstatus.Errorf(grpccodes.Internal, "failed to validate baremetal_instance")
 	}
-	return response.GetObject(), nil
+	return nil
 }
 
 func (s *PrivateExternalIPAttachmentsServer) getTargetID(

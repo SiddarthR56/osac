@@ -25,7 +25,6 @@ import (
 	privatev1 "github.com/osac-project/osac/fulfillment-service/internal/api/osac/private/v1"
 	publicv1 "github.com/osac-project/osac/fulfillment-service/internal/api/osac/public/v1"
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
-	"github.com/osac-project/osac/fulfillment-service/internal/database/dao"
 	"github.com/osac-project/osac/fulfillment-service/internal/events"
 )
 
@@ -42,11 +41,10 @@ var _ publicv1.BareMetalInstancesServer = (*BareMetalInstancesServer)(nil)
 type BareMetalInstancesServer struct {
 	publicv1.UnimplementedBareMetalInstancesServer
 
-	logger          *slog.Logger
-	delegate        privatev1.BareMetalInstancesServer
-	inMapper        *GenericMapper[*publicv1.BareMetalInstance, *privatev1.BareMetalInstance]
-	outMapper       *GenericMapper[*privatev1.BareMetalInstance, *publicv1.BareMetalInstance]
-	filterValidator *dao.FilterTranslator
+	logger    *slog.Logger
+	delegate  privatev1.BareMetalInstancesServer
+	inMapper  *GenericMapper[*publicv1.BareMetalInstance, *privatev1.BareMetalInstance]
+	outMapper *GenericMapper[*privatev1.BareMetalInstance, *publicv1.BareMetalInstance]
 }
 
 func NewBareMetalInstancesServer() *BareMetalInstancesServerBuilder {
@@ -108,13 +106,6 @@ func (b *BareMetalInstancesServerBuilder) Build() (result *BareMetalInstancesSer
 	if err != nil {
 		return
 	}
-	filterValidator, err := dao.NewFilterTranslator().
-		SetLogger(b.logger).
-		SetDescriptor((*publicv1.BareMetalInstance)(nil).ProtoReflect().Descriptor()).
-		Build()
-	if err != nil {
-		return
-	}
 
 	delegate, err := NewPrivateBareMetalInstancesServer().
 		SetLogger(b.logger).
@@ -122,41 +113,29 @@ func (b *BareMetalInstancesServerBuilder) Build() (result *BareMetalInstancesSer
 		SetAttributionLogic(b.attributionLogic).
 		SetTenancyLogic(b.tenancyLogic).
 		SetMetricsRegisterer(b.metricsRegisterer).
+		SetFilterDesc((*publicv1.BareMetalInstance)(nil).ProtoReflect().Descriptor()).
 		Build()
 	if err != nil {
 		return
 	}
 
 	result = &BareMetalInstancesServer{
-		logger:          b.logger,
-		delegate:        delegate,
-		inMapper:        inMapper,
-		outMapper:       outMapper,
-		filterValidator: filterValidator,
+		logger:    b.logger,
+		delegate:  delegate,
+		inMapper:  inMapper,
+		outMapper: outMapper,
 	}
 	return
 }
 
 func (s *BareMetalInstancesServer) List(ctx context.Context,
 	request *publicv1.BareMetalInstancesListRequest) (response *publicv1.BareMetalInstancesListResponse, err error) {
-	filter := request.GetFilter()
-	if filter != "" {
-		if _, err = s.filterValidator.Translate(ctx, filter); err != nil {
-			return nil, grpcstatus.Errorf(grpccodes.InvalidArgument, "invalid filter: %v", err)
-		}
-	}
-	if filter == "" {
-		filter = "!has(this.status.cluster)"
-	} else {
-		filter = "!has(this.status.cluster) && (" + filter + ")"
-	}
-
 	privateRequest := &privatev1.BareMetalInstancesListRequest{}
 	privateRequest.SetOffset(request.GetOffset())
 	if request.HasLimit() {
 		privateRequest.SetLimit(request.GetLimit())
 	}
-	privateRequest.SetFilter(filter)
+	privateRequest.SetFilter(request.GetFilter())
 
 	privateResponse, err := s.delegate.List(ctx, privateRequest)
 	if err != nil {
@@ -191,9 +170,6 @@ func (s *BareMetalInstancesServer) Get(ctx context.Context,
 	privateResponse, err := s.delegate.Get(ctx, privateRequest)
 	if err != nil {
 		return nil, err
-	}
-	if privateResponse.GetObject().GetStatus().GetCluster() != nil {
-		return nil, grpcstatus.Errorf(grpccodes.NotFound, "bare metal instance '%s' not found", request.GetId())
 	}
 
 	publicBMI := &publicv1.BareMetalInstance{}
@@ -263,19 +239,16 @@ func (s *BareMetalInstancesServer) Update(ctx context.Context,
 	// merge with the database object, which correctly applies field mask semantics.
 	var privateBMI *privatev1.BareMetalInstance
 	updateMask := request.GetUpdateMask()
-	getRequest := &privatev1.BareMetalInstancesGetRequest{}
-	getRequest.SetId(id)
-	getResponse, err := s.delegate.Get(ctx, getRequest)
-	if err != nil {
-		return nil, err
-	}
-	if getResponse.GetObject().GetStatus().GetCluster() != nil {
-		return nil, grpcstatus.Errorf(grpccodes.NotFound, "bare metal instance '%s' not found", id)
-	}
 	if len(updateMask.GetPaths()) > 0 {
 		privateBMI = &privatev1.BareMetalInstance{}
 		privateBMI.SetId(id)
 	} else {
+		getRequest := &privatev1.BareMetalInstancesGetRequest{}
+		getRequest.SetId(id)
+		getResponse, err := s.delegate.Get(ctx, getRequest)
+		if err != nil {
+			return nil, err
+		}
 		privateBMI = getResponse.GetObject()
 	}
 	err = s.inMapper.Copy(ctx, publicBMI, privateBMI)
@@ -313,15 +286,6 @@ func (s *BareMetalInstancesServer) Delete(ctx context.Context,
 	request *publicv1.BareMetalInstancesDeleteRequest) (response *publicv1.BareMetalInstancesDeleteResponse, err error) {
 	privateRequest := &privatev1.BareMetalInstancesDeleteRequest{}
 	privateRequest.SetId(request.GetId())
-	getRequest := &privatev1.BareMetalInstancesGetRequest{}
-	getRequest.SetId(request.GetId())
-	getResponse, getErr := s.delegate.Get(ctx, getRequest)
-	if getErr != nil {
-		return nil, getErr
-	}
-	if getResponse.GetObject().GetStatus().GetCluster() != nil {
-		return nil, grpcstatus.Errorf(grpccodes.NotFound, "bare metal instance '%s' not found", request.GetId())
-	}
 
 	_, err = s.delegate.Delete(ctx, privateRequest)
 	if err != nil {

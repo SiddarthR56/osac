@@ -40,12 +40,6 @@ var _ = DescribeMigration("Networking dependency guards", func() {
 		Expect(err).ToNot(HaveOccurred())
 	}
 
-	insertTenant := func(ctx context.Context, id string) {
-		_, err := conn.Exec(ctx,
-			`insert into tenants (id, name, tenant, creator, data) values ($1, $1, $1, 'system', '{}')`, id)
-		Expect(err).ToNot(HaveOccurred())
-	}
-
 	insertSubnet := func(ctx context.Context, id, vnID string) {
 		_, err := conn.Exec(ctx,
 			`insert into subnets (id, name, tenant, data) values ($1, $1, 'system', $2::jsonb)`,
@@ -143,23 +137,6 @@ var _ = DescribeMigration("Networking dependency guards", func() {
 		insertVN(ctx, "vn-10")
 		insertSubnet(ctx, "subnet-10", "vn-10")
 		insertBMI(ctx, "bmi-10", "subnet-10")
-	})
-
-	It("Rejects creating a BMI with a Subnet owned by another tenant", func(ctx context.Context) {
-		insertTenant(ctx, "foreign-tenant")
-		_, err := conn.Exec(ctx,
-			`insert into virtual_networks (id, name, tenant, data) values ('vn-foreign', 'vn-foreign', 'foreign-tenant', '{}')`)
-		Expect(err).ToNot(HaveOccurred())
-		_, err = conn.Exec(ctx,
-			`insert into subnets (id, name, tenant, data) values ('subnet-foreign', 'subnet-foreign', 'foreign-tenant', $1::jsonb)`,
-			`{"spec":{"virtual_network":{"id":"vn-foreign"}}}`)
-		Expect(err).ToNot(HaveOccurred())
-
-		_, err = conn.Exec(ctx,
-			`insert into bare_metal_instances (id, name, tenant, data) values ('bmi-foreign-subnet', 'bmi-foreign-subnet', 'system', $1::jsonb)`,
-			`{"spec":{"network_attachments":[{"subnet":{"id":"subnet-foreign"}}]}}`)
-		pgErr := expectPgErr(err, "Z0002")
-		Expect(pgErr.Message).To(ContainSubstring("subnet-foreign"))
 	})
 
 	It("Allows creating a BMI with no network_attachments", func(ctx context.Context) {
