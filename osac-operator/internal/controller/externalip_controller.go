@@ -239,8 +239,10 @@ func (r *ExternalIPReconciler) handleUpdate(ctx context.Context, externalIP *v1a
 	if implementationStrategy == "" {
 		setReadyConditionBlocked(&externalIP.Status.Conditions, v1alpha1.ReasonNoManagerConfigured,
 			conditionMessageNoManagerConfigured)
-		log.Info("implementation strategy not resolved, requeueing", "externalIP", externalIP.Name)
-		return ctrl.Result{RequeueAfter: defaultPreconditionRequeueInterval}, nil
+		log.Info("implementation strategy not resolved", "externalIP", externalIP.Name)
+		return ctrl.Result{}, fmt.Errorf(
+			"cannot reconcile ExternalIP %q: no fabric manager is configured for NetworkClass %q",
+			externalIP.Name, networkClassID)
 	}
 
 	if externalIP.Annotations == nil {

@@ -862,10 +862,9 @@ var _ = Describe("ExternalIPReconciler", func() {
 			reconciler.networkClassesClient = ncClient
 
 			key := types.NamespacedName{Name: publicIP.Name, Namespace: publicIP.Namespace}
-			_, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
-			Expect(err).NotTo(HaveOccurred())
-			_, err = reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
-			Expect(err).NotTo(HaveOccurred())
+			result, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			Expect(err).To(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
 
 			updated := &osacv1alpha1.ExternalIP{}
 			Expect(fakeClient.Get(testCtx, key, updated)).To(Succeed())
@@ -882,10 +881,9 @@ var _ = Describe("ExternalIPReconciler", func() {
 			reconciler.networkClassesClient = ncClient
 
 			key := types.NamespacedName{Name: publicIP.Name, Namespace: publicIP.Namespace}
-			_, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
-			Expect(err).NotTo(HaveOccurred())
-			_, err = reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
-			Expect(err).NotTo(HaveOccurred())
+			result, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			Expect(err).To(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
 
 			updated := &osacv1alpha1.ExternalIP{}
 			Expect(fakeClient.Get(testCtx, key, updated)).To(Succeed())

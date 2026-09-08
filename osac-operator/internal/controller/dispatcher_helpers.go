@@ -43,7 +43,7 @@ const networkClassListPageSize = 1000
 //
 // Returns (nil, nil) when the dispatcher path is not active: resolver is nil,
 // networkClassID is empty, or the NetworkClass has neither a fabricManager nor a
-// k8sManager set (dispatcher.ErrNoManagerConfigured) — all cases where the caller
+// k8sManager set (dispatcher.ErrNoManagerConfigured) — the case where the caller
 // should block until dispatcher configuration is available. Any other resolution error (e.g. a
 // fabricManager or k8sManager referencing an unregistered manager ConfigMap) is
 // returned to the caller as a real reconcile error, since that indicates a
@@ -90,8 +90,8 @@ func resolveImplementationStrategy(
 	}
 	target := plan.FabricTarget()
 	if target == nil {
-		// A K8sFallback kind (e.g. VirtualNetwork, SecurityGroup) with no fabricManager
-		// resolves its fabric role to a k8s-role target instead (see Dispatch), so check
+		// A fallback-enabled kind with no fabricManager resolves its fabric role to
+		// the explicitly allowed k8s-only target instead (see Dispatch), so check
 		// K8sTarget before giving up.
 		target = plan.K8sTarget()
 	}

@@ -867,6 +867,28 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal("netris"))
 		})
 
+		It("uses the composite k8s manager when the NetworkClass has no fabricManager", func() {
+			Expect(fakeClient.Create(ctx, newK8sManagerConfigMap("km-k8s-only", "test-namespace", "k8s_only", "ipv4"))).To(Succeed())
+			disc, err := networkmanager.NewDiscovery(fakeClient, "test-namespace")
+			Expect(err).NotTo(HaveOccurred())
+			reconciler.Resolver = dispatcher.NewResolver(dispatcheradapter.NewNetworkClassAdapter(newListingNetworkClassClient(
+				[]*privatev1.NetworkClass{{Id: "nc-k8s", K8SManager: ptr.To("k8s_only")}}, &[]*privatev1.NetworkClass{},
+			)), disc)
+
+			vnet.Spec.NetworkClass = "nc-k8s"
+			Expect(fakeClient.Update(ctx, vnet)).To(Succeed())
+
+			key := types.NamespacedName{Name: sg.Name, Namespace: sg.Namespace}
+			_, err = reconciler.Reconcile(ctx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &osacv1alpha1.SecurityGroup{}
+			Expect(fakeClient.Get(ctx, key, updated)).To(Succeed())
+			Expect(updated.Annotations[osacImplementationStrategyAnnotation]).To(Equal("k8s_only"))
+		})
+
 		It("blocks when no manager is configured", func() {
 			disc, err := networkmanager.NewDiscovery(fakeClient, "test-namespace")
 			Expect(err).NotTo(HaveOccurred())
@@ -882,8 +904,9 @@ var _ = Describe("SecurityGroupReconciler", func() {
 				return &provisioning.ProvisionResult{JobID: "job-legacy", InitialState: osacv1alpha1.JobStatePending}, nil
 			}
 
-			_, err = reconciler.Reconcile(ctx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
-			Expect(err).NotTo(HaveOccurred())
+			result, err := reconciler.Reconcile(ctx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			Expect(err).To(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
 
 			updated := &osacv1alpha1.SecurityGroup{}
 			Expect(fakeClient.Get(ctx, key, updated)).To(Succeed())
@@ -912,7 +935,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			Expect(err).To(HaveOccurred())
 		})
 
-		It("blocks when the parent VirtualNetwork cannot be found", func() {
+		It("requeues when the parent VirtualNetwork cannot be found", func() {
 			disc, err := networkmanager.NewDiscovery(fakeClient, "test-namespace")
 			Expect(err).NotTo(HaveOccurred())
 			reconciler.Resolver = dispatcher.NewResolver(dispatcheradapter.NewNetworkClassAdapter(newListingNetworkClassClient(
@@ -928,21 +951,16 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			Expect(fakeClient.Create(ctx, orphanSG)).To(Succeed())
 
 			key := types.NamespacedName{Name: orphanSG.Name, Namespace: orphanSG.Namespace}
-			mockProvider.triggerProvisionFunc = func(ctx context.Context, resource client.Object) (*provisioning.ProvisionResult, error) {
-				return &provisioning.ProvisionResult{JobID: "job-orphan", InitialState: osacv1alpha1.JobStatePending}, nil
-			}
-
 			_, err = reconciler.Reconcile(ctx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = reconciler.Reconcile(ctx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			result, err := reconciler.Reconcile(ctx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
 			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(defaultPreconditionRequeueInterval))
 
 			updated := &osacv1alpha1.SecurityGroup{}
 			Expect(fakeClient.Get(ctx, key, updated)).To(Succeed())
 			condition := apimeta.FindStatusCondition(updated.Status.Conditions, osacv1alpha1.ConditionReady)
-			Expect(condition).NotTo(BeNil())
-			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(condition.Reason).To(Equal(osacv1alpha1.ReasonNoManagerConfigured))
+			Expect(condition).To(BeNil())
 			Expect(updated.Annotations).NotTo(HaveKey(osacImplementationStrategyAnnotation))
 		})
 

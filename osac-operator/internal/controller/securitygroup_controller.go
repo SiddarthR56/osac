@@ -207,6 +207,7 @@ func (r *SecurityGroupReconciler) handleUpdate(ctx context.Context, sg *v1alpha1
 		}
 	} else {
 		log.Info("parent VirtualNetwork not found", "uuid", sg.Spec.VirtualNetwork)
+		return ctrl.Result{RequeueAfter: defaultPreconditionRequeueInterval}, nil
 	}
 
 	implementationStrategy, err := resolveImplementationStrategy(ctx, r.Resolver, "SecurityGroup", networkClassID)
@@ -216,8 +217,10 @@ func (r *SecurityGroupReconciler) handleUpdate(ctx context.Context, sg *v1alpha1
 	if implementationStrategy == "" {
 		setReadyConditionBlocked(&sg.Status.Conditions, v1alpha1.ReasonNoManagerConfigured,
 			conditionMessageNoManagerConfigured)
-		log.Info("implementation strategy not resolved, requeueing", "securityGroup", sg.Name)
-		return ctrl.Result{RequeueAfter: defaultPreconditionRequeueInterval}, nil
+		log.Info("implementation strategy not resolved", "securityGroup", sg.Name)
+		return ctrl.Result{}, fmt.Errorf(
+			"cannot reconcile SecurityGroup %q: no fabric manager is configured for NetworkClass %q",
+			sg.Name, networkClassID)
 	}
 
 	// Add implementation-strategy annotation if not present or different

@@ -611,8 +611,9 @@ var _ = Describe("ExternalIPPoolReconciler", func() {
 			reconciler.networkClassesClient = ncClient
 
 			key := types.NamespacedName{Name: pool.Name, Namespace: pool.Namespace}
-			_, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
-			Expect(err).NotTo(HaveOccurred())
+			result, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			Expect(err).To(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
 
 			updated := &osacv1alpha1.ExternalIPPool{}
 			Expect(fakeClient.Get(testCtx, key, updated)).To(Succeed())
@@ -629,8 +630,9 @@ var _ = Describe("ExternalIPPoolReconciler", func() {
 			reconciler.networkClassesClient = ncClient
 
 			key := types.NamespacedName{Name: pool.Name, Namespace: pool.Namespace}
-			_, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
-			Expect(err).NotTo(HaveOccurred())
+			result, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			Expect(err).To(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
 
 			updated := &osacv1alpha1.ExternalIPPool{}
 			Expect(fakeClient.Get(testCtx, key, updated)).To(Succeed())

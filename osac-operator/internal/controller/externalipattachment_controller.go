@@ -269,8 +269,10 @@ func (r *ExternalIPAttachmentReconciler) handleUpdate(ctx context.Context, attac
 	if implementationStrategy == "" {
 		setReadyConditionBlocked(&attachment.Status.Conditions, v1alpha1.ReasonNoManagerConfigured,
 			conditionMessageNoManagerConfigured)
-		log.Info("implementation strategy not resolved, requeueing", "externalIPAttachment", attachment.Name)
-		return ctrl.Result{RequeueAfter: defaultPreconditionRequeueInterval}, nil
+		log.Info("implementation strategy not resolved", "externalIPAttachment", attachment.Name)
+		return ctrl.Result{}, fmt.Errorf(
+			"cannot reconcile ExternalIPAttachment %q: no fabric manager is configured for NetworkClass %q",
+			attachment.Name, networkClassID)
 	}
 
 	// BMI DNAT precondition: wait for primary IP to be discovered

@@ -198,8 +198,10 @@ func (r *ExternalIPPoolReconciler) handleUpdate(ctx context.Context, pool *v1alp
 	if implementationStrategy == "" {
 		setReadyConditionBlocked(&pool.Status.Conditions, v1alpha1.ReasonNoManagerConfigured,
 			conditionMessageNoManagerConfigured)
-		log.Info("implementation strategy not resolved, requeueing", "externalIPPool", pool.Name)
-		return ctrl.Result{RequeueAfter: defaultPreconditionRequeueInterval}, nil
+		log.Info("implementation strategy not resolved", "externalIPPool", pool.Name)
+		return ctrl.Result{}, fmt.Errorf(
+			"cannot reconcile ExternalIPPool %q: no fabric manager is configured for NetworkClass %q",
+			pool.Name, networkClassID)
 	}
 
 	// Stamp the implementation-strategy annotation so AAP playbooks can read it
