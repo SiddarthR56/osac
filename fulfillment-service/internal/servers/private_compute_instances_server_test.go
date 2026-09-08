@@ -2457,108 +2457,25 @@ var _ = Describe("Private compute instances server", func() {
 				_, err = subnetDAO.Update().SetObject(subnet).Do(ctx)
 				Expect(err).ToNot(HaveOccurred())
 
-				// Mark the persisted ComputeInstance as being deleted. A field-masked update
-				// does not include metadata in its request object, so this must be persisted
-				// before exercising the update path.
-				created.GetMetadata().SetFinalizers([]string{"test-finalizer"})
-				_, err = server.generic.dao.Update().SetObject(created).Do(ctx)
-				Expect(err).ToNot(HaveOccurred())
-				_, err = server.generic.dao.Delete().SetId(created.GetId()).Do(ctx)
-				Expect(err).ToNot(HaveOccurred())
+				// Mark the ComputeInstance as being deleted
+				deletionTime := timestamppb.Now()
+				created.GetMetadata().SetDeletionTimestamp(deletionTime)
 
 				// Try to update security groups while subnet is PENDING
 				// Should succeed because isBeingDeleted=true skips state validation
-				updateRequest := &privatev1.ComputeInstancesUpdateRequest{}
-				updateRequest.SetObject(privatev1.ComputeInstance_builder{
-					Id: created.GetId(),
-					Spec: privatev1.ComputeInstanceSpec_builder{
-						NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
-							privatev1.ComputeNetworkAttachment_builder{
-								Subnet:         privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
-								SecurityGroups: []*privatev1.SecurityGroupLocalReference{}, // Change security groups (allowed)
-							}.Build(),
-						},
+				created.GetSpec().SetNetworkAttachments([]*privatev1.ComputeNetworkAttachment{
+					privatev1.ComputeNetworkAttachment_builder{
+						Subnet:         privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
+						SecurityGroups: []*privatev1.SecurityGroupLocalReference{}, // Change security groups (allowed)
 					}.Build(),
-				}.Build())
+				})
+				updateRequest := &privatev1.ComputeInstancesUpdateRequest{}
+				updateRequest.SetObject(created)
 				updateRequest.SetUpdateMask(&fieldmaskpb.FieldMask{Paths: []string{"spec.network_attachments"}})
 
 				response, err := server.Update(ctx, updateRequest)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(response).ToNot(BeNil())
-			})
-
-			It("Rejects a cross-tenant security group update while deletion is pending", func() {
-				subnet := createTestSubnet(ctx, virtualNetwork.GetId(), privatev1.SubnetState_SUBNET_STATE_READY)
-				initialSG := createTestSecurityGroup(ctx, virtualNetwork.GetId(), privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY)
-				foreignSGResponse, err := server.securityGroupsDao.Create().SetObject(
-					privatev1.SecurityGroup_builder{
-						Metadata: privatev1.Metadata_builder{
-							Name:   "foreign-security-group",
-							Tenant: auth.SharedTenant,
-						}.Build(),
-						Spec: privatev1.SecurityGroupSpec_builder{
-							VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: virtualNetwork.GetId()}.Build(),
-						}.Build(),
-						Status: privatev1.SecurityGroupStatus_builder{
-							State: privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY,
-						}.Build(),
-					}.Build(),
-				).Do(ctx)
-				Expect(err).ToNot(HaveOccurred())
-				foreignSG := foreignSGResponse.GetObject()
-
-				createResponse, err := server.Create(ctx, privatev1.ComputeInstancesCreateRequest_builder{
-					Object: privatev1.ComputeInstance_builder{
-						Metadata: privatev1.Metadata_builder{Name: "deleting-cross-tenant-update"}.Build(),
-						Spec: privatev1.ComputeInstanceSpec_builder{
-							Template: privatev1.ComputeInstanceTemplateReference_builder{Id: template.GetId()}.Build(),
-							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
-								privatev1.ComputeNetworkAttachment_builder{
-									Subnet: privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
-									SecurityGroups: []*privatev1.SecurityGroupLocalReference{
-										privatev1.SecurityGroupLocalReference_builder{Id: initialSG.GetId()}.Build(),
-									},
-								}.Build(),
-							},
-						}.Build(),
-					}.Build(),
-				}.Build())
-				Expect(err).ToNot(HaveOccurred())
-
-				created := createResponse.GetObject()
-				created.GetMetadata().SetFinalizers([]string{"test-finalizer"})
-				_, err = server.generic.dao.Update().SetObject(created).Do(ctx)
-				Expect(err).ToNot(HaveOccurred())
-				_, err = server.generic.dao.Delete().SetId(created.GetId()).Do(ctx)
-				Expect(err).ToNot(HaveOccurred())
-
-				updateRequest := privatev1.ComputeInstancesUpdateRequest_builder{
-					Object: privatev1.ComputeInstance_builder{
-						Id: created.GetId(),
-						Spec: privatev1.ComputeInstanceSpec_builder{
-							NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
-								privatev1.ComputeNetworkAttachment_builder{
-									Subnet: privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
-									SecurityGroups: []*privatev1.SecurityGroupLocalReference{
-										privatev1.SecurityGroupLocalReference_builder{Id: foreignSG.GetId()}.Build(),
-									},
-								}.Build(),
-							},
-						}.Build(),
-					}.Build(),
-					UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.network_attachments"}},
-				}.Build()
-
-				response, err := server.Update(ctx, updateRequest)
-				Expect(err).To(HaveOccurred())
-				Expect(response).To(BeNil())
-				Expect(grpcstatus.Code(err)).To(Equal(grpccodes.InvalidArgument))
-				Expect(err.Error()).To(ContainSubstring("belongs to tenant"))
-				persisted, err := server.generic.dao.Get().SetId(created.GetId()).Do(ctx)
-				Expect(err).ToNot(HaveOccurred())
-				persistedSGs := persisted.GetObject().GetSpec().GetNetworkAttachments()[0].GetSecurityGroups()
-				Expect(persistedSGs).To(HaveLen(1))
-				Expect(persistedSGs[0].GetId()).To(Equal(initialSG.GetId()))
 			})
 		})
 

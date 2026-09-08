@@ -213,7 +213,6 @@ func (s *PrivateNATGatewaysServer) Create(ctx context.Context,
 	if err = validateTenantMatch(natTenant, virtualNetworkResponse.GetObject(), "VirtualNetwork", virtualNetworkKey); err != nil {
 		return
 	}
-
 	err = s.validateNetworkClassHasFabricManager(ctx, refKey(natGateway.GetSpec().GetVirtualNetwork()))
 	if err != nil {
 		return

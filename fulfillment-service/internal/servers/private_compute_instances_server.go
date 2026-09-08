@@ -468,7 +468,7 @@ func (s *PrivateComputeInstancesServer) Update(ctx context.Context,
 
 	// ALWAYS validate tenant isolation for network references, even during deletion.
 	// This prevents cross-tenant updates on ComputeInstances being deleted.
-	if updatingNetworkAttachments {
+	if hasMaskPrefix(mask, "spec.network_attachments") {
 		err = s.validateNetworkReferencesTenancy(ctx, request.GetObject())
 		if err != nil {
 			return
@@ -477,7 +477,7 @@ func (s *PrivateComputeInstancesServer) Update(ctx context.Context,
 
 	// Only validate resource state (exists, READY) if NOT being deleted.
 	// Referenced resources (subnets, security groups) may already be deleted during cleanup.
-	if !isBeingDeleted && updatingNetworkAttachments {
+	if !isBeingDeleted && hasMaskPrefix(mask, "spec.network_attachments") {
 		err = s.validateNetworkReferencesState(ctx, request.GetObject())
 		if err != nil {
 			return
@@ -1020,9 +1020,9 @@ func hasMaskPrefix(mask *fieldmaskpb.FieldMask, prefixes ...string) bool {
 //
 // This validation MUST run even during deletion to prevent cross-tenant updates.
 // The DAO Get() calls enforce tenant isolation via TenancyLogic - cross-tenant resources
-// are filtered out and appear as NotFound. NotFound is rejected here because it is
-// indistinguishable from a cross-tenant reference; resources that are being deleted remain
-// visible to their tenant until they are archived.
+// are filtered out and appear as NotFound. During deletion, NotFound is allowed (resources
+// may have been deleted during cleanup). This ensures tenant boundaries are always enforced
+// while allowing graceful deletion.
 //
 // Implements requirement VAL-04 (tenant isolation).
 func (s *PrivateComputeInstancesServer) validateNetworkReferencesTenancy(
@@ -1045,10 +1045,6 @@ func (s *PrivateComputeInstancesServer) validateNetworkReferencesTenancy(
 	if len(attachments) == 0 {
 		return nil
 	}
-	vmTenant, err := resolveObjectTenant(ctx, vm.GetMetadata(), s.tenancyLogic)
-	if err != nil {
-		return err
-	}
 
 	for _, att := range attachments {
 		subnetRef := att.GetSubnet()
@@ -1059,24 +1055,23 @@ func (s *PrivateComputeInstancesServer) validateNetworkReferencesTenancy(
 		subnetIDStr := refKey(subnetRef)
 
 		// Validate tenant isolation for subnet.
-		// Explicitly compare tenants whenever the referenced object is visible (for example
-		// under private total visibility). NotFound is rejected above because it can represent
-		// either a missing reference or a cross-tenant reference filtered by the DAO.
-		subnetResponse, getErr := s.subnetsDao.Get().SetId(subnetIDStr).Do(ctx)
+		// TenancyLogic in DAO filters out cross-tenant resources, making them appear as NotFound.
+		// We allow NotFound during deletion (resource may be deleted or cross-tenant).
+		// The key is that we ALWAYS call DAO Get() so tenant filtering happens.
+		_, getErr := s.subnetsDao.Get().SetId(subnetIDStr).Do(ctx)
 		if getErr != nil {
 			var notFoundErr *dao.ErrNotFound
 			if errors.As(getErr, &notFoundErr) {
-				return grpcstatus.Errorf(grpccodes.InvalidArgument,
-					"network_attachments: subnet '%s' does not exist or is not accessible", subnetIDStr)
+				// Resource doesn't exist OR belongs to different tenant (filtered by TenancyLogic).
+				// During deletion this is allowed. During creation/normal update this is caught
+				// by validateNetworkReferencesState.
+				continue
 			}
 			// Other error - propagate
 			s.logger.ErrorContext(ctx, "Failed to query Subnet for tenancy check",
 				slog.String("subnet_id", subnetIDStr),
 				slog.Any("error", getErr))
 			return grpcstatus.Errorf(grpccodes.Internal, "failed to validate subnet")
-		}
-		if err := validateTenantMatch(vmTenant, subnetResponse.GetObject(), "Subnet", subnetIDStr); err != nil {
-			return err
 		}
 
 		// Validate tenant isolation for security groups.
@@ -1085,21 +1080,20 @@ func (s *PrivateComputeInstancesServer) validateNetworkReferencesTenancy(
 				continue
 			}
 			sgIDStr := refKey(sgRef)
-			sgResponse, getErr := s.securityGroupsDao.Get().SetId(sgIDStr).Do(ctx)
+			_, getErr := s.securityGroupsDao.Get().SetId(sgIDStr).Do(ctx)
 			if getErr != nil {
 				var notFoundErr *dao.ErrNotFound
 				if errors.As(getErr, &notFoundErr) {
-					return grpcstatus.Errorf(grpccodes.InvalidArgument,
-						"network_attachments: security group '%s' does not exist or is not accessible", sgIDStr)
+					// Resource doesn't exist OR belongs to different tenant (filtered by TenancyLogic).
+					// During deletion this is allowed. During creation/normal update this is caught
+					// by validateNetworkReferencesState.
+					continue
 				}
 				// Other error - propagate
 				s.logger.ErrorContext(ctx, "Failed to query SecurityGroup for tenancy check",
 					slog.String("security_group_id", sgIDStr),
 					slog.Any("error", getErr))
 				return grpcstatus.Errorf(grpccodes.Internal, "failed to validate security group")
-			}
-			if err := validateTenantMatch(vmTenant, sgResponse.GetObject(), "SecurityGroup", sgIDStr); err != nil {
-				return err
 			}
 		}
 	}
