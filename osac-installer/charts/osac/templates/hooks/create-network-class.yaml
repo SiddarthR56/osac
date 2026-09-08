@@ -1,27 +1,46 @@
-{{- if .Values.networkClass.enabled }}
+{{- $global := .Values.global | default dict -}}
+{{- $globalFabricManager := $global.fabricManager | default dict -}}
+{{- $netris := $globalFabricManager.netris | default dict -}}
+{{- $netrisEnabled := $netris.enabled | default false -}}
+{{- $networkClass := deepCopy .Values.networkClass -}}
+{{- if and (not $netrisEnabled) $networkClass.enabled (not $networkClass.fabricManager) (not $networkClass.k8sManager) }}
+{{- $_ := set $networkClass "fabricManager" "cudn_net" -}}
+{{- end }}
+{{- if $netrisEnabled }}
+{{- $_ := set $networkClass "enabled" true -}}
+{{- $_ := set $networkClass "fabricManager" "netris" -}}
+{{- $_ := set $networkClass "k8sManager" "" -}}
+{{- end }}
+{{- if and (eq $networkClass.fabricManager "netris") (eq $networkClass.title "CUDN Network Implementation") }}
+{{- $_ := set $networkClass "title" "Netris Network Implementation" -}}
+{{- if contains "ClusterUserDefinedNetwork (CUDN)" $networkClass.description }}
+{{- $_ := set $networkClass "description" "Provisions networking resources using the Netris SDN controller." -}}
+{{- end }}
+{{- end }}
+{{- if $networkClass.enabled }}
 {{- $egressRules := list -}}
-{{- range .Values.networkClass.defaults.egressRules }}
+{{- range $networkClass.defaults.egressRules }}
 {{- $rule := dict "protocol" .protocol -}}
 {{- if .ipv4Cidr }}{{ $_ := set $rule "ipv4_cidr" .ipv4Cidr }}{{ end -}}
 {{- if .ipv6Cidr }}{{ $_ := set $rule "ipv6_cidr" .ipv6Cidr }}{{ end -}}
-{{- if .portFrom }}{{ $_ := set $rule "port_from" .portFrom }}{{ end -}}
-{{- if .portTo }}{{ $_ := set $rule "port_to" .portTo }}{{ end -}}
+{{- if hasKey . "portFrom" }}{{ $_ := set $rule "port_from" .portFrom }}{{ end -}}
+{{- if hasKey . "portTo" }}{{ $_ := set $rule "port_to" .portTo }}{{ end -}}
 {{- $egressRules = append $egressRules $rule -}}
 {{- end }}
-{{- $identity := .Values.networkClass.fabricManager | default .Values.networkClass.k8sManager -}}
 {{- $body := dict
-      "title" (required "networkClass.title is required when networkClass.enabled is true" .Values.networkClass.title)
-      "is_default" .Values.networkClass.isDefault
+      "title" (required "networkClass.title is required when networkClass.enabled is true" $networkClass.title)
+      "is_default" $networkClass.isDefault
       "spec" (dict "defaults" (dict
-        "virtual_network_ipv4_cidr" .Values.networkClass.defaults.virtualNetworkIPv4CIDR
-        "subnet_ipv4_cidr" .Values.networkClass.defaults.subnetIPv4CIDR
-        "enable_nat_gateway" .Values.networkClass.defaults.enableNatGateway
+        "virtual_network_ipv4_cidr" $networkClass.defaults.virtualNetworkIPv4CIDR
+        "subnet_ipv4_cidr" $networkClass.defaults.subnetIPv4CIDR
+        "enable_nat_gateway" $networkClass.defaults.enableNatGateway
         "egress_rules" $egressRules
       ))
     -}}
-{{- if .Values.networkClass.description }}{{ $_ := set $body "description" .Values.networkClass.description }}{{ end -}}
-{{- if .Values.networkClass.k8sManager }}{{ $_ := set $body "k8s_manager" .Values.networkClass.k8sManager }}{{ end -}}
-{{- if .Values.networkClass.fabricManager }}{{ $_ := set $body "fabric_manager" .Values.networkClass.fabricManager }}{{ end -}}
+{{- if $networkClass.description }}{{ $_ := set $body "description" $networkClass.description }}{{ end -}}
+{{- if $networkClass.k8sManager }}{{ $_ := set $body "k8s_manager" $networkClass.k8sManager }}{{ end -}}
+{{- if $networkClass.fabricManager }}{{ $_ := set $body "fabric_manager" $networkClass.fabricManager }}{{ end -}}
+{{- $identity := $networkClass.fabricManager | default $networkClass.k8sManager -}}
 apiVersion: batch/v1
 kind: Job
 metadata:

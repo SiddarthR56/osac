@@ -39,11 +39,15 @@ operator:
   - name: shared
   - name: osac-e2e-ci
   networkManagers:
+    # Expert mode is intentional for this CI profile: its Netris credentials
+    # are injected outside this values file. Move those credentials to
+    # global.fabricManager.netris before enabling the declarative path here.
     fabricManagers:
       netris:
         enabled: true
         description: "Netris SDN fabric manager"
-        capabilities: "ipv4"
+        capabilities:
+        - ipv4
 
 # --- Fulfillment Service ---
 service:

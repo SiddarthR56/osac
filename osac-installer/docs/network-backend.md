@@ -1,17 +1,48 @@
 # Network Backend Configuration
 
 The network backend controls how hosted clusters get their networking
-infrastructure (server clusters, NAT, DNS, MetalLB). The backend is selected by
-the `NETWORK_CLASS` environment variable.
+infrastructure (server clusters, NAT, DNS, MetalLB). New deployments should
+enable a fabric manager through `global.fabricManager`; the chart
+derives the operator manager registration, default NetworkClass routing, and
+AAP environment variables from that configuration.
 
 For general AAP configuration see [AAP Configuration](aap-configuration.md).
 
 ## Supported Backends
 
-| `NETWORK_CLASS` | `NETWORK_STEPS_COLLECTION` | Description |
+| Configuration | AAP backend | Description |
 |-----------------|---------------------------|-------------|
-| `esi` (default) | `osac.steps` | ESI (Elastic System Infrastructure) |
-| `netris` | `netris.steps` | Netris controller API |
+| `global.fabricManager.netris.enabled: true` | `NETWORK_CLASS=netris`, `NETWORK_STEPS_COLLECTION=netris.steps` | Netris controller API and fabric manager |
+
+When Netris is disabled, the expert interface described below remains
+available. In expert mode, the operator manager maps, NetworkClass values, and
+AAP instance-group environment variables are configured independently.
+
+## Declarative configuration
+
+The following is the user-facing shape. Keep the password in a local values
+file or another secret-management workflow rather than committing it:
+
+```yaml
+global:
+  fabricManager:
+    netris:
+      enabled: true
+      capabilities: [ipv4]
+      capabilitiesSyncInterval: 5m
+      credentials:
+        controllerURL: https://netris.example.com
+        username: my-netris-user
+        password: <local secret>
+        siteID: "5"
+        tenantID: "1"
+        tenantName: Admin
+```
+
+When `fabricManager.netris.enabled` is true, Helm registers the `netris`
+fabric manager, creates the default NetworkClass routed to it, enables both
+Netris AAP instance groups, and writes the six Netris values to both groups.
+The low-level values remain available when it is false for advanced deployments.
 
 ## Netris Configuration
 
@@ -71,47 +102,50 @@ lists the data-plane NIC names.
 
 ## Helm Chart Configuration
 
-Netris configuration is provided via Helm values. Two values sections control
-the fulfillment instance groups:
+Netris configuration is provided via Helm values. The following is the
+expert-only form for deployments that leave
+`global.fabricManager.netris.enabled` false. Prefer the declarative block above
+for new deployments; it derives these values and enables both groups.
 
 ### Enabling the Instance Groups
 
 In your environment values file (e.g., `values/dev/instance.yaml`):
 
 ```yaml
-clusterFulfillment:
-  enabled: true
-  config:
-    NETWORK_CLASS: "netris"
-    NETWORK_STEPS_COLLECTION: "netris.steps"
-    NETRIS_CONTROLLER_URL: "https://redhat-ctl.netris.io"
-    NETRIS_USERNAME: "netris"
-    NETRIS_SITE_ID: "5"
-    NETRIS_TENANT_ID: "1"
-    NETRIS_TENANT_NAME: "Admin"
-    NETRIS_MGMT_VPC_ID: "4"
-    NETRIS_MGMT_VPC_NAME: "RH-Infra"
-    NETRIS_RESOURCE_CLASS_MAP: '{"fc430": {"server_cluster_template_id": 89, "mgmt_interface": "ens4", "vpc_interfaces": ["ens13"]}}'
-    SERVER_SSH_BASTION_HOST: "redhat-ctl.netris.io"
-    SERVER_SSH_BASTION_USER: "ubuntu"
-    SERVER_SSH_USER: "core"
-    SERVER_MGMT_ROUTE_DESTINATION: "10.8.0.0/30"
-    SERVER_MGMT_ROUTE_GATEWAY: "192.168.16.1"
-    EXTERNAL_ACCESS_BASE_DOMAIN: "box.massopen.cloud"
-    EXTERNAL_ACCESS_SUPPORTED_BASE_DOMAINS: "box.massopen.cloud"
-    EXTERNAL_ACCESS_API_INTERNAL_NETWORK: "hypershift"
-    HOSTED_CLUSTER_BASE_DOMAIN: "box.massopen.cloud"
-    HOSTED_CLUSTER_CONTROLLER_AVAILABILITY_POLICY: "HighlyAvailable"
-    HOSTED_CLUSTER_INFRASTRUCTURE_AVAILABILITY_POLICY: "HighlyAvailable"
-
-networkFulfillment:
-  enabled: true
-  config:
-    NETRIS_CONTROLLER_URL: "https://redhat-ctl.netris.io"
-    NETRIS_USERNAME: "netris"
-    NETRIS_SITE_ID: "5"
-    NETRIS_TENANT_ID: "1"
-    NETRIS_TENANT_NAME: "Admin"
+aap:
+  instanceGroups:
+    clusterFulfillment:
+      enabled: true
+      config:
+        NETWORK_CLASS: "netris"
+        NETWORK_STEPS_COLLECTION: "netris.steps"
+        NETRIS_CONTROLLER_URL: "https://redhat-ctl.netris.io"
+        NETRIS_USERNAME: "netris"
+        NETRIS_SITE_ID: "5"
+        NETRIS_TENANT_ID: "1"
+        NETRIS_TENANT_NAME: "Admin"
+        NETRIS_MGMT_VPC_ID: "4"
+        NETRIS_MGMT_VPC_NAME: "RH-Infra"
+        NETRIS_RESOURCE_CLASS_MAP: '{"fc430": {"server_cluster_template_id": 89, "mgmt_interface": "ens4", "vpc_interfaces": ["ens13"]}}'
+        SERVER_SSH_BASTION_HOST: "redhat-ctl.netris.io"
+        SERVER_SSH_BASTION_USER: "ubuntu"
+        SERVER_SSH_USER: "core"
+        SERVER_MGMT_ROUTE_DESTINATION: "10.8.0.0/30"
+        SERVER_MGMT_ROUTE_GATEWAY: "192.168.16.1"
+        EXTERNAL_ACCESS_BASE_DOMAIN: "box.massopen.cloud"
+        EXTERNAL_ACCESS_SUPPORTED_BASE_DOMAINS: "box.massopen.cloud"
+        EXTERNAL_ACCESS_API_INTERNAL_NETWORK: "hypershift"
+        HOSTED_CLUSTER_BASE_DOMAIN: "box.massopen.cloud"
+        HOSTED_CLUSTER_CONTROLLER_AVAILABILITY_POLICY: "HighlyAvailable"
+        HOSTED_CLUSTER_INFRASTRUCTURE_AVAILABILITY_POLICY: "HighlyAvailable"
+    networkFulfillment:
+      enabled: true
+      config:
+        NETRIS_CONTROLLER_URL: "https://redhat-ctl.netris.io"
+        NETRIS_USERNAME: "netris"
+        NETRIS_SITE_ID: "5"
+        NETRIS_TENANT_ID: "1"
+        NETRIS_TENANT_NAME: "Admin"
 ```
 
 Only non-empty values are rendered into the ConfigMap. Keys left as `""` are
@@ -124,17 +158,18 @@ Create a separate secrets values file that is **not committed to git**
 
 ```yaml
 # values/development-secrets.local.yaml
-clusterFulfillment:
-  secret:
-    NETRIS_PASSWORD: "my-netris-password"
-    AWS_ACCESS_KEY_ID: "AKIA..."
-    AWS_SECRET_ACCESS_KEY: "..."
-    SERVER_SSH_KEY: "<contents of ~/.ssh/id_rsa>"
-    SERVER_SSH_BASTION_KEY: "<contents of ~/.ssh/id_ed25519>"
-
-networkFulfillment:
-  secret:
-    NETRIS_PASSWORD: "my-netris-password"
+aap:
+  instanceGroups:
+    clusterFulfillment:
+      secret:
+        NETRIS_PASSWORD: "my-netris-password"
+        AWS_ACCESS_KEY_ID: "AKIA..."
+        AWS_SECRET_ACCESS_KEY: "..."
+        SERVER_SSH_KEY: "<contents of ~/.ssh/id_rsa>"
+        SERVER_SSH_BASTION_KEY: "<contents of ~/.ssh/id_ed25519>"
+    networkFulfillment:
+      secret:
+        NETRIS_PASSWORD: "my-netris-password"
 ```
 
 Pass both files when deploying — Helm deep-merges them:
@@ -150,6 +185,6 @@ Alternatively, pass secrets directly on the command line:
 
 ```bash
 helm install osac charts/osac -f values/dev/instance.yaml \
-  --set clusterFulfillment.secret.NETRIS_PASSWORD=mypass \
-  --set networkFulfillment.secret.NETRIS_PASSWORD=mypass
+  --set aap.instanceGroups.clusterFulfillment.secret.NETRIS_PASSWORD=mypass \
+  --set aap.instanceGroups.networkFulfillment.secret.NETRIS_PASSWORD=mypass
 ```

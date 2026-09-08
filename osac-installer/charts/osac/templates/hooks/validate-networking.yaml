@@ -1,0 +1,83 @@
+{{- $global := .Values.global | default dict -}}
+{{- $globalFabricManager := $global.fabricManager | default dict -}}
+{{- $netris := $globalFabricManager.netris | default dict -}}
+{{- $netrisEnabled := $netris.enabled | default false -}}
+{{- $networkClass := .Values.networkClass | default dict -}}
+{{- $operator := .Values.operator | default dict -}}
+{{- $rawNetworkManagers := $operator.networkManagers | default dict -}}
+{{- $rawFabricManagers := $rawNetworkManagers.fabricManagers | default dict -}}
+{{- if $netrisEnabled -}}
+  {{- $credentials := $netris.credentials | default dict -}}
+  {{- range $field := list "controllerURL" "username" "password" "siteID" "tenantID" "tenantName" -}}
+    {{- if not (get $credentials $field | default "") -}}
+      {{- fail (printf "global.fabricManager.netris.credentials.%s is required when global.fabricManager.netris.enabled is true" $field) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if $networkClass.k8sManager -}}
+    {{- fail "networkClass.k8sManager cannot be set when global.fabricManager.netris.enabled is true; Netris owns the default NetworkClass" -}}
+  {{- end -}}
+  {{- if and $networkClass.fabricManager (ne $networkClass.fabricManager "netris") -}}
+    {{- fail (printf "networkClass.fabricManager %q conflicts with global.fabricManager.netris.enabled; use netris or leave it empty" $networkClass.fabricManager) -}}
+  {{- end -}}
+  {{- $rawNetris := get $rawFabricManagers "netris" | default dict -}}
+  {{- if $rawNetris.enabled -}}
+    {{- fail "operator.networkManagers.fabricManagers.netris.enabled cannot be used with global.fabricManager.netris.enabled; configure Netris only under global.fabricManager.netris" -}}
+  {{- end -}}
+  {{- $cluster := .Values.aap.instanceGroups.clusterFulfillment | default dict -}}
+  {{- $network := .Values.aap.instanceGroups.networkFulfillment | default dict -}}
+  {{- $clusterConfig := $cluster.config | default dict -}}
+  {{- $networkConfig := $network.config | default dict -}}
+  {{- $clusterSecret := $cluster.secret | default dict -}}
+  {{- $networkSecret := $network.secret | default dict -}}
+  {{- range $key := list "NETWORK_CLASS" "NETWORK_STEPS_COLLECTION" "NETRIS_CONTROLLER_URL" "NETRIS_USERNAME" "NETRIS_SITE_ID" "NETRIS_TENANT_ID" "NETRIS_TENANT_NAME" -}}
+    {{- if get $clusterConfig $key | default "" -}}
+      {{- fail (printf "aap.instanceGroups.clusterFulfillment.config.%s must be empty when global.fabricManager.netris.enabled is true; configure it under global.fabricManager.netris instead" $key) -}}
+    {{- end -}}
+    {{- if get $networkConfig $key | default "" -}}
+      {{- fail (printf "aap.instanceGroups.networkFulfillment.config.%s must be empty when global.fabricManager.netris.enabled is true; configure it under global.fabricManager.netris instead" $key) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if get $clusterSecret "NETRIS_PASSWORD" | default "" -}}
+    {{- fail "aap.instanceGroups.clusterFulfillment.secret.NETRIS_PASSWORD must be empty when global.fabricManager.netris.enabled is true; configure it under global.fabricManager.netris.credentials instead" -}}
+  {{- end -}}
+  {{- if get $networkSecret "NETRIS_PASSWORD" | default "" -}}
+    {{- fail "aap.instanceGroups.networkFulfillment.secret.NETRIS_PASSWORD must be empty when global.fabricManager.netris.enabled is true; configure it under global.fabricManager.netris.credentials instead" -}}
+  {{- end -}}
+{{- end -}}
+{{- if not $netrisEnabled -}}
+  {{- $cluster := .Values.aap.instanceGroups.clusterFulfillment | default dict -}}
+  {{- $network := .Values.aap.instanceGroups.networkFulfillment | default dict -}}
+  {{- $clusterConfig := $cluster.config | default dict -}}
+  {{- $networkConfig := $network.config | default dict -}}
+  {{- $clusterSecret := $cluster.secret | default dict -}}
+  {{- $networkSecret := $network.secret | default dict -}}
+  {{- $sharedConfigKeys := list "NETRIS_CONTROLLER_URL" "NETRIS_USERNAME" "NETRIS_SITE_ID" "NETRIS_TENANT_ID" "NETRIS_TENANT_NAME" -}}
+  {{- range $key := $sharedConfigKeys -}}
+    {{- $clusterValue := get $clusterConfig $key | default "" -}}
+    {{- $networkValue := get $networkConfig $key | default "" -}}
+    {{- if ne $clusterValue $networkValue -}}
+      {{- fail (printf "aap.instanceGroups.clusterFulfillment.config and aap.instanceGroups.networkFulfillment.config must use the same %s" $key) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $clusterPassword := get $clusterSecret "NETRIS_PASSWORD" | default "" -}}
+  {{- $networkPassword := get $networkSecret "NETRIS_PASSWORD" | default "" -}}
+  {{- if ne $clusterPassword $networkPassword -}}
+    {{- fail "aap.instanceGroups.clusterFulfillment.secret.NETRIS_PASSWORD and networkFulfillment.secret.NETRIS_PASSWORD must match" -}}
+  {{- end -}}
+  {{- $clusterNetworkClass := get $clusterConfig "NETWORK_CLASS" | default "" -}}
+  {{- $clusterNetworkSteps := get $clusterConfig "NETWORK_STEPS_COLLECTION" | default "" -}}
+  {{- if and $clusterNetworkClass (eq $clusterNetworkClass "netris") (ne $clusterNetworkSteps "netris.steps") -}}
+    {{- fail "aap.instanceGroups.clusterFulfillment.config.NETWORK_CLASS=netris requires NETWORK_STEPS_COLLECTION=netris.steps" -}}
+  {{- end -}}
+  {{- if and $clusterNetworkClass (eq $clusterNetworkClass "agentless_net") (ne $clusterNetworkSteps "agentless_net.steps") -}}
+    {{- fail "aap.instanceGroups.clusterFulfillment.config.NETWORK_CLASS=agentless_net requires NETWORK_STEPS_COLLECTION=agentless_net.steps" -}}
+  {{- end -}}
+  {{- if and $clusterNetworkSteps (not $clusterNetworkClass) (ne $clusterNetworkSteps "ci.steps") -}}
+    {{- fail "aap.instanceGroups.clusterFulfillment.config.NETWORK_STEPS_COLLECTION requires a matching NETWORK_CLASS (or the ci.steps compatibility value)" -}}
+  {{- end -}}
+{{- end -}}
+{{- range $rule := (.Values.networkClass.defaults.egressRules | default (list)) -}}
+  {{- if and (hasKey $rule "portFrom") (hasKey $rule "portTo") (gt $rule.portFrom $rule.portTo) -}}
+    {{- fail (printf "networkClass.defaults.egressRules has portFrom %d greater than portTo %d" $rule.portFrom $rule.portTo) -}}
+  {{- end -}}
+{{- end -}}

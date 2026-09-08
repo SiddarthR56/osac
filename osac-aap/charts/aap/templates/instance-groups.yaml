@@ -1,4 +1,31 @@
-{{- if .Values.instanceGroups.clusterFulfillment.enabled }}
+{{- $global := .Values.global | default dict }}
+{{- $globalFabricManager := $global.fabricManager | default dict }}
+{{- $netris := $globalFabricManager.netris | default dict }}
+{{- $autoNetris := $netris.enabled | default false }}
+{{- $clusterFulfillmentEnabled := or .Values.instanceGroups.clusterFulfillment.enabled $autoNetris }}
+{{- $networkFulfillmentEnabled := or .Values.instanceGroups.networkFulfillment.enabled $autoNetris }}
+{{- $clusterConfig := deepCopy (.Values.instanceGroups.clusterFulfillment.config | default dict) }}
+{{- $clusterSecret := deepCopy (.Values.instanceGroups.clusterFulfillment.secret | default dict) }}
+{{- $networkConfig := deepCopy (.Values.instanceGroups.networkFulfillment.config | default dict) }}
+{{- $networkSecret := deepCopy (.Values.instanceGroups.networkFulfillment.secret | default dict) }}
+{{- if $autoNetris }}
+{{- $credentials := $netris.credentials | default dict }}
+{{- $_ := set $clusterConfig "NETWORK_CLASS" "netris" }}
+{{- $_ := set $clusterConfig "NETWORK_STEPS_COLLECTION" "netris.steps" }}
+{{- $_ := set $clusterConfig "NETRIS_CONTROLLER_URL" $credentials.controllerURL }}
+{{- $_ := set $clusterConfig "NETRIS_USERNAME" $credentials.username }}
+{{- $_ := set $clusterConfig "NETRIS_SITE_ID" $credentials.siteID }}
+{{- $_ := set $clusterConfig "NETRIS_TENANT_ID" $credentials.tenantID }}
+{{- $_ := set $clusterConfig "NETRIS_TENANT_NAME" $credentials.tenantName }}
+{{- $_ := set $clusterSecret "NETRIS_PASSWORD" $credentials.password }}
+{{- $_ := set $networkConfig "NETRIS_CONTROLLER_URL" $credentials.controllerURL }}
+{{- $_ := set $networkConfig "NETRIS_USERNAME" $credentials.username }}
+{{- $_ := set $networkConfig "NETRIS_SITE_ID" $credentials.siteID }}
+{{- $_ := set $networkConfig "NETRIS_TENANT_ID" $credentials.tenantID }}
+{{- $_ := set $networkConfig "NETRIS_TENANT_NAME" $credentials.tenantName }}
+{{- $_ := set $networkSecret "NETRIS_PASSWORD" $credentials.password }}
+{{- end }}
+{{- if $clusterFulfillmentEnabled }}
 {{- $ingress := lookup "config.openshift.io/v1" "Ingress" "" "cluster" }}
 {{- $ingressDomain := "" }}
 {{- if $ingress }}{{- $ingressDomain = $ingress.spec.domain | default "" }}{{- end }}
@@ -15,12 +42,12 @@ metadata:
     {{- include "osac-aap.labels" . | nindent 4 }}
     osac.openshift.io/project: osac-aap
 data:
-  {{- range $key, $val := .Values.instanceGroups.clusterFulfillment.config }}
+  {{- range $key, $val := $clusterConfig }}
   {{- if and $val (ne $key "HOSTED_CLUSTER_BASE_DOMAIN") }}
   {{ $key }}: {{ $val | quote }}
   {{- end }}
   {{- end }}
-  HOSTED_CLUSTER_BASE_DOMAIN: {{ .Values.instanceGroups.clusterFulfillment.config.HOSTED_CLUSTER_BASE_DOMAIN | default $baseDomain | quote }}
+  HOSTED_CLUSTER_BASE_DOMAIN: {{ $clusterConfig.HOSTED_CLUSTER_BASE_DOMAIN | default $baseDomain | quote }}
 ---
 apiVersion: v1
 kind: Secret
@@ -32,7 +59,7 @@ metadata:
     osac.openshift.io/project: osac-aap
 type: Opaque
 data:
-  {{- range $key, $val := .Values.instanceGroups.clusterFulfillment.secret }}
+  {{- range $key, $val := $clusterSecret }}
   {{- if $val }}
   {{ $key }}: {{ $val | b64enc | quote }}
   {{- end }}
@@ -60,7 +87,7 @@ type: Opaque
 data: {}
 {{- end }}
 ---
-{{- if .Values.instanceGroups.networkFulfillment.enabled }}
+{{- if $networkFulfillmentEnabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -70,7 +97,7 @@ metadata:
     {{- include "osac-aap.labels" . | nindent 4 }}
     osac.openshift.io/project: osac-aap
 data:
-  {{- range $key, $val := .Values.instanceGroups.networkFulfillment.config }}
+  {{- range $key, $val := $networkConfig }}
   {{- if $val }}
   {{ $key }}: {{ $val | quote }}
   {{- end }}
@@ -86,7 +113,7 @@ metadata:
     osac.openshift.io/project: osac-aap
 type: Opaque
 data:
-  {{- range $key, $val := .Values.instanceGroups.networkFulfillment.secret }}
+  {{- range $key, $val := $networkSecret }}
   {{- if $val }}
   {{ $key }}: {{ $val | b64enc | quote }}
   {{- end }}

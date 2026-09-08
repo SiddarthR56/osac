@@ -27,6 +27,24 @@ operatorCrds:
 # ---------------------
 # OSAC Operator
 # ---------------------
+global:
+  fabricManager:
+    netris:
+      # Set to true after supplying all credentials below. This also enables
+      # both AAP Netris instance groups, even if their expert enabled flags
+      # below are false; do not configure the same Netris fields in both paths.
+      enabled: false
+      capabilities:
+      - ipv4
+      capabilitiesSyncInterval: "5m"
+      credentials:
+        controllerURL: "https://netris.example.com"
+        username: ""
+        password: ""
+        siteID: ""
+        tenantID: ""
+        tenantName: ""
+
 operator:
   image:
     repository: ghcr.io/osac-project/osac-operator
@@ -297,6 +315,69 @@ aap:
     # PEM-encoded client private key for BCM mTLS authentication.
     key: ""
 
+  # AAP instance groups. The umbrella chart nests these under aap.
+  instanceGroups:
+    clusterFulfillment:
+      enabled: false
+      config:
+        # --- Network Backend ---
+        # Expert path; prefer global.fabricManager.netris above.
+        NETWORK_CLASS: ""
+        NETWORK_STEPS_COLLECTION: ""
+        # --- DNS Backend ---
+        DNS_CLASS: ""
+        DNS_ZONE: ""
+        # --- Netris Controller ---
+        # Expert path: these values must also be set on networkFulfillment
+        # (including NETRIS_PASSWORD).
+        NETRIS_CONTROLLER_URL: ""
+        NETRIS_USERNAME: ""
+        NETRIS_SITE_ID: ""
+        NETRIS_TENANT_ID: ""
+        NETRIS_TENANT_NAME: ""
+        NETRIS_MGMT_VPC_ID: ""
+        NETRIS_MGMT_VPC_NAME: ""
+        NETRIS_RESOURCE_CLASS_MAP: ""
+        # --- SSH Access ---
+        SERVER_SSH_BASTION_HOST: ""
+        SERVER_SSH_BASTION_USER: ""
+        SERVER_SSH_USER: ""
+        SERVER_MGMT_ROUTE_DESTINATION: ""
+        SERVER_MGMT_ROUTE_GATEWAY: ""
+        # --- External Access ---
+        EXTERNAL_ACCESS_BASE_DOMAIN: ""
+        EXTERNAL_ACCESS_SUPPORTED_BASE_DOMAINS: ""
+        EXTERNAL_ACCESS_API_INTERNAL_NETWORK: ""
+        # --- Hosted Cluster ---
+        HOSTED_CLUSTER_BASE_DOMAIN: ""
+        HOSTED_CLUSTER_CONTROLLER_AVAILABILITY_POLICY: ""
+        HOSTED_CLUSTER_INFRASTRUCTURE_AVAILABILITY_POLICY: ""
+        # --- Import Agents ---
+        IMPORT_AGENTS_NAMESPACE: ""
+        IMPORT_AGENTS_INFRAENV_NAME: ""
+        IMPORT_AGENTS_PULL_SECRET_NAME: ""
+        IMPORT_AGENTS_DISABLE_BMC_CERT_VERIFICATION: ""
+        # --- BCM Inventory ---
+        BCM_API_URL: ""
+        BCM_VALIDATE_CERTS: "true"
+        BCM_DISABLE_BMC_CERT_VERIFICATION: "false"
+      secret:
+        NETRIS_PASSWORD: ""
+        AWS_ACCESS_KEY_ID: ""
+        AWS_SECRET_ACCESS_KEY: ""
+        SERVER_SSH_KEY: ""
+        SERVER_SSH_BASTION_KEY: ""
+    networkFulfillment:
+      enabled: false
+      config:
+        NETRIS_CONTROLLER_URL: ""
+        NETRIS_USERNAME: ""
+        NETRIS_SITE_ID: ""
+        NETRIS_TENANT_ID: ""
+        NETRIS_TENANT_NAME: ""
+      secret:
+        NETRIS_PASSWORD: ""
+
 # ---------------------
 # Bare Metal Fulfillment Operator — BCM Backend
 # ---------------------
@@ -379,109 +460,6 @@ publishTemplates:
   fulfillmentServiceUri: "https://fulfillment-internal-api:8001"
 
 # ---------------------
-# Cluster Fulfillment Instance Group
-# ---------------------
-# ConfigMap and Secret for the AAP cluster-fulfillment instance group.
-# Carries network backend selection, Netris credentials, SSH config,
-# external-access domains, hosted-cluster defaults, and DNS backend config.
-#
-# The config keys become environment variables in the AAP instance group.
-# See osac-aap/group_vars/all/configuration.yaml for how they are consumed.
-clusterFulfillment:
-  enabled: false
-  config:
-    # --- Network Backend ---
-    # AAP cluster-fulfillment network backend (netris, agentless_net).
-    # Distinct from operator.networkManagers fabric/k8s manager names.
-    NETWORK_CLASS: ""
-    # Ansible collection providing network-backend-specific steps
-    # (netris.steps, ci.steps, agentless_net.steps).
-    NETWORK_STEPS_COLLECTION: ""
-
-    # --- DNS Backend ---
-    # Fully-qualified Ansible role name of the DNS driver to use.
-    # Only dns.route53.dns is shipped today. Default (when empty): "dns.route53.dns"
-    DNS_CLASS: ""
-    # DNS zone to operate in (e.g., "example.com").
-    # Default (when empty): value of EXTERNAL_ACCESS_BASE_DOMAIN.
-    DNS_ZONE: ""
-
-    # --- Netris Controller ---
-    # Must also be set on networkFulfillment (including NETRIS_PASSWORD);
-    # there is no shared Netris config block.
-    NETRIS_CONTROLLER_URL: ""
-    NETRIS_USERNAME: ""
-    NETRIS_SITE_ID: ""
-    NETRIS_TENANT_ID: ""
-    NETRIS_TENANT_NAME: ""
-    NETRIS_MGMT_VPC_ID: ""
-    NETRIS_MGMT_VPC_NAME: ""
-    NETRIS_RESOURCE_CLASS_MAP: ""
-
-    # --- SSH Access ---
-    SERVER_SSH_BASTION_HOST: ""
-    SERVER_SSH_BASTION_USER: ""
-    SERVER_SSH_USER: ""
-    SERVER_MGMT_ROUTE_DESTINATION: ""
-    SERVER_MGMT_ROUTE_GATEWAY: ""
-
-    # --- External Access ---
-    EXTERNAL_ACCESS_BASE_DOMAIN: ""
-    EXTERNAL_ACCESS_SUPPORTED_BASE_DOMAINS: ""
-    EXTERNAL_ACCESS_API_INTERNAL_NETWORK: ""
-
-    # --- Hosted Cluster ---
-    HOSTED_CLUSTER_BASE_DOMAIN: ""
-    HOSTED_CLUSTER_CONTROLLER_AVAILABILITY_POLICY: ""
-    HOSTED_CLUSTER_INFRASTRUCTURE_AVAILABILITY_POLICY: ""
-
-    # --- Import Agents ---
-    # Playbook variables for ConfigMap-based agent import.
-    # These override the playbook defaults when non-empty.
-    # Effective default: "hardware-inventory"
-    IMPORT_AGENTS_NAMESPACE: ""
-    # Effective default: "infraenv"
-    IMPORT_AGENTS_INFRAENV_NAME: ""
-    # Effective default: "pull-secret"
-    IMPORT_AGENTS_PULL_SECRET_NAME: ""
-    # Effective default: "true"
-    IMPORT_AGENTS_DISABLE_BMC_CERT_VERIFICATION: ""
-
-    # --- BCM Inventory ---
-    # Playbook variables for BCM-based agent import.
-    # These override the playbook defaults when non-empty.
-    # BCM head node API endpoint (e.g., https://bcm-head:8081).
-    BCM_API_URL: ""
-    # Verify BCM TLS certificates. Set to "false" for lab environments
-    # with self-signed certificates. Effective default: "true" (production).
-    BCM_VALIDATE_CERTS: "true"
-    # Skip BMC TLS certificate verification during system discovery.
-    # Effective default: "false".
-    BCM_DISABLE_BMC_CERT_VERIFICATION: "false"
-  secret:
-    NETRIS_PASSWORD: ""
-    # AWS credentials (used by the Route 53 DNS backend).
-    AWS_ACCESS_KEY_ID: ""
-    AWS_SECRET_ACCESS_KEY: ""
-    SERVER_SSH_KEY: ""
-    SERVER_SSH_BASTION_KEY: ""
-
-# ---------------------
-# Network Fulfillment Instance Group
-# ---------------------
-# ConfigMap and Secret for the AAP networking-operations instance group.
-# Carries Netris controller credentials for network resource lifecycle.
-networkFulfillment:
-  enabled: false
-  config:
-    NETRIS_CONTROLLER_URL: ""
-    NETRIS_USERNAME: ""
-    NETRIS_SITE_ID: ""
-    NETRIS_TENANT_ID: ""
-    NETRIS_TENANT_NAME: ""
-  secret:
-    NETRIS_PASSWORD: ""
-
 # ---------------------
 # Pre-install Validation
 # ---------------------

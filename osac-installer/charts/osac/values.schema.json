@@ -6,55 +6,144 @@
   "properties": {
     "global": {
       "type": "object",
-      "description": "Values propagated unchanged into every subchart, shared between the umbrella chart's own templates and its subcharts",
+      "description": "Global values propagated unchanged into every subchart",
       "properties": {
         "clusterDomain": {
           "type": "string",
           "description": "OpenShift cluster ingress domain (e.g. apps.mycluster.example.com). Backs the tpl-templated defaults for service.auth.issuerUrl, service.idp.url, and service.vault.keycloakIssuerUrl. Set via --set global.clusterDomain=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}'). Leave empty on platforms (e.g. kind) that set those three values explicitly instead."
-        }
-      }
-    },
-    "cliImage": {
-      "type": "string",
-      "description": "Default OpenShift CLI image used by hook jobs"
-    },
-    "dbInit": {
-      "type": "object",
-      "description": "Shared PostgreSQL host for the db-init hook",
-      "properties": {
-        "host": {
-          "type": "string",
-          "description": "PostgreSQL host for db-init hook",
-          "default": "postgres.osac-infra.svc.cluster.local"
-        }
-      }
-    },
-    "kafka": {
-      "type": "object",
-      "description": "Kafka cluster coordinates for per-instance topic/user creation",
-      "properties": {
-        "clusterName": {
-          "type": "string",
-          "description": "Strimzi Kafka cluster name",
-          "default": "osac-kafka"
         },
-        "clusterNamespace": {
-          "type": "string",
-          "description": "Namespace of the Kafka cluster",
-          "default": "osac-kafka"
+        "fabricManager": {
+          "type": "object",
+          "description": "Declarative fabric manager configuration. Leave Netris disabled to use the expert operator/networkClass/AAP values.",
+          "properties": {
+            "netris": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "capabilities": {
+                  "type": "array",
+                  "description": "Capabilities advertised by the Netris manager ConfigMap",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "ipv4",
+                      "ipv6",
+                      "dualStack",
+                      "dpuSupport"
+                    ]
+                  },
+                  "default": [
+                    "ipv4"
+                  ]
+                },
+                "capabilitiesSyncInterval": {
+                  "type": "string",
+                  "pattern": "^(?:[1-9][0-9]*(?:\\.[0-9]+)?|0\\.[0-9]+)(?:ns|us|µs|ms|s|m|h)(?:[0-9]+(?:\\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))*$",
+                  "description": "Positive Go duration for periodic NetworkClass capability resync (for example 5m or 1h30m)",
+                  "default": "5m"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Optional description for the generated Netris manager ConfigMap"
+                },
+                "credentials": {
+                  "type": "object",
+                  "properties": {
+                    "controllerURL": {
+                      "type": "string",
+                      "pattern": "^$|^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?(?:/[^\\s]*)?$",
+                      "description": "HTTPS URL for the Netris controller (hostname or IPv4 address, optional port/path)"
+                    },
+                    "username": {
+                      "type": "string"
+                    },
+                    "password": {
+                      "type": "string"
+                    },
+                    "siteID": {
+                      "type": "string",
+                      "pattern": "^$|^[0-9]+$"
+                    },
+                    "tenantID": {
+                      "type": "string",
+                      "pattern": "^$|^[0-9]+$"
+                    },
+                    "tenantName": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "netris": {
+                    "properties": {
+                      "enabled": {
+                        "const": true
+                      }
+                    },
+                    "required": [
+                      "enabled"
+                    ]
+                  }
+                },
+                "required": [
+                  "netris"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "netris": {
+                    "required": [
+                      "credentials"
+                    ],
+                    "properties": {
+                      "credentials": {
+                        "required": [
+                          "controllerURL",
+                          "username",
+                          "password",
+                          "siteID",
+                          "tenantID",
+                          "tenantName"
+                        ],
+                        "properties": {
+                          "controllerURL": {
+                            "minLength": 1
+                          },
+                          "username": {
+                            "minLength": 1
+                          },
+                          "password": {
+                            "minLength": 1
+                          },
+                          "siteID": {
+                            "minLength": 1
+                          },
+                          "tenantID": {
+                            "minLength": 1
+                          },
+                          "tenantName": {
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
         },
-        "replicas": {
-          "type": "integer",
-          "description": "Kafka broker replica count (drives topic replication factor)",
-          "default": 3,
-          "minimum": 1
-        }
-      }
-    },
-    "global": {
-      "type": "object",
-      "description": "Global values propagated to all subcharts via Helm's built-in global mechanism",
-      "properties": {
         "services": {
           "type": "object",
           "description": "Service tier enablement flags. Controls which tiers are active across all OSAC components.",
@@ -104,6 +193,43 @@
               }
             }
           }
+        }
+      }
+    },
+    "cliImage": {
+      "type": "string",
+      "description": "Default OpenShift CLI image used by hook jobs"
+    },
+    "dbInit": {
+      "type": "object",
+      "description": "Shared PostgreSQL host for the db-init hook",
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "PostgreSQL host for db-init hook",
+          "default": "postgres.osac-infra.svc.cluster.local"
+        }
+      }
+    },
+    "kafka": {
+      "type": "object",
+      "description": "Kafka cluster coordinates for per-instance topic/user creation",
+      "properties": {
+        "clusterName": {
+          "type": "string",
+          "description": "Strimzi Kafka cluster name",
+          "default": "osac-kafka"
+        },
+        "clusterNamespace": {
+          "type": "string",
+          "description": "Namespace of the Kafka cluster",
+          "default": "osac-kafka"
+        },
+        "replicas": {
+          "type": "integer",
+          "description": "Kafka broker replica count (drives topic replication factor)",
+          "default": 3,
+          "minimum": 1
         }
       }
     },
@@ -302,6 +428,7 @@
             },
             "capabilitiesSyncInterval": {
               "type": "string",
+              "pattern": "^(?:[1-9][0-9]*(?:\\.[0-9]+)?|0\\.[0-9]+)(?:ns|us|µs|ms|s|m|h)(?:[0-9]+(?:\\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))*$",
               "description": "How often the operator recomputes NetworkClass capabilities from manager ConfigMaps, in addition to reacting immediately to ConfigMap changes (Go duration, e.g. 5m)",
               "default": "5m"
             },
@@ -320,8 +447,27 @@
                     "description": "Human-readable description stored on the ConfigMap"
                   },
                   "capabilities": {
-                    "type": "string",
-                    "description": "Comma-separated capability tokens advertised for this manager (e.g. ipv4, ipv4,ipv6,dualStack)"
+                    "oneOf": [
+                      {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "ipv4",
+                            "ipv6",
+                            "dualStack",
+                            "dpuSupport"
+                          ]
+                        }
+                      },
+                      {
+                        "type": "string",
+                        "pattern": "^(ipv4|ipv6|dualStack|dpuSupport)(,(ipv4|ipv6|dualStack|dpuSupport))*$"
+                      }
+                    ],
+                    "description": "Capabilities advertised by this manager. Use the enum-valued array form; the comma-separated string form remains supported for expert configurations."
                   }
                 }
               }
@@ -341,8 +487,27 @@
                     "description": "Human-readable description stored on the ConfigMap"
                   },
                   "capabilities": {
-                    "type": "string",
-                    "description": "Comma-separated capability tokens advertised for this manager (e.g. ipv4,ipv6)"
+                    "oneOf": [
+                      {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "ipv4",
+                            "ipv6",
+                            "dualStack",
+                            "dpuSupport"
+                          ]
+                        }
+                      },
+                      {
+                        "type": "string",
+                        "pattern": "^(ipv4|ipv6|dualStack|dpuSupport)(,(ipv4|ipv6|dualStack|dpuSupport))*$"
+                      }
+                    ],
+                    "description": "Capabilities advertised by this manager. Use the enum-valued array form; the comma-separated string form remains supported for expert configurations."
                   }
                 }
               }
@@ -855,24 +1020,24 @@
                     },
                     "NETRIS_CONTROLLER_URL": {
                       "type": "string",
-                      "pattern": "^$|^https?://[^/\\s:]+[^\\s]*$",
-                      "description": "Netris controller API URL. Must be set identically on clusterFulfillment and networkFulfillment; there is no shared Netris config block."
+                      "pattern": "^$|^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?(?:/[^\\s]*)?$",
+                      "description": "Expert-path Netris controller API URL. Must be set identically on clusterFulfillment and networkFulfillment."
                     },
                     "NETRIS_USERNAME": {
                       "type": "string",
-                      "description": "Netris controller username. Must be set identically on clusterFulfillment and networkFulfillment; there is no shared Netris config block."
+                      "description": "Expert-path Netris controller username. Must be set identically on clusterFulfillment and networkFulfillment."
                     },
                     "NETRIS_SITE_ID": {
                       "type": "string",
-                      "description": "Netris site ID. Must be set identically on clusterFulfillment and networkFulfillment; there is no shared Netris config block."
+                      "description": "Expert-path Netris site ID. Must be set identically on clusterFulfillment and networkFulfillment."
                     },
                     "NETRIS_TENANT_ID": {
                       "type": "string",
-                      "description": "Netris tenant ID. Must be set identically on clusterFulfillment and networkFulfillment; there is no shared Netris config block."
+                      "description": "Expert-path Netris tenant ID. Must be set identically on clusterFulfillment and networkFulfillment."
                     },
                     "NETRIS_TENANT_NAME": {
                       "type": "string",
-                      "description": "Netris tenant name. Must be set identically on clusterFulfillment and networkFulfillment; there is no shared Netris config block."
+                      "description": "Expert-path Netris tenant name. Must be set identically on clusterFulfillment and networkFulfillment."
                     },
                     "NETRIS_MGMT_VPC_ID": {
                       "type": "string",
@@ -962,7 +1127,7 @@
                     },
                     "BCM_API_URL": {
                       "type": "string",
-                      "pattern": "^$|^https?://[^/\\s]+",
+                      "pattern": "^$|^https?://[^/\\s:]+(?::[0-9]+)?(?:/[^\\s]*)?$",
                       "description": "BCM head node API endpoint (e.g., https://bcm-head:8081)"
                     },
                     "BCM_VALIDATE_CERTS": {
@@ -991,7 +1156,7 @@
                   "properties": {
                     "NETRIS_PASSWORD": {
                       "type": "string",
-                      "description": "Netris controller password. Must be set identically on clusterFulfillment.secret and networkFulfillment.secret; there is no shared Netris config block."
+                      "description": "Expert-path Netris controller password. Must be set identically on clusterFulfillment.secret and networkFulfillment.secret."
                     },
                     "AWS_ACCESS_KEY_ID": {
                       "type": "string",
@@ -1028,24 +1193,24 @@
                   "properties": {
                     "NETRIS_CONTROLLER_URL": {
                       "type": "string",
-                      "pattern": "^$|^https?://[^/\\s:]+[^\\s]*$",
-                      "description": "Netris controller API URL. Must be set identically on clusterFulfillment and networkFulfillment; there is no shared Netris config block."
+                      "pattern": "^$|^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?(?:/[^\\s]*)?$",
+                      "description": "Expert-path Netris controller API URL. Must be set identically on clusterFulfillment and networkFulfillment."
                     },
                     "NETRIS_USERNAME": {
                       "type": "string",
-                      "description": "Netris controller username. Must be set identically on clusterFulfillment and networkFulfillment; there is no shared Netris config block."
+                      "description": "Expert-path Netris controller username. Must be set identically on clusterFulfillment and networkFulfillment."
                     },
                     "NETRIS_SITE_ID": {
                       "type": "string",
-                      "description": "Netris site ID. Must be set identically on clusterFulfillment and networkFulfillment; there is no shared Netris config block."
+                      "description": "Expert-path Netris site ID. Must be set identically on clusterFulfillment and networkFulfillment."
                     },
                     "NETRIS_TENANT_ID": {
                       "type": "string",
-                      "description": "Netris tenant ID. Must be set identically on clusterFulfillment and networkFulfillment; there is no shared Netris config block."
+                      "description": "Expert-path Netris tenant ID. Must be set identically on clusterFulfillment and networkFulfillment."
                     },
                     "NETRIS_TENANT_NAME": {
                       "type": "string",
-                      "description": "Netris tenant name. Must be set identically on clusterFulfillment and networkFulfillment; there is no shared Netris config block."
+                      "description": "Expert-path Netris tenant name. Must be set identically on clusterFulfillment and networkFulfillment."
                     }
                   }
                 },
@@ -1055,7 +1220,7 @@
                   "properties": {
                     "NETRIS_PASSWORD": {
                       "type": "string",
-                      "description": "Netris controller password. Must be set identically on clusterFulfillment.secret and networkFulfillment.secret; there is no shared Netris config block."
+                      "description": "Expert-path Netris controller password. Must be set identically on clusterFulfillment.secret and networkFulfillment.secret."
                     }
                   }
                 }
@@ -1659,7 +1824,7 @@
     },
     "networkClass": {
       "type": "object",
-      "description": "Create a NetworkClass in the fulfillment service after install. When enabled, title is required and at least one of k8sManager/fabricManager must be set. k8sManager k8s_only is only valid when fabricManager is empty.",
+      "description": "Create a NetworkClass in the fulfillment service after install. When enabled, title is required. If neither manager is set, the hook selects cudn_net (or netris when declarative Netris is enabled). k8sManager k8s_only is only valid when fabricManager is empty.",
       "properties": {
         "enabled": {
           "type": "boolean",
@@ -1683,8 +1848,8 @@
         },
         "fabricManager": {
           "type": "string",
-          "description": "fabricManager name to set on the NetworkClass (must match a manager already registered via operator.networkManagers.fabricManagers)",
-          "default": "cudn_net"
+          "description": "fabricManager name to set on the NetworkClass (must match a manager already registered via operator.networkManagers.fabricManagers). Leave empty for the chart default or declarative Netris selection.",
+          "default": ""
         },
         "isDefault": {
           "type": "boolean",
@@ -1778,30 +1943,6 @@
             },
             "required": [
               "title"
-            ],
-            "anyOf": [
-              {
-                "properties": {
-                  "k8sManager": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "required": [
-                  "k8sManager"
-                ]
-              },
-              {
-                "properties": {
-                  "fabricManager": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "required": [
-                  "fabricManager"
-                ]
-              }
             ]
           }
         },

@@ -15,10 +15,34 @@ otherwise-invalid names at apply time, so that is not re-validated here.
 {{- $name -}}
 {{- end -}}
 
-{{- if .Values.networkManagers.enabled }}
+{{- $global := .Values.global | default dict }}
+{{- $globalFabricManager := $global.fabricManager | default dict }}
+{{- $netris := $globalFabricManager.netris | default dict }}
+{{- $netrisEnabled := $netris.enabled | default false }}
 {{- $seenConfigMapNames := dict }}
+{{- if $netrisEnabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: osac-network-fabric-manager-netris
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "osac-operator.labels" . | nindent 4 }}
+    osac.openshift.io/network-fabric-manager: "true"
+data:
+  name: "netris"
+  {{- if $netris.description }}
+  description: {{ $netris.description | quote }}
+  {{- else }}
+  description: "Netris SDN controller for physical fabric management"
+  {{- end }}
+  capabilities: {{ join "," ($netris.capabilities | default (list "ipv4")) | quote }}
+{{- $_ := set $seenConfigMapNames "osac-network-fabric-manager-netris" "global.fabricManager.netris" }}
+{{- end }}
+{{- if .Values.networkManagers.enabled }}
 {{- range $name, $mgr := .Values.networkManagers.fabricManagers }}
-{{- if $mgr.enabled }}
+{{- if and $mgr.enabled (not (and $netrisEnabled (eq $name "netris"))) }}
 {{- $cmName := include "osac-operator.networkManagerConfigMapName" (dict "prefix" "osac-network-fabric-manager" "key" $name "seen" $seenConfigMapNames) }}
 ---
 apiVersion: v1
@@ -34,7 +58,7 @@ data:
   {{- if $mgr.description }}
   description: {{ $mgr.description | quote }}
   {{- end }}
-  capabilities: {{ $mgr.capabilities | quote }}
+  capabilities: {{ if kindIs "slice" $mgr.capabilities }}{{ join "," $mgr.capabilities | quote }}{{ else }}{{ $mgr.capabilities | quote }}{{ end }}
 {{- end }}
 {{- end }}
 {{- range $name, $mgr := .Values.networkManagers.k8sManagers }}
@@ -54,7 +78,7 @@ data:
   {{- if $mgr.description }}
   description: {{ $mgr.description | quote }}
   {{- end }}
-  capabilities: {{ $mgr.capabilities | quote }}
+  capabilities: {{ if kindIs "slice" $mgr.capabilities }}{{ join "," $mgr.capabilities | quote }}{{ else }}{{ $mgr.capabilities | quote }}{{ end }}
 {{- end }}
 {{- end }}
 {{- end }}

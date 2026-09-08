@@ -27,6 +27,24 @@ global:
       enabled: true
     maas:
       enabled: true
+  # Shared, user-facing networking configuration. When Netris is disabled,
+  # the operator/networkClass/AAP values below remain the expert override
+  # path. When enabled, dependent charts derive their low-level ConfigMaps
+  # and environment variables from this block.
+  fabricManager:
+    netris:
+      enabled: false
+      capabilities:
+      - ipv4
+      capabilitiesSyncInterval: "5m"
+      description: ""
+      credentials:
+        controllerURL: ""
+        username: ""
+        password: ""
+        siteID: ""
+        tenantID: ""
+        tenantName: ""
 
 cliImage: quay.io/openshift/origin-cli:4.20.0
 
@@ -83,10 +101,9 @@ operator:
     optional: true
   hubAccess:
     enabled: false
-  # Network manager ConfigMaps use the nested operator.networkManagers map
-  # (fabricManagers / k8sManagers). Defaults live in the osac-operator subchart;
-  # override operator.networkManagers here to enable netris/k8s_only or change
-  # capabilitiesSyncInterval.
+  # Network manager ConfigMaps use the nested operator.networkManagers map in
+  # expert mode. Defaults live in the osac-operator subchart; use
+  # global.fabricManager.netris for the user-facing Netris configuration.
 
 # --- Fulfillment Service ---
 service:
@@ -201,8 +218,9 @@ aap:
         NETWORK_STEPS_COLLECTION: ""
         DNS_CLASS: ""
         DNS_ZONE: ""
-        # Netris connection fields below must also be set on networkFulfillment
-        # (including NETRIS_PASSWORD); there is no shared Netris config block.
+        # Expert-path Netris connection fields below must also be set on
+        # networkFulfillment (including NETRIS_PASSWORD). The user-facing
+        # shared configuration is global.fabricManager.netris.
         NETRIS_CONTROLLER_URL: ""
         NETRIS_USERNAME: ""
         NETRIS_SITE_ID: ""
@@ -401,13 +419,10 @@ lvms:
   enabled: false
 
 networkClass:
-  # Create a NetworkClass in the fulfillment service after install. At least one of
-  # k8sManager/fabricManager must be set when enabled — the corresponding manager
-  # must already be registered via operator.networkManagers (see that chart's values).
-  #
-  # Enabled by default with fabricManager: cudn_net, matching operator.networkManagers'
-  # own cudn_net fabric manager (enabled by default) as the platform default NetworkClass --
-  # every install needs a default NetworkClass for VirtualNetwork/tenant onboarding to work.
+  # Create a NetworkClass in the fulfillment service after install. If neither
+  # manager is selected, the hook supplies cudn_net (or netris when the
+  # declarative global.fabricManager.netris configuration is enabled).
+  # Every install needs a default NetworkClass for VirtualNetwork/tenant onboarding to work.
   enabled: true
   # [REQUIRED when enabled] Human-friendly short title — the fulfillment service
   # rejects NetworkClass creation without one (NC-VAL-02).
@@ -416,7 +431,8 @@ networkClass:
     Provisions networking resources using ClusterUserDefinedNetwork (CUDN) on OpenShift.
     Handles both VirtualNetwork (logical grouping) and Subnet (CUDN + Namespace creation).
   k8sManager: ""
-  fabricManager: "cudn_net"
+  # Leave empty to let the hook select cudn_net or declarative Netris.
+  fabricManager: ""
   isDefault: true
   defaults:
     # Tenant-onboarding defaults: without these, this being the default NetworkClass
