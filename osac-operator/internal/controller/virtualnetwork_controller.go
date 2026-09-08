@@ -179,8 +179,8 @@ func (r *VirtualNetworkReconciler) handleUpdate(ctx context.Context, vnet *v1alp
 	if implementationStrategy == "" {
 		msg := fmt.Sprintf("NetworkClass '%s' has no fabric_manager or k8s_manager configured", vnet.Spec.NetworkClass)
 		setReadyConditionBlocked(&vnet.Status.Conditions, v1alpha1.ReasonNoManagerConfigured, msg)
-		log.Info("implementation strategy not set, requeueing", "virtualNetwork", vnet.Name)
-		return ctrl.Result{RequeueAfter: defaultPreconditionRequeueInterval}, nil
+		log.Info("implementation strategy not set", "virtualNetwork", vnet.Name)
+		return ctrl.Result{}, fmt.Errorf("cannot reconcile VirtualNetwork %q: %s", vnet.Name, msg)
 	}
 
 	// Add implementation-strategy annotation if not present or different

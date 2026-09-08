@@ -90,8 +90,8 @@ func resolveImplementationStrategy(
 	}
 	target := plan.FabricTarget()
 	if target == nil {
-		// A K8sFallback kind (e.g. VirtualNetwork, SecurityGroup) with no fabricManager
-		// resolves its fabric role to a k8s-role target instead (see Dispatch), so check
+		// A fallback-enabled kind with no fabricManager resolves its fabric role to
+		// the explicitly allowed k8s-only target instead (see Dispatch), so check
 		// K8sTarget before giving up.
 		target = plan.K8sTarget()
 	}
@@ -135,13 +135,9 @@ func listAllNetworkClasses(
 // to inherit a NetworkClass from.
 //
 // Returns ("", nil) when the dispatcher path is not available (nil client, no live
-// NetworkClass, or more than one live NetworkClass with none marked default) so the
-// caller can block provisioning. List errors are returned as real reconcile errors.
-//
-// Selection order: a non-deleted NetworkClass with is_default=true (the first match in
-// list order if multiple are marked default — fulfillment-service enforces at most one
-// active default via a unique partial index, so this should not occur in normal
-// operation), else the single live NetworkClass if exactly one exists (one-per-deployment).
+// NetworkClass, or more than one live NetworkClass) so the caller can block
+// provisioning. List errors are returned as real reconcile errors. Fulfillment-service
+// enforces the one-per-deployment invariant.
 func lookupDefaultNetworkClassID(
 	ctx context.Context, ncClient privatev1.NetworkClassesClient,
 ) (string, error) {
@@ -154,25 +150,18 @@ func lookupDefaultNetworkClassID(
 		return "", fmt.Errorf("listing NetworkClasses: %w", err)
 	}
 
-	var live, defaults []*privatev1.NetworkClass
+	var live []*privatev1.NetworkClass
 	for _, nc := range items {
 		if nc.GetMetadata().HasDeletionTimestamp() {
 			continue
 		}
 		live = append(live, nc)
-		if nc.GetIsDefault() {
-			defaults = append(defaults, nc)
-		}
 	}
 
-	switch {
-	case len(defaults) >= 1:
-		return defaults[0].GetId(), nil
-	case len(live) == 1:
+	if len(live) == 1 {
 		return live[0].GetId(), nil
-	default:
-		return "", nil
 	}
+	return "", nil
 }
 
 // dispatchTargetProvider decorates a shared provisioning.ProvisioningProvider so that

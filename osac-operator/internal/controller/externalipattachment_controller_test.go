@@ -220,7 +220,7 @@ var _ = Describe("ExternalIPAttachmentReconciler", func() {
 		}
 		reconciler.Resolver, reconciler.networkClassesClient = wireExternalIPDispatcher(
 			c, testNetworkingNamespace, []*privatev1.NetworkClass{{
-				Id: "nc-default", FabricManager: ptr.To("netris"), IsDefault: ptr.To(true),
+				Id: "nc-default", FabricManager: ptr.To("netris"),
 			}},
 		)
 	}
@@ -486,10 +486,9 @@ var _ = Describe("ExternalIPAttachmentReconciler", func() {
 			reconciler.Resolver = resolver
 			reconciler.networkClassesClient = ncClient
 
-			_, err := reconcileOnce()
-			Expect(err).NotTo(HaveOccurred())
-			_, err = reconcileOnce()
-			Expect(err).NotTo(HaveOccurred())
+			result, err := reconcileOnce()
+			Expect(err).To(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
 
 			updated := &osacv1alpha1.ExternalIPAttachment{}
 			Expect(fakeClient.Get(testCtx, key, updated)).To(Succeed())
