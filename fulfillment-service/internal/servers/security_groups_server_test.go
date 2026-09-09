@@ -511,6 +511,12 @@ var _ = Describe("SecurityGroups server", func() {
 			Expect(status.Code()).To(Equal(grpccodes.FailedPrecondition))
 			Expect(err.Error()).To(ContainSubstring("default"))
 			Expect(err.Error()).To(ContainSubstring("system-managed"))
+
+			getResponse, err := server.Get(ctx, publicv1.SecurityGroupsGetRequest_builder{
+				Id: createResponse.GetObject().GetId(),
+			}.Build())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(getResponse.GetObject().GetMetadata().GetDeletionTimestamp()).To(BeNil())
 		})
 	})
 })

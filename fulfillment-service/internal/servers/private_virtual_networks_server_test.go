@@ -1906,6 +1906,7 @@ var _ = Describe("Private virtual networks server", func() {
 				}.Build(),
 			}.Build())
 			Expect(err).ToNot(HaveOccurred())
+			stateBeforeDelete := createResp.GetObject().GetStatus().GetState()
 
 			_, err = vnServer.Delete(ctx, privatev1.VirtualNetworksDeleteRequest_builder{
 				Id: createResp.GetObject().GetId(),
@@ -1916,6 +1917,13 @@ var _ = Describe("Private virtual networks server", func() {
 			Expect(status.Code()).To(Equal(grpccodes.FailedPrecondition))
 			Expect(err.Error()).To(ContainSubstring("default"))
 			Expect(err.Error()).To(ContainSubstring("system-managed"))
+
+			getResp, err := vnServer.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{
+				Id: createResp.GetObject().GetId(),
+			}.Build())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(getResp.GetObject().GetMetadata().GetDeletionTimestamp()).To(BeNil())
+			Expect(getResp.GetObject().GetStatus().GetState()).To(Equal(stateBeforeDelete))
 		})
 	})
 })
