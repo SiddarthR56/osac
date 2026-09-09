@@ -188,6 +188,17 @@ func (s *PrivateVirtualNetworksServer) validateVirtualNetwork(ctx context.Contex
 		return
 	}
 
+	if existingVN != nil {
+		if err = validateDefaultLabelUpdate(
+			existingVN.GetMetadata().GetLabels(),
+			newVN.GetMetadata().GetLabels(),
+			nil,
+			"virtual network",
+		); err != nil {
+			return
+		}
+	}
+
 	spec := newVN.GetSpec()
 	if spec == nil {
 		err = grpcstatus.Errorf(grpccodes.InvalidArgument, "virtual network spec is mandatory")

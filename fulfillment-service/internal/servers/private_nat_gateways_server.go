@@ -259,6 +259,14 @@ func (s *PrivateNATGatewaysServer) Update(ctx context.Context,
 		err = translateLifecycleError(lockErr)
 		return
 	}
+	if err = validateDefaultLabelUpdate(
+		existingGateway.GetMetadata().GetLabels(),
+		request.GetObject().GetMetadata().GetLabels(),
+		mask,
+		"NAT gateway",
+	); err != nil {
+		return
+	}
 	if updateIncludesField(mask, "spec.virtual_network", "spec.external_ip") {
 		err = validateImmutableFieldsNATGateway(request.GetObject(), existingGateway)
 		if err != nil {

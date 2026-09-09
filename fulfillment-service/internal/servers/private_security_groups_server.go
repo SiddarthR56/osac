@@ -203,6 +203,17 @@ func (s *PrivateSecurityGroupsServer) validateSecurityGroup(ctx context.Context,
 		return grpcstatus.Errorf(grpccodes.InvalidArgument, "security group is mandatory")
 	}
 
+	if existingSecurityGroup != nil {
+		if err := validateDefaultLabelUpdate(
+			existingSecurityGroup.GetMetadata().GetLabels(),
+			newSecurityGroup.GetMetadata().GetLabels(),
+			nil,
+			"security group",
+		); err != nil {
+			return err
+		}
+	}
+
 	spec := newSecurityGroup.GetSpec()
 	if spec == nil {
 		return grpcstatus.Errorf(grpccodes.InvalidArgument, "security group spec is mandatory")

@@ -203,6 +203,17 @@ func (s *PrivateSubnetsServer) validateSubnet(ctx context.Context,
 		return grpcstatus.Errorf(grpccodes.InvalidArgument, "subnet is mandatory")
 	}
 
+	if existingSubnet != nil {
+		if err := validateDefaultLabelUpdate(
+			existingSubnet.GetMetadata().GetLabels(),
+			newSubnet.GetMetadata().GetLabels(),
+			nil,
+			"subnet",
+		); err != nil {
+			return err
+		}
+	}
+
 	spec := newSubnet.GetSpec()
 	if spec == nil {
 		return grpcstatus.Errorf(grpccodes.InvalidArgument, "subnet spec is mandatory")
