@@ -26,9 +26,10 @@ it composes the existing, independently-tested k8s-native roles:
 
 `k8s_only` is an explicit Kubernetes-only profile, not a substitute for a
 unified fabric manager. The operator dispatcher permits the Kubernetes fallback
-for SecurityGroup and ExternalIP-family resources only when the NetworkClass
-selects the manager named `k8s_only`. Other Kubernetes managers are overlay
-bridges and still require a `fabricManager` for those resources.
+for VirtualNetwork, Subnet, SecurityGroup, and ExternalIP-family resources only
+when the NetworkClass selects the manager named `k8s_only`. Other Kubernetes
+managers are overlay bridges and still require a `fabricManager` for those
+resources.
 
 As a result, this profile provides Kubernetes-native behavior for VMaaS
 deployments without a physical fabric; it does not provide fabric-wide ACLs,
