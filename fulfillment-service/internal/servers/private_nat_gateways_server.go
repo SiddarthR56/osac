@@ -206,7 +206,10 @@ func (s *PrivateNATGatewaysServer) Create(ctx context.Context,
 		if errors.As(getErr, &notFoundErr) {
 			err = grpcstatus.Errorf(grpccodes.InvalidArgument, "virtual network '%s' does not exist", virtualNetworkKey)
 		} else {
-			err = getErr
+			s.logger.ErrorContext(ctx, "Failed to query VirtualNetwork",
+				slog.String("virtual_network_id", virtualNetworkKey),
+				slog.Any("error", getErr))
+			err = grpcstatus.Errorf(grpccodes.Internal, "failed to validate virtual_network")
 		}
 		return
 	}

@@ -450,7 +450,8 @@ func (s *PrivateComputeInstancesServer) Update(ctx context.Context,
 		if getErr != nil {
 			return nil, getErr
 		}
-		isBeingDeleted = currentResponse.GetObject().GetMetadata().GetDeletionTimestamp() != nil
+		isBeingDeleted = currentResponse.GetObject().GetMetadata().GetDeletionTimestamp() != nil ||
+			request.GetObject().GetMetadata().GetDeletionTimestamp() != nil
 	}
 	if err = s.validateUserDataMutualExclusionForUpdate(ctx, request); err != nil {
 		return
