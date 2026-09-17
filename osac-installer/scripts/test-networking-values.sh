@@ -77,8 +77,7 @@ render_success \
   --set global.networking.overlay=none \
   --set-string global.networking.netris.controllerUrl=https://netris.example.com \
   --set-string global.networking.netris.credentials.username=test-user \
-  --set-string global.networking.netris.credentials.passwordSecretRef.name=netris-credentials \
-  --set-string global.networking.netris.credentials.passwordSecretRef.key=NETRIS_PASSWORD \
+  --set global.networking.netris.credentials.externalSecret=true \
   --set-string global.networking.netris.siteId=1 \
   --set-string global.networking.netris.tenantId=1 \
   --set-string global.networking.netris.tenantName=test
@@ -91,8 +90,7 @@ render_failure \
   --set-string global.networking.netris.controllerUrl=https://netris.example.com \
   --set-string global.networking.netris.credentials.username=test-user \
   --set-string global.networking.netris.credentials.password="${TEST_NETRIS_PASSWORD}" \
-  --set-string global.networking.netris.credentials.passwordSecretRef.name=netris-credentials \
-  --set-string global.networking.netris.credentials.passwordSecretRef.key=NETRIS_PASSWORD \
+  --set global.networking.netris.credentials.externalSecret=true \
   --set-string global.networking.netris.siteId=1 \
   --set-string global.networking.netris.tenantId=1 \
   --set-string global.networking.netris.tenantName=test

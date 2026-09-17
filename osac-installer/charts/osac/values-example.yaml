@@ -26,9 +26,7 @@ global:
       controllerUrl: ""
       credentials:
         username: ""
-        passwordSecretRef:
-          name: netris-credentials
-          key: NETRIS_PASSWORD
+        externalSecret: true
       siteId: ""
       tenantId: ""
       tenantName: ""
@@ -446,9 +444,7 @@ hubAccess:
 #       controllerUrl: "https://redhat-ctl.netris.io"
 #       credentials:
 #         username: "netris"
-#         passwordSecretRef:
-#           name: netris-credentials
-#           key: NETRIS_PASSWORD
+#         externalSecret: true
 #       siteId: "5"
 #       tenantId: "1"
 #       tenantName: "Admin"

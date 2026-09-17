@@ -9,9 +9,7 @@ global:
       controllerUrl: "https://test-ctl.netris.io"
       credentials:
         username: "testuser"
-        passwordSecretRef:
-          name: netris-credentials
-          key: NETRIS_PASSWORD
+        externalSecret: true
       siteId: "1"
       tenantId: "1"
       tenantName: "Admin"

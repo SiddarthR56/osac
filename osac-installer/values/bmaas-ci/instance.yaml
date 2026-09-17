@@ -21,9 +21,7 @@ global:
         username: "netris"
         # NETRIS_PASSWORD is supplied by the externally managed Secret
         # netris-credentials in the AAP namespace.
-        passwordSecretRef:
-          name: netris-credentials
-          key: NETRIS_PASSWORD
+        externalSecret: true
       siteId: "1"
       tenantId: "1"
       tenantName: "Admin"

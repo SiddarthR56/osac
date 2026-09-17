@@ -43,9 +43,10 @@ Kubernetes Secret. Do not pre-encode them.
 Additional variables are added by specific network backends — see
 [Network Backend Configuration](network-backend.md).
 
-For Netris, prefer the external `netris-credentials` Secret reference. The
-Secret must contain the `NETRIS_PASSWORD` key and is mounted into the AAP
-cluster-fulfillment and network-fulfillment workers.
+For Netris, prefer `global.networking.netris.credentials.externalSecret: true`
+when the password is supplied by an externally managed `netris-credentials`
+Secret. The Secret must contain the `NETRIS_PASSWORD` key and is mounted into
+the AAP cluster-fulfillment and network-fulfillment workers.
 
 > **Note on SSH keys:** SSH private keys are not set via environment variables.
 > They must be added directly to the `cluster-fulfillment-ig` Kubernetes Secret.
