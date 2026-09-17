@@ -37,9 +37,7 @@ global:
       controllerUrl: "https://redhat-ctl.netris.io"
       credentials:
         username: "netris"
-        passwordSecretRef:
-          name: netris-credentials
-          key: NETRIS_PASSWORD
+        externalSecret: true
       siteId: "5"
       tenantId: "1"
       tenantName: "Admin"
@@ -54,7 +52,8 @@ aap:
 
 When Netris is selected, the schema requires `controllerUrl` (HTTPS), credentials,
 `siteId`, `tenantId`, and `tenantName`. Credentials may contain either a direct
-password or the external `netris-credentials` Secret reference shown above.
+password or `externalSecret: true` when the `netris-credentials` Secret is
+managed outside Helm.
 
 ### Agentless example
 

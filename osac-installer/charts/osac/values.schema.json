@@ -1919,8 +1919,13 @@
                       },
                       {
                         "required": [
-                          "passwordSecretRef"
-                        ]
+                          "externalSecret"
+                        ],
+                        "properties": {
+                          "externalSecret": {
+                            "const": true
+                          }
+                        }
                       }
                     ],
                     "properties": {
@@ -1930,19 +1935,10 @@
                       "password": {
                         "minLength": 1
                       },
-                      "passwordSecretRef": {
-                        "required": [
-                          "name",
-                          "key"
-                        ],
-                        "properties": {
-                          "name": {
-                            "const": "netris-credentials"
-                          },
-                          "key": {
-                            "const": "NETRIS_PASSWORD"
-                          }
-                        }
+                      "externalSecret": {
+                        "type": "boolean",
+                        "const": true,
+                        "description": "Use the externally managed netris-credentials Secret (NETRIS_PASSWORD key) in the AAP namespace instead of an inline password."
                       }
                     }
                   },
@@ -1980,19 +1976,10 @@
             "password": {
               "type": "string"
             },
-            "passwordSecretRef": {
-              "type": "object",
-              "description": "External Kubernetes Secret containing NETRIS_PASSWORD.",
-              "properties": {
-                "name": {
-                  "type": "string",
-                  "const": "netris-credentials"
-                },
-                "key": {
-                  "type": "string",
-                  "const": "NETRIS_PASSWORD"
-                }
-              }
+            "externalSecret": {
+              "type": "boolean",
+              "const": true,
+              "description": "Use the externally managed netris-credentials Secret (NETRIS_PASSWORD key) in the AAP namespace instead of an inline password."
             }
           }
         },
