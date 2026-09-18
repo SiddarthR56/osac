@@ -356,11 +356,11 @@ ifeq ($(SUITE),fulfillment)
 	$(call kind-container-build,-t localhost/fulfillment-service:it -f ../fulfillment-service/Containerfile ..)
 	$(call kind-load-image,localhost/fulfillment-service:it)
 	$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
-		EXTRA_HELM_ARGS="--set service.images.service=localhost/fulfillment-service:it --set operator.enabled=false --set global.networking.networkClass.enabled=false"
+		EXTRA_HELM_ARGS="--set service.images.service=localhost/fulfillment-service:it --set operator.enabled=false --set operator.networkManagers.enabled=true --set global.networking.networkClass.enabled=false"
 	@for f in ../fulfillment-service/it/crds/*.yaml; do kubectl apply --server-side --field-manager=helm --force-conflicts -f "$$f"; done
 	cd ../fulfillment-service && ginkgo run --timeout 1h -v $(FULFILLMENT_GINKGO_ARGS) it
 	$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
-		EXTRA_HELM_ARGS="--set service.images.service=localhost/fulfillment-service:it --set global.services.bmaas.enabled=false --set operator.enabled=false --set global.networking.networkClass.enabled=false"
+		EXTRA_HELM_ARGS="--set service.images.service=localhost/fulfillment-service:it --set global.services.bmaas.enabled=false --set operator.enabled=false --set operator.networkManagers.enabled=true --set global.networking.networkClass.enabled=false"
 	cd ../fulfillment-service && IT_TEST_SUITE=bmaas-disabled ginkgo run --timeout 1h -v --focus 'Service enablement' it
 endif
 ifeq ($(SUITE),operator)
@@ -375,7 +375,7 @@ ifeq ($(SUITE),bmf)
 	$(call kind-load-image,localhost/bmf-operator:it)
 	kubectl apply --server-side --force-conflicts -f ../bare-metal-fulfillment-operator/test/crds/
 	$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
-		EXTRA_HELM_ARGS="--set global.services.bmaas.enabled=true --set bmf.replicaCount=1 --set bmf.image.repository=localhost/bmf-operator --set bmf.image.tag=it --set bmf.image.pullPolicy=Never --set operator.enabled=false --set service.enabled=false --set hubAccess.enabled=false --set validation.enabled=false --set global.networking.networkClass.enabled=false"
+		EXTRA_HELM_ARGS="--set global.services.bmaas.enabled=true --set bmf.replicaCount=1 --set bmf.image.repository=localhost/bmf-operator --set bmf.image.tag=it --set bmf.image.pullPolicy=Never --set operator.enabled=false --set operator.networkManagers.enabled=true --set service.enabled=false --set hubAccess.enabled=false --set validation.enabled=false --set global.networking.networkClass.enabled=false"
 	cd ../bare-metal-fulfillment-operator && ginkgo run --timeout 30m -v test/integration
 endif
 
