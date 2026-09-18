@@ -322,14 +322,11 @@
                   },
                   "capabilities": {
                     "type": "array",
-                    "description": "Capability tokens advertised for this manager",
+                    "description": "Capability tokens advertised for this manager. Only ipv4 is supported in the current release.",
                     "items": {
                       "type": "string",
                       "enum": [
-                        "ipv4",
-                        "ipv6",
-                        "dualStack",
-                        "dpuSupport"
+                        "ipv4"
                       ]
                     },
                     "uniqueItems": true
@@ -353,14 +350,11 @@
                   },
                   "capabilities": {
                     "type": "array",
-                    "description": "Capability tokens advertised for this manager",
+                    "description": "Capability tokens advertised for this manager. Only ipv4 is supported in the current release.",
                     "items": {
                       "type": "string",
                       "enum": [
-                        "ipv4",
-                        "ipv6",
-                        "dualStack",
-                        "dpuSupport"
+                        "ipv4"
                       ]
                     },
                     "uniqueItems": true
@@ -1587,13 +1581,13 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Run the create-network-class hook job",
-          "default": true
+          "description": "Run the create-network-class hook job. Legacy expert path only — normal deployments use global.networking.",
+          "default": false
         },
         "title": {
           "type": "string",
           "description": "Human-friendly short title for the NetworkClass. Required when enabled — the fulfillment service rejects NetworkClass creation without one.",
-          "default": "CUDN Network Implementation"
+          "default": ""
         },
         "description": {
           "type": "string",
@@ -1608,7 +1602,7 @@
         "fabricManager": {
           "type": "string",
           "description": "fabricManager name to set on the NetworkClass (must match a manager already registered via operator.networkManagers.fabricManagers)",
-          "default": "cudn_net"
+          "default": ""
         },
         "isDefault": {
           "type": "boolean",
@@ -1786,14 +1780,14 @@
       "properties": {
         "provider": {
           "type": "string",
-          "description": "Supported providers: netris, cudn, and none. The vlan provider is reserved and rejected during Helm rendering; valid overlays are constrained by provider.",
+          "description": "Supported providers: netris and none. The cudn and vlan providers are reserved and rejected during Helm rendering; valid overlays are constrained by provider.",
           "enum": [
             "netris",
             "vlan",
             "cudn",
             "none"
           ],
-          "default": "cudn"
+          "default": "none"
         },
         "overlay": {
           "type": "string",
@@ -1804,7 +1798,7 @@
             "k8s_only",
             "cudn_localnet"
           ],
-          "default": "none"
+          "default": "k8s_only"
         },
         "netris": {
           "$ref": "#/$defs/networkingNetris"

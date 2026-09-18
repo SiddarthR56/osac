@@ -33,10 +33,13 @@ global:
   # subcharts. The selected provider/overlay pair is translated into the
   # existing manager names and AAP settings by Helm.
   networking:
-    # Current supported profiles are cudn + none, netris + none, and
-    # none + k8s_only. Other enum values are reserved for future providers.
-    provider: cudn
-    overlay: none
+    # provider selects the fabric/backend family; overlay selects the Kubernetes
+    # networking mode. Supported facade profiles:
+    #   - provider: netris, overlay: none  → fabricManager netris
+    #   - provider: none, overlay: k8s_only → k8sManager k8s_only (default)
+    # Reserved values (cudn, vlan, cudn_evpn, cudn_localnet) fail during render.
+    provider: none
+    overlay: k8s_only
     netris:
       controllerUrl: ""
       credentials:
@@ -104,8 +107,9 @@ operator:
   controllers:
     tenant: true
     networking: true
-    # Enable AAP provisioning for VirtualNetwork, Subnet, SecurityGroup, and
-    # NATGateway resources. Set false for local environments without a fabric.
+    # networkingProvisioning dispatches VirtualNetwork/Subnet/SecurityGroup/
+    # NATGateway to AAP. Distinct from controllers.networking, which only
+    # reconciles NetworkClass. Set false for local environments without a fabric.
     networkingProvisioning: true
     storage: true
   configSecret:
@@ -410,29 +414,25 @@ lvms:
   enabled: false
 
 networkClass:
-  # Legacy expert override. Normal deployments should leave this block untouched
-  # and configure global.networking.networkClass instead.
-  # Create a NetworkClass in the fulfillment service after install. At least one of
-  # k8sManager/fabricManager must be set when enabled — the corresponding manager
-  # must already be registered via operator.networkManagers (see that chart's values).
+  # Legacy expert override. Used only when global.expertOverrides.networkClass
+  # is true. Normal deployments leave this block disabled and configure
+  # global.networking (and optional global.networking.networkClass overrides)
+  # instead — the create-network-class hook derives the NetworkClass from the
+  # facade.
   #
-  # Enabled by default with fabricManager: cudn_net, matching operator.networkManagers'
-  # own cudn_net fabric manager (enabled by default) as the platform default NetworkClass --
-  # every install needs a default NetworkClass for VirtualNetwork/tenant onboarding to work.
-  enabled: true
+  # When enabling this expert path, set title and at least one of
+  # k8sManager/fabricManager. The corresponding manager must already be
+  # registered via operator.networkManagers.
+  enabled: false
   # [REQUIRED when enabled] Human-friendly short title — the fulfillment service
   # rejects NetworkClass creation without one (NC-VAL-02).
-  title: "CUDN Network Implementation"
-  description: >-
-    Provisions networking resources using ClusterUserDefinedNetwork (CUDN) on OpenShift.
-    Handles both VirtualNetwork (logical grouping) and Subnet (CUDN + Namespace creation).
+  title: ""
+  description: ""
   k8sManager: ""
-  fabricManager: "cudn_net"
+  fabricManager: ""
   isDefault: true
   defaults:
-    # Tenant-onboarding defaults: without these, this being the default NetworkClass
-    # does not auto-create a VirtualNetwork/Subnet/SecurityGroup for new tenants, and
-    # ComputeInstance creation without explicit network_attachments will fail.
+    # Tenant-onboarding defaults used when this expert block is enabled.
     virtualNetworkIPv4CIDR: "10.200.0.0/16"
     subnetIPv4CIDR: "10.200.0.0/20"
     enableNatGateway: false
@@ -440,11 +440,8 @@ networkClass:
     - protocol: PROTOCOL_ALL
       ipv4Cidr: "0.0.0.0/0"
       # ipv6Cidr is optional and forwarded by the create-network-class hook.
-      # Netris fabric is IPv4-only; CUDN/k8s_only may set e.g. "::/0".
-  # Example override (k8s-only profile — switches the default NetworkClass's
-  # manager from cudn_net to k8s_only instead of adding a second NetworkClass,
-  # since only one NetworkClass may exist per deployment):
-  # fabricManager must be empty when k8sManager is k8s_only.
+  # Example expert override (k8s-only):
+  # enabled: true
   # title: "K8s-only networking"
   # fabricManager: ""
   # k8sManager: "k8s_only"

@@ -63,7 +63,8 @@ The OSAC platform relies on five core components to deliver governed self-servic
 > * Red Hat OpenShift Advanced Cluster Management (RHACM)
 > * Red Hat OpenShift Virtualization (OCP-Virt) - **Optional**: Only required for VM as a Service (VMaaS) support
 > * Red Hat Ansible Automation Platform (AAP)
-> * A network backend for bare metal provisioning: **Netris** or **agentless_net** (see [Network Backend Configuration](#network-backend-configuration-caas))
+> * A network backend for bare metal provisioning: **Netris** or agentless
+>   (`global.networking` — see [Network Backend Configuration](#network-backend-configuration-caas))
 
 **Configuration Manifests**
 
@@ -249,13 +250,37 @@ See [docs/aap-configuration.md](docs/aap-configuration.md) for details.
 
 #### Network Backend Configuration (CaaS)
 
-No network backend is selected by default. To use **Netris**, set
-`NETWORK_CLASS=netris` and the Netris-specific values in your values file under
-`aap.instanceGroups.clusterFulfillment` and `aap.instanceGroups.networkFulfillment`
-(both instance groups must carry identical Netris connection settings).
+Default networking is agentless (`global.networking.provider: none`,
+`overlay: k8s_only`). For **Netris**, set the facade and enable both AAP
+instance groups:
 
-See [docs/network-backend.md](docs/network-backend.md) for Netris-specific
-variables and the `NETRIS_RESOURCE_CLASS_MAP` format.
+```yaml
+global:
+  networking:
+    provider: netris
+    overlay: none
+    netris:
+      controllerUrl: "https://redhat-ctl.netris.io"
+      credentials:
+        username: "netris"
+        externalSecret: true
+      siteId: "5"
+      tenantId: "1"
+      tenantName: "Admin"
+
+aap:
+  instanceGroups:
+    clusterFulfillment:
+      enabled: true
+    networkFulfillment:
+      enabled: true
+```
+
+Helm derives `NETWORK_CLASS`, manager ConfigMaps, and the default NetworkClass
+from this block. Do not set those by hand unless using expert overrides.
+
+See [docs/network-backend.md](docs/network-backend.md) for profiles,
+credentials, and the advanced/manual path.
 
 #### DNS Backend Configuration (CaaS)
 

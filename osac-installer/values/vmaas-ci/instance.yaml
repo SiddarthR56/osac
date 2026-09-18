@@ -50,18 +50,6 @@ operator:
   tenants:
   - name: shared
   - name: osac-e2e-ci
-  # VMaaS has no physical fabric. Register k8s_only so the dispatcher can
-  # stamp ExternalIP/VN/SG onto the composite role (CUDN + NetworkPolicy +
-  # MetalLB L2) instead of fabricManager cudn_net, which cannot provision
-  # ExternalIP pools.
-  networkManagers:
-    k8sManagers:
-      k8s_only:
-        enabled: true
-        capabilities:
-        - ipv4
-        - ipv6
-        - dualStack
 
 # --- Fulfillment Service ---
 service:
@@ -236,12 +224,3 @@ metering:
 # --- LVMS StorageBackend registration ---
 lvms:
   enabled: true
-
-# --- Bundled OpenBao (Vault-compatible secret store) ---
-bundledVault:
-  # Override podSecurityContext for OpenShift restricted-v2 SCC: omit numeric
-  # runAsUser/runAsGroup/fsGroup — the SCC allocates UIDs from the namespace UID
-  # range and resolves the named user automatically. A non-nil value here fully
-  # replaces the template default (runAsUser:100/runAsGroup:1000/fsGroup:1000).
-  podSecurityContext:
-    runAsNonRoot: true

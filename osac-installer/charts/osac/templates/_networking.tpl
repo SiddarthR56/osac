@@ -5,8 +5,8 @@ the existing manager names and AAP selectors consumed by the charts.
 */}}
 {{- define "osac.networking.effective" -}}
 {{- $networking := .Values.global.networking | default dict -}}
-{{- $provider := $networking.provider | default "cudn" -}}
-{{- $overlay := $networking.overlay | default "none" -}}
+{{- $provider := $networking.provider | default "none" -}}
+{{- $overlay := $networking.overlay | default "k8s_only" -}}
 {{- $netris := $networking.netris | default dict -}}
 {{- $networkClass := $networking.networkClass | default dict -}}
 {{- $fabricManager := "" -}}
@@ -21,10 +21,7 @@ the existing manager names and AAP selectors consumed by the charts.
   {{- $aapNetworkClass = "netris" -}}
   {{- $aapNetworkSteps = "netris.steps" -}}
 {{- else if eq $provider "cudn" -}}
-  {{- if ne $overlay "none" -}}
-    {{- fail (printf "global.networking: provider %q currently supports only overlay %q (got %q)" $provider "none" $overlay) -}}
-  {{- end -}}
-  {{- $fabricManager = "cudn_net" -}}
+  {{- fail "global.networking: provider \"cudn\" is reserved but has no registered facade implementation yet" -}}
 {{- else if eq $provider "none" -}}
   {{- if eq $overlay "k8s_only" -}}
     {{- $k8sManager = "k8s_only" -}}

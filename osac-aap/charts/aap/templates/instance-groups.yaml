@@ -10,8 +10,8 @@
 {{- if .Values.global }}
 {{- $globalNetworking = .Values.global.networking | default dict -}}
 {{- end }}
-{{- $provider := $globalNetworking.provider | default "cudn" -}}
-{{- $overlay := $globalNetworking.overlay | default "none" -}}
+{{- $provider := $globalNetworking.provider | default "none" -}}
+{{- $overlay := $globalNetworking.overlay | default "k8s_only" -}}
 {{- $netris := $globalNetworking.netris | default dict -}}
 {{- $netrisEnabled := eq $provider "netris" -}}
 {{- $agentlessEnabled := and (eq $provider "none") (eq $overlay "k8s_only") -}}
@@ -94,7 +94,7 @@ data: {}
 {{- if .Values.global }}
 {{- $globalNetworking = .Values.global.networking | default dict -}}
 {{- end }}
-{{- $provider := $globalNetworking.provider | default "cudn" -}}
+{{- $provider := $globalNetworking.provider | default "none" -}}
 {{- $netris := $globalNetworking.netris | default dict -}}
 {{- $netrisEnabled := eq $provider "netris" -}}
 {{- $netExpert := false -}}
