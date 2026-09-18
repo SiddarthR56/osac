@@ -5,9 +5,16 @@ Kubernetes ConfigMaps and Secrets that are mounted into AAP instance group
 execution pods via `envFrom`. This makes every key available as an environment
 variable during playbook execution.
 
-Currently only the **cluster-fulfillment-ig** instance group mounts these
-variables, as it is the only instance group that consumes them (for cluster provisioning workflows).
-This will be expanded to additional instance groups in the future as more automation workflows are added.
+For network backends, prefer the `global.networking` facade — see
+[Network Backend Configuration](network-backend.md). Helm derives
+`NETWORK_CLASS`, `NETWORK_STEPS_COLLECTION`, and Netris connection fields when
+`global.expertOverrides.aap` is false. Set those keys manually only for expert
+overrides or CI-specific backends (for example `ci.steps`).
+
+Cluster-fulfillment and network-fulfillment instance groups both mount their
+ConfigMaps and Secrets. Network-fulfillment receives the shared Netris
+connection fields; cluster-fulfillment also receives cluster-specific Netris
+fields and hosted-cluster settings.
 
 ## How It Works
 
@@ -19,8 +26,8 @@ file and they are applied during `make install-osac`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NETWORK_CLASS` | (empty) | AAP cluster-fulfillment network backend (`netris` or `agentless_net`) |
-| `NETWORK_STEPS_COLLECTION` | (empty) | Ansible collection for network steps (`netris.steps`, `ci.steps`, or `agentless_net.steps`) |
+| `NETWORK_CLASS` | (empty) | AAP network backend (`netris` or `agentless_net`). Derived by the facade for normal installs. |
+| `NETWORK_STEPS_COLLECTION` | (empty) | Ansible collection for network steps (`netris.steps`, `ci.steps`, or `agentless_net.steps`). Derived by the facade for normal installs. |
 | `EXTERNAL_ACCESS_BASE_DOMAIN` | `box.massopen.cloud` | Base domain for cluster DNS records |
 | `EXTERNAL_ACCESS_SUPPORTED_BASE_DOMAINS` | `box.massopen.cloud` | Comma-separated list of allowed domains |
 | `EXTERNAL_ACCESS_API_INTERNAL_NETWORK` | `hypershift` | Internal network for API access |

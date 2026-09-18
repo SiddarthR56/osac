@@ -118,8 +118,6 @@ aap:
     clusterFulfillment:
       enabled: true
       config:
-        NETWORK_CLASS: ""
-        NETWORK_STEPS_COLLECTION: ""
         EXTERNAL_ACCESS_BASE_DOMAIN: "box.massopen.cloud"
         EXTERNAL_ACCESS_SUPPORTED_BASE_DOMAINS: "box.massopen.cloud"
         EXTERNAL_ACCESS_API_INTERNAL_NETWORK: "hypershift"

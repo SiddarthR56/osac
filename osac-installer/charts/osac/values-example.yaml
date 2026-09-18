@@ -18,10 +18,13 @@
 
 global:
   networking:
-    # Supported profiles today: cudn + none, netris + none, and
-    # none + k8s_only. Unsupported provider/overlay pairs fail during render.
-    provider: cudn
-    overlay: none
+    # provider selects the fabric/backend family; overlay selects the Kubernetes
+    # networking mode. Supported facade profiles today:
+    #   - provider: netris, overlay: none  → fabricManager netris
+    #   - provider: none, overlay: k8s_only → k8sManager k8s_only
+    # Reserved values (cudn, vlan, cudn_evpn, cudn_localnet) fail during render.
+    provider: none
+    overlay: k8s_only
     netris:
       controllerUrl: ""
       credentials:

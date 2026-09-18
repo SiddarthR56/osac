@@ -33,8 +33,8 @@ Accepts either a string (legacy) or an array of capability tokens.
 {{- if .Values.global }}
 {{- $globalNetworking = .Values.global.networking | default dict -}}
 {{- end }}
-{{- $provider := $globalNetworking.provider | default "cudn" -}}
-{{- $overlay := $globalNetworking.overlay | default "none" -}}
+{{- $provider := $globalNetworking.provider | default "none" -}}
+{{- $overlay := $globalNetworking.overlay | default "k8s_only" -}}
 {{- $netrisEnabled := eq $provider "netris" -}}
 {{- $agentlessEnabled := and (eq $provider "none") (eq $overlay "k8s_only") -}}
 {{- $netExpert := false -}}
