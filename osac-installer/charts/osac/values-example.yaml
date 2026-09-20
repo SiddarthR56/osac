@@ -18,13 +18,12 @@
 
 global:
   networking:
-    # provider selects the fabric/backend family; overlay selects the Kubernetes
-    # networking mode. Supported facade profiles today:
-    #   - provider: netris, overlay: none  → fabricManager netris
-    #   - provider: none, overlay: k8s_only → k8sManager k8s_only
-    # Reserved values (cudn, vlan, cudn_evpn, cudn_localnet) fail during render.
-    provider: none
-    overlay: k8s_only
+    # Supported facade profiles today:
+    #   - fabricManager: netris, k8sManager: ""     → fabricManager netris
+    #   - fabricManager: "", k8sManager: k8s_only   → k8sManager k8s_only
+    # Reserved fabric managers (cudn_net, vlan) fail during render.
+    fabricManager: ""
+    k8sManager: k8s_only
     netris:
       controllerUrl: ""
       credentials:
@@ -36,7 +35,7 @@ global:
       mgmtVpcId: ""
       mgmtVpcName: ""
       resourceClassMap: ""
-    # Empty means Helm generates the provider-specific default NetworkClass.
+    # Empty means Helm generates the manager-specific default NetworkClass.
     networkClass: {}
 
 # ---------------------
@@ -441,8 +440,8 @@ hubAccess:
 #
 # global:
 #   networking:
-#     provider: netris
-#     overlay: none
+#     fabricManager: netris
+#     k8sManager: ""
 #     netris:
 #       controllerUrl: "https://redhat-ctl.netris.io"
 #       credentials:

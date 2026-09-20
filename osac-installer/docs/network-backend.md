@@ -8,33 +8,32 @@ NetworkClass from that single block.
 
 For general AAP configuration see [AAP Configuration](aap-configuration.md).
 
-## Provider vs overlay
+## Fabric vs Kubernetes managers
 
-`provider` and `overlay` are the facade inputs. They map to the operator /
-NetworkClass manager names (`fabricManager` / `k8sManager`) and AAP backend
-selectors:
+`fabricManager` and `k8sManager` are the facade inputs. They match the operator /
+NetworkClass manager names and select the AAP backend:
 
-| `provider` | `overlay` | Derived manager | Derived AAP backend | Status |
-|------------|-----------|-----------------|---------------------|--------|
-| `netris` | `none` | `fabricManager: netris` | `netris` / `netris.steps` | Supported |
-| `none` | `k8s_only` | `k8sManager: k8s_only` | `agentless_net` / `agentless_net.steps` | Supported (default) |
-| `none` | `none` | Must set managers via `global.networking.networkClass` or expert overrides | — | Expert only |
-| `cudn` | * | — | — | Reserved; Helm render fails |
-| `vlan` | * | — | — | Reserved; Helm render fails |
+| `fabricManager` | `k8sManager` | Derived AAP backend | Status |
+|-----------------|--------------|---------------------|--------|
+| `netris` | `""` | `netris` / `netris.steps` | Supported |
+| `""` | `k8s_only` | `agentless_net` / `agentless_net.steps` | Supported (default) |
+| `""` | `""` | Must set managers via `global.networking.networkClass` or expert overrides | Expert only |
+| `cudn_net` | * | — | Reserved; Helm render fails |
+| `vlan` | * | — | Reserved; Helm render fails |
 
-The `cudn_evpn` and `cudn_localnet` overlays are also reserved and fail during
-render.
+Setting both managers non-empty fails during render. The removed
+`provider` / `overlay` keys also fail with a migration message.
 
 ## What Helm derives
 
-When `global.networking.provider` is `netris`, Helm automatically:
+When `global.networking.fabricManager` is `netris`, Helm automatically:
 
 - Enables `operator.networkManagers.fabricManagers.netris`
 - Sets `NETWORK_CLASS`, `NETWORK_STEPS_COLLECTION`, and shared `NETRIS_*` fields on
   both AAP instance groups when they are enabled (no manual duplication)
 - Points the generated NetworkClass at `fabricManager: netris`
 
-When `provider` is `none` and `overlay` is `k8s_only`, Helm enables
+When `fabricManager` is empty and `k8sManager` is `k8s_only`, Helm enables
 `operator.networkManagers.k8sManagers.k8s_only`, sets the agentless AAP backend,
 and points the NetworkClass at `k8sManager: k8s_only`.
 
@@ -50,8 +49,8 @@ fulfillment receives the shared Netris connection fields only.
 ```yaml
 global:
   networking:
-    provider: netris
-    overlay: none
+    fabricManager: netris
+    k8sManager: ""
     netris:
       controllerUrl: "https://redhat-ctl.netris.io"
       credentials:
@@ -79,8 +78,8 @@ managed outside Helm.
 ```yaml
 global:
   networking:
-    provider: none
-    overlay: k8s_only
+    fabricManager: ""
+    k8sManager: k8s_only
 ```
 
 ## Expert overrides

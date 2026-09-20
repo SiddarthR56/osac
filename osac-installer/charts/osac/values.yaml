@@ -34,16 +34,15 @@ global:
     maas:
       enabled: true
   # Primary networking configuration shared with the operator and AAP
-  # subcharts. The selected provider/overlay pair is translated into the
-  # existing manager names and AAP settings by Helm.
+  # subcharts. Select fabricManager and/or k8sManager; Helm derives AAP
+  # backends and NetworkClass defaults from those manager names.
   networking:
-    # provider selects the fabric/backend family; overlay selects the Kubernetes
-    # networking mode. Supported facade profiles:
-    #   - provider: netris, overlay: none  → fabricManager netris
-    #   - provider: none, overlay: k8s_only → k8sManager k8s_only (default)
-    # Reserved values (cudn, vlan, cudn_evpn, cudn_localnet) fail during render.
-    provider: none
-    overlay: k8s_only
+    # Supported facade profiles:
+    #   - fabricManager: netris, k8sManager: ""     → fabricManager netris
+    #   - fabricManager: "", k8sManager: k8s_only   → k8sManager k8s_only (default)
+    # Reserved fabric managers (cudn_net, vlan) fail during render.
+    fabricManager: ""
+    k8sManager: k8s_only
     netris:
       controllerUrl: ""
       credentials:
@@ -55,7 +54,7 @@ global:
       mgmtVpcName: ""
       resourceClassMap: ""
     # An empty block causes Helm to generate the default NetworkClass from
-    # provider and overlay. Explicit fields override generated values.
+    # fabricManager/k8sManager. Explicit fields override generated values.
     networkClass: {}
   expertOverrides:
     aap: false

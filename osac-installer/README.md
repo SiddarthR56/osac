@@ -293,15 +293,15 @@ See [docs/aap-configuration.md](docs/aap-configuration.md) for details.
 
 #### Network Backend Configuration (CaaS)
 
-Default networking is agentless (`global.networking.provider: none`,
-`overlay: k8s_only`). For **Netris**, set the facade and enable both AAP
+Default networking is agentless (`global.networking.fabricManager: ""`,
+`k8sManager: k8s_only`). For **Netris**, set the facade and enable both AAP
 instance groups:
 
 ```yaml
 global:
   networking:
-    provider: netris
-    overlay: none
+    fabricManager: netris
+    k8sManager: ""
     netris:
       controllerUrl: "https://redhat-ctl.netris.io"
       credentials:

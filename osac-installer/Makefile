@@ -415,5 +415,5 @@ helm-validate: helm-lint helm-networking-test ## Validate all charts (lint + tem
 	@echo "Validation passed."
 
 .PHONY: helm-networking-test
-helm-networking-test: helm-deps ## Test networking provider/overlay validation and derivation
+helm-networking-test: helm-deps ## Test networking fabricManager/k8sManager validation and derivation
 	./scripts/test-networking-values.sh

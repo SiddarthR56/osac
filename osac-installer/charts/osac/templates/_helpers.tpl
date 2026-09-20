@@ -152,8 +152,8 @@ facade vs low-level surface mismatches).
 {{- $networking := include "osac.networking.effective" . | fromYaml -}}
 {{- $expert := .Values.global.expertOverrides | default dict -}}
 {{- $netris := $networking.netris | default dict -}}
-{{- $netrisEnabled := eq $networking.provider "netris" -}}
-{{- $agentlessEnabled := and (eq $networking.provider "none") (eq $networking.overlay "k8s_only") -}}
+{{- $netrisEnabled := eq $networking.fabricManager "netris" -}}
+{{- $agentlessEnabled := eq $networking.k8sManager "k8s_only" -}}
 {{- $netExpertAap := $expert.aap | default false -}}
 {{- $netExpertNetworkClass := $expert.networkClass | default false -}}
 {{- $netExpertNetworkManagers := $expert.networkManagers | default false -}}

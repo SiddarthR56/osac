@@ -33,10 +33,15 @@ Accepts either a string (legacy) or an array of capability tokens.
 {{- if .Values.global }}
 {{- $globalNetworking = .Values.global.networking | default dict -}}
 {{- end }}
-{{- $provider := $globalNetworking.provider | default "none" -}}
-{{- $overlay := $globalNetworking.overlay | default "k8s_only" -}}
-{{- $netrisEnabled := eq $provider "netris" -}}
-{{- $agentlessEnabled := and (eq $provider "none") (eq $overlay "k8s_only") -}}
+{{- $fabricManager := $globalNetworking.fabricManager | default "" -}}
+{{- $k8sManager := "" -}}
+{{- if hasKey $globalNetworking "k8sManager" -}}
+{{- $k8sManager = $globalNetworking.k8sManager | default "" -}}
+{{- else if eq $fabricManager "" -}}
+{{- $k8sManager = "k8s_only" -}}
+{{- end -}}
+{{- $netrisEnabled := eq $fabricManager "netris" -}}
+{{- $agentlessEnabled := eq $k8sManager "k8s_only" -}}
 {{- $netExpert := false -}}
 {{- if and .Values.global .Values.global.expertOverrides }}
 {{- $netExpert = .Values.global.expertOverrides.networkManagers | default false -}}

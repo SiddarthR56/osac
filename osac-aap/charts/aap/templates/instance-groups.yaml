@@ -10,11 +10,16 @@
 {{- if .Values.global }}
 {{- $globalNetworking = .Values.global.networking | default dict -}}
 {{- end }}
-{{- $provider := $globalNetworking.provider | default "none" -}}
-{{- $overlay := $globalNetworking.overlay | default "k8s_only" -}}
+{{- $fabricManager := $globalNetworking.fabricManager | default "" -}}
+{{- $k8sManager := "" -}}
+{{- if hasKey $globalNetworking "k8sManager" -}}
+{{- $k8sManager = $globalNetworking.k8sManager | default "" -}}
+{{- else if eq $fabricManager "" -}}
+{{- $k8sManager = "k8s_only" -}}
+{{- end -}}
 {{- $netris := $globalNetworking.netris | default dict -}}
-{{- $netrisEnabled := eq $provider "netris" -}}
-{{- $agentlessEnabled := and (eq $provider "none") (eq $overlay "k8s_only") -}}
+{{- $netrisEnabled := eq $fabricManager "netris" -}}
+{{- $agentlessEnabled := eq $k8sManager "k8s_only" -}}
 {{- $netExpert := false -}}
 {{- if and .Values.global .Values.global.expertOverrides }}
 {{- $netExpert = .Values.global.expertOverrides.aap | default false -}}
@@ -94,9 +99,9 @@ data: {}
 {{- if .Values.global }}
 {{- $globalNetworking = .Values.global.networking | default dict -}}
 {{- end }}
-{{- $provider := $globalNetworking.provider | default "none" -}}
+{{- $fabricManager := $globalNetworking.fabricManager | default "" -}}
 {{- $netris := $globalNetworking.netris | default dict -}}
-{{- $netrisEnabled := eq $provider "netris" -}}
+{{- $netrisEnabled := eq $fabricManager "netris" -}}
 {{- $netExpert := false -}}
 {{- if and .Values.global .Values.global.expertOverrides }}
 {{- $netExpert = .Values.global.expertOverrides.aap | default false -}}

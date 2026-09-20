@@ -13,8 +13,8 @@ global:
     maas:
       enabled: false
   networking:
-    provider: none
-    overlay: k8s_only
+    fabricManager: ""
+    k8sManager: k8s_only
     networkClass:
       title: "K8s-only networking"
       description: >-

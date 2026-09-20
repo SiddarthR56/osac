@@ -62,30 +62,30 @@ render_operator_success() {
 render_success \
   agentless \
   'k8s_manager\":\"k8s_only' \
-  --set global.networking.provider=none \
-  --set global.networking.overlay=k8s_only
+  --set global.networking.fabricManager= \
+  --set global.networking.k8sManager=k8s_only
 
 # Facade auto-enables the k8s_only manager ConfigMap for agentless profiles.
 render_success \
   agentless-manager-configmap \
   'name: osac-network-k8s-manager-k8s-only' \
-  --set global.networking.provider=none \
-  --set global.networking.overlay=k8s_only
+  --set global.networking.fabricManager= \
+  --set global.networking.k8sManager=k8s_only
 
 # Default operator values advertise ipv4-only capabilities on manager ConfigMaps.
 render_success \
   agentless-manager-capabilities \
   'capabilities: "ipv4"' \
-  --set global.networking.provider=none \
-  --set global.networking.overlay=k8s_only
+  --set global.networking.fabricManager= \
+  --set global.networking.k8sManager=k8s_only
 
-# Netris requires the provider-specific connection details and derives its
+# Netris requires the fabric-specific connection details and derives its
 # manager and NetworkClass. These are test-only placeholders, never credentials.
 render_success \
   netris \
   'fabric_manager\":\"netris' \
-  --set global.networking.provider=netris \
-  --set global.networking.overlay=none \
+  --set global.networking.fabricManager=netris \
+  --set global.networking.k8sManager= \
   --set-string global.networking.netris.controllerUrl=https://netris.example.com \
   --set-string global.networking.netris.credentials.username=test-user \
   --set-string global.networking.netris.credentials.password="${TEST_NETRIS_PASSWORD}" \
@@ -97,8 +97,8 @@ render_success \
 render_success \
   netris-manager-configmap \
   'name: osac-network-fabric-manager-netris' \
-  --set global.networking.provider=netris \
-  --set global.networking.overlay=none \
+  --set global.networking.fabricManager=netris \
+  --set global.networking.k8sManager= \
   --set-string global.networking.netris.controllerUrl=https://netris.example.com \
   --set-string global.networking.netris.credentials.username=test-user \
   --set-string global.networking.netris.credentials.password="${TEST_NETRIS_PASSWORD}" \
@@ -112,8 +112,8 @@ render_success \
 render_success \
   netris-external-secret \
   'fabric_manager\":\"netris' \
-  --set global.networking.provider=netris \
-  --set global.networking.overlay=none \
+  --set global.networking.fabricManager=netris \
+  --set global.networking.k8sManager= \
   --set-string global.networking.netris.controllerUrl=https://netris.example.com \
   --set-string global.networking.netris.credentials.username=test-user \
   --set global.networking.netris.credentials.externalSecret=true \
@@ -124,8 +124,8 @@ render_success \
 # Inline passwords and externalSecret are mutually exclusive.
 render_failure \
   netris-both-password-sources \
-  --set global.networking.provider=netris \
-  --set global.networking.overlay=none \
+  --set global.networking.fabricManager=netris \
+  --set global.networking.k8sManager= \
   --set-string global.networking.netris.controllerUrl=https://netris.example.com \
   --set-string global.networking.netris.credentials.username=test-user \
   --set-string global.networking.netris.credentials.password="${TEST_NETRIS_PASSWORD}" \
@@ -138,39 +138,39 @@ render_failure \
 render_success \
   network-class-override \
   'title\":\"Custom network' \
-  --set global.networking.provider=none \
-  --set global.networking.overlay=k8s_only \
+  --set global.networking.fabricManager= \
+  --set global.networking.k8sManager=k8s_only \
   --set-string global.networking.networkClass.title=Custom\ network
 
 # Port ranges are meaningful only for TCP and UDP rules.
 render_failure \
   icmp-with-ports \
-  --set global.networking.provider=none \
-  --set global.networking.overlay=k8s_only \
+  --set global.networking.fabricManager= \
+  --set global.networking.k8sManager=k8s_only \
   --set global.networking.networkClass.defaults.egressRules[0].protocol=PROTOCOL_ICMP \
   --set global.networking.networkClass.defaults.egressRules[0].portFrom=80 \
   --set global.networking.networkClass.defaults.egressRules[0].portTo=443
 
 render_failure \
   all-with-ports \
-  --set global.networking.provider=none \
-  --set global.networking.overlay=k8s_only \
+  --set global.networking.fabricManager= \
+  --set global.networking.k8sManager=k8s_only \
   --set global.networking.networkClass.defaults.egressRules[0].protocol=PROTOCOL_ALL \
   --set global.networking.networkClass.defaults.egressRules[0].portFrom=80 \
   --set global.networking.networkClass.defaults.egressRules[0].portTo=443
 
-# Required provider details and unsupported provider/overlay combinations must
+# Required fabric details and unsupported manager combinations must
 # fail before Helm produces installable manifests.
 render_failure \
   netris-missing-details \
-  --set global.networking.provider=netris \
-  --set global.networking.overlay=none
+  --set global.networking.fabricManager=netris \
+  --set global.networking.k8sManager=
 
 # CUDN has no facade implementation yet and must fail at render time.
 render_failure \
   cudn-not-implemented \
-  --set global.networking.provider=cudn \
-  --set global.networking.overlay=none
+  --set global.networking.fabricManager=cudn_net \
+  --set global.networking.k8sManager=
 
 render_failure \
   legacy-fabric-manager-facade \
@@ -181,8 +181,12 @@ render_failure \
   --set global.k8sManager.agentlessNet.enabled=true
 
 render_failure \
-  legacy-provider-in-new-facade \
-  --set global.networking.provider=esi
+  removed-provider-key \
+  --set global.networking.provider=netris
+
+render_failure \
+  removed-overlay-key \
+  --set global.networking.overlay=k8s_only
 
 render_failure \
   legacy-network-class \
@@ -197,9 +201,9 @@ render_failure \
   --set-string aap.instanceGroups.clusterFulfillment.config.NETWORK_STEPS_COLLECTION=nico.steps
 
 render_failure \
-  netris-k8s-only \
-  --set global.networking.provider=netris \
-  --set global.networking.overlay=k8s_only \
+  netris-with-k8s-only \
+  --set global.networking.fabricManager=netris \
+  --set global.networking.k8sManager=k8s_only \
   --set-string global.networking.netris.controllerUrl=https://netris.example.com \
   --set-string global.networking.netris.credentials.username=test-user \
   --set-string global.networking.netris.credentials.password="${TEST_NETRIS_PASSWORD}" \
@@ -208,25 +212,20 @@ render_failure \
   --set-string global.networking.netris.tenantName=test
 
 render_failure \
-  cudn-k8s-only \
-  --set global.networking.provider=cudn \
-  --set global.networking.overlay=k8s_only
+  vlan-not-implemented \
+  --set global.networking.fabricManager=vlan \
+  --set global.networking.k8sManager=
 
 render_failure \
   k8s-only-with-fabric-manager \
-  --set global.networking.provider=none \
-  --set global.networking.overlay=k8s_only \
+  --set global.networking.fabricManager= \
+  --set global.networking.k8sManager=k8s_only \
   --set global.networking.networkClass.fabricManager=netris
 
 render_failure \
-  cudn-evpn-not-implemented \
-  --set global.networking.provider=cudn \
-  --set global.networking.overlay=cudn_evpn
-
-render_failure \
-  no-provider-or-overlay \
-  --set global.networking.provider=none \
-  --set global.networking.overlay=none
+  no-managers \
+  --set global.networking.fabricManager= \
+  --set global.networking.k8sManager=
 
 # networkManagerCapabilities helper: array form (join with commas).
 render_operator_success \
@@ -244,12 +243,12 @@ render_operator_success \
   --set networkManagers.k8sManagers.k8s_only.enabled=true \
   --set-string networkManagers.k8sManagers.k8s_only.capabilities=ipv4
 
-# Facade on the operator chart auto-enables k8s_only when overlay is k8s_only.
+# Facade on the operator chart auto-enables k8s_only when k8sManager is k8s_only.
 render_operator_success \
   facade-auto-enable-k8s-only \
   'name: osac-network-k8s-manager-k8s-only' \
   --set networkManagers.enabled=true \
-  --set global.networking.provider=none \
-  --set global.networking.overlay=k8s_only
+  --set global.networking.fabricManager= \
+  --set global.networking.k8sManager=k8s_only
 
 echo "networking values validation passed"

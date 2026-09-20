@@ -3,8 +3,8 @@
 global:
   osacDeploymentId: "ci/osac"
   networking:
-    provider: netris
-    overlay: none
+    fabricManager: netris
+    k8sManager: ""
     netris:
       controllerUrl: "https://test-ctl.netris.io"
       credentials:
