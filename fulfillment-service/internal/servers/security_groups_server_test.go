@@ -535,21 +535,20 @@ var _ = Describe("SecurityGroups server", func() {
 
 			object := createResp.GetObject()
 			object.GetMetadata().SetLabels(map[string]string{"env": "test"})
+			// Public Update merges labels onto the existing object, preserving the default marker.
 			_, err = server.Update(ctx, publicv1.SecurityGroupsUpdateRequest_builder{Object: object}.Build())
-			Expect(err).To(HaveOccurred())
-			status, ok := grpcstatus.FromError(err)
-			Expect(ok).To(BeTrue())
-			Expect(status.Code()).To(Equal(grpccodes.FailedPrecondition))
+			Expect(err).ToNot(HaveOccurred())
 
 			_, err = server.Delete(ctx, publicv1.SecurityGroupsDeleteRequest_builder{Id: object.GetId()}.Build())
 			Expect(err).To(HaveOccurred())
-			status, ok = grpcstatus.FromError(err)
+			status, ok := grpcstatus.FromError(err)
 			Expect(ok).To(BeTrue())
 			Expect(status.Code()).To(Equal(grpccodes.FailedPrecondition))
 
 			getResponse, err := server.Get(ctx, publicv1.SecurityGroupsGetRequest_builder{Id: object.GetId()}.Build())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(getResponse.GetObject().GetMetadata().GetLabels()).To(HaveKeyWithValue("osac.openshift.io/default", "true"))
+			Expect(getResponse.GetObject().GetMetadata().GetLabels()).To(HaveKeyWithValue("env", "test"))
 		})
 	})
 })
