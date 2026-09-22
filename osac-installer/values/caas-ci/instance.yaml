@@ -3,6 +3,11 @@
 # --- Service Enablement ---
 global:
   osacDeploymentId: "ci/osac"
+  # Keep clusterFulfillment NETWORK_STEPS_COLLECTION=ci.steps authoritative.
+  # Without this, the agentless networking facade overwrites it with
+  # agentless_net.steps (see docs/aap-configuration.md).
+  expertOverrides:
+    aap: true
   services:
     caas:
       enabled: true
