@@ -350,6 +350,20 @@ metering:
 # --- CSI Driver ---
 csiDriver:
   enabled: false
+  # The shared hub CSI deployment runs in its own namespace. Tenant
+  # installations use their Helm release namespace instead.
+  namespace: osac-csi
+  controller:
+    fulfillment:
+      # Shared hub CSI credentials. Tenant-cluster credentials are a separate
+      # AAP/OSAC-4197 concern and are not created by this chart.
+      configMap:
+        name: osac-csi-fulfillment-config
+        endpointKey: OSAC_FULFILLMENT_ENDPOINT
+        issuerUrlKey: OSAC_FULFILLMENT_ISSUER_URL
+      credentials:
+        secretName: osac-csi-driver-credentials
+      allowStub: false
   image:
     repository: ghcr.io/osac-project/osac-csi-driver
     tag: latest  # PLACEHOLDER -- overwritten at release time by osac-build-and-publish.yaml
