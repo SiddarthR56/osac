@@ -102,9 +102,6 @@ var _ = Describe("Bare metal instances server", func() {
 			Expect(err).ToNot(HaveOccurred())
 			catalogItemID = catalogResp.GetObject().GetId()
 
-			// Tenant defaults so Creates that omit network_attachments can inject them.
-			seedTenantDefaultNetworking(testTenant, "", new("netris"))
-
 			server, err = NewBareMetalInstancesServer().
 				SetLogger(logger).
 				SetAttributionLogic(attribution).

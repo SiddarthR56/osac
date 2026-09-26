@@ -132,9 +132,6 @@ var _ = Describe("Private bare metal instances server", func() {
 			Expect(err).ToNot(HaveOccurred())
 			catalogItemID = catalogResp.GetObject().GetId()
 
-			// Tenant defaults so Creates that omit network_attachments can inject them.
-			seedTenantDefaultNetworking(testTenant, "", new("netris"))
-
 			// Create an ExternalIPPool so auto_external_ip_attachment tests can allocate.
 			externalIPPoolDao, err := dao.NewGenericDAO[*privatev1.ExternalIPPool]().
 				SetLogger(logger).
@@ -2849,68 +2846,14 @@ var _ = Describe("Private bare metal instances server", func() {
 			Expect(err).ToNot(HaveOccurred())
 			catIDNoHT = catResp2.GetObject().GetId()
 
-			// Create a NetworkClass with fabric_manager for the fabric manager validation.
-			ncDao, err := dao.NewGenericDAO[*privatev1.NetworkClass]().
-				SetLogger(logger).
-				SetTenancyLogic(tenancy).
-				Build()
-			Expect(err).ToNot(HaveOccurred())
-			fabricMgr := "netris"
-			ncResp, err := ncDao.Create().SetObject(privatev1.NetworkClass_builder{
-				Metadata: privatev1.Metadata_builder{
-					Name:   "default-nc",
-					Tenant: "system",
-				}.Build(),
-				FabricManager: &fabricMgr,
-			}.Build()).Do(ctx)
-			Expect(err).ToNot(HaveOccurred())
-			ncID := ncResp.GetObject().GetId()
+			subnetID, sgID, vnID := seedTenantDefaultNetworking(testTenant, "", new("netris"))
 
-			// Create a VirtualNetwork.
-			vnDao, err := dao.NewGenericDAO[*privatev1.VirtualNetwork]().
-				SetLogger(logger).
-				SetTenancyLogic(tenancy).
-				Build()
-			Expect(err).ToNot(HaveOccurred())
-			vnResp, err := vnDao.Create().SetObject(privatev1.VirtualNetwork_builder{
-				Metadata: privatev1.Metadata_builder{
-					Name:   "default",
-					Tenant: testTenant,
-					Labels: map[string]string{
-						"osac.openshift.io/default": "true",
-					},
-				}.Build(),
-				Spec: privatev1.VirtualNetworkSpec_builder{
-					NetworkClass: privatev1.NetworkClassReference_builder{Id: ncID}.Build(),
-				}.Build(),
-			}.Build()).Do(ctx)
-			Expect(err).ToNot(HaveOccurred())
-			vnID := vnResp.GetObject().GetId()
-
-			// Create default subnet with proper VN reference.
 			subnetDao, err := dao.NewGenericDAO[*privatev1.Subnet]().
 				SetLogger(logger).
 				SetTenancyLogic(tenancy).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
-
-			ipv4Cidr := "10.0.1.0/24"
-			subnetResp, err := subnetDao.Create().SetObject(privatev1.Subnet_builder{
-				Metadata: privatev1.Metadata_builder{
-					Name:   "default-ipv4",
-					Tenant: testTenant,
-					Labels: map[string]string{
-						"osac.openshift.io/default": "true",
-					},
-				}.Build(),
-				Spec: privatev1.SubnetSpec_builder{
-					Ipv4Cidr:       &ipv4Cidr,
-					VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: vnID}.Build(),
-				}.Build(),
-				Status: privatev1.SubnetStatus_builder{
-					State: privatev1.SubnetState_SUBNET_STATE_READY,
-				}.Build(),
-			}.Build()).Do(ctx)
+			subnetResp, err := subnetDao.Get().SetId(subnetID).Do(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			defaultSubnet = subnetResp.GetObject()
 
@@ -2919,24 +2862,18 @@ var _ = Describe("Private bare metal instances server", func() {
 				SetTenancyLogic(tenancy).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
-
-			sgResp, err := sgDao.Create().SetObject(privatev1.SecurityGroup_builder{
-				Metadata: privatev1.Metadata_builder{
-					Name:   "default",
-					Tenant: testTenant,
-					Labels: map[string]string{
-						"osac.openshift.io/default": "true",
-					},
-				}.Build(),
-				Spec: privatev1.SecurityGroupSpec_builder{
-					VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: vnID}.Build(),
-				}.Build(),
-				Status: privatev1.SecurityGroupStatus_builder{
-					State: privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY,
-				}.Build(),
-			}.Build()).Do(ctx)
+			sgResp, err := sgDao.Get().SetId(sgID).Do(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			defaultSG = sgResp.GetObject()
+
+			vnDao, err := dao.NewGenericDAO[*privatev1.VirtualNetwork]().
+				SetLogger(logger).
+				SetTenancyLogic(tenancy).
+				Build()
+			Expect(err).ToNot(HaveOccurred())
+			vnResp, err := vnDao.Get().SetId(vnID).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			ncID := refKey(vnResp.GetObject().GetSpec().GetNetworkClass())
 
 			// Custom subnet on the default VN (for partial fill / no-overwrite cases).
 			customCidr := "10.100.2.0/24"
