@@ -612,6 +612,7 @@ func (s *PrivateBareMetalInstancesServer) applyDefaultNetworkAttachments(
 	}
 
 	var resolvedSubnet *privatev1.Subnet
+	var err error
 	if attachment.GetSubnet() == nil || refKey(attachment.GetSubnet()) == "" {
 		if defaultSubnet == nil {
 			return grpcstatus.Errorf(grpccodes.InvalidArgument,
