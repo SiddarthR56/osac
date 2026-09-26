@@ -173,6 +173,9 @@ var _ = Describe("Private bare metal instances server", func() {
 			Expect(err).ToNot(HaveOccurred())
 			catalogItemID = catalogResp.GetObject().GetId()
 
+			// Tenant defaults so Creates that omit network_attachments can inject them.
+			seedTenantDefaultNetworking(testTenant, "", new("netris"))
+
 			// Create an ExternalIPPool so auto_external_ip_attachment tests can allocate.
 			externalIPPoolDao, err := dao.NewGenericDAO[*privatev1.ExternalIPPool]().
 				SetLogger(logger).
