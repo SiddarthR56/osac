@@ -564,12 +564,13 @@ func (s *PrivateBareMetalInstancesServer) validateSpec(bmi *privatev1.BareMetalI
 	return nil
 }
 
-// applyDefaultNetworkAttachments populates network_attachments with tenant defaults when
-// omitted at create time: default IPv4 Subnet, default SecurityGroup, first fabric-role
-// interface from the HostType.
+// applyDefaultNetworkAttachments completes network_attachments at Create time.
+// len==0 injects a sole tenant-default attachment; len==1 fills missing subnet /
+// empty security_groups / interface without overwriting supplied values; len>1 is a no-op.
 func (s *PrivateBareMetalInstancesServer) applyDefaultNetworkAttachments(
 	ctx context.Context, bmi *privatev1.BareMetalInstance) error {
-	if len(bmi.GetSpec().GetNetworkAttachments()) > 0 {
+	attachments := bmi.GetSpec().GetNetworkAttachments()
+	if len(attachments) > 1 {
 		return nil
 	}
 
@@ -583,21 +584,96 @@ func (s *PrivateBareMetalInstancesServer) applyDefaultNetworkAttachments(
 			return grpcstatus.Errorf(grpccodes.Internal, "failed to determine tenant")
 		}
 	}
+	project := bmi.GetMetadata().GetProject()
 
-	subnet, err := s.findDefaultSubnet(ctx, tenantName, bmi.GetMetadata().GetProject())
+	defaultSubnet, err := findDefaultSubnet(ctx, s.logger, s.subnetsDao, tenantName, project)
 	if err != nil {
-		return err
+		s.logger.ErrorContext(ctx, "Failed to look up default subnet",
+			slog.String("tenant", tenantName), slog.Any("error", err))
+		return grpcstatus.Errorf(grpccodes.Internal, "failed to find default subnet")
 	}
-	if subnet == nil {
-		return nil
+	defaultVN := ""
+	if defaultSubnet != nil {
+		defaultVN = refKey(defaultSubnet.GetSpec().GetVirtualNetwork())
 	}
 
-	sg, err := s.findDefaultSecurityGroup(ctx, tenantName, bmi.GetMetadata().GetProject())
+	if len(attachments) == 0 {
+		return s.injectFullDefaultNetworkAttachment(ctx, bmi, tenantName, project, defaultSubnet)
+	}
+
+	attachment := attachments[0]
+	if attachment == nil {
+		return grpcstatus.Errorf(grpccodes.InvalidArgument, "network_attachments[0]: attachment cannot be null")
+	}
+
+	var resolvedSubnet *privatev1.Subnet
+	if attachment.GetSubnet() == nil || refKey(attachment.GetSubnet()) == "" {
+		if defaultSubnet == nil {
+			return grpcstatus.Errorf(grpccodes.InvalidArgument,
+				"spec.network_attachments: subnet is required and no tenant default subnet is available")
+		}
+		attachment.SetSubnet(privatev1.SubnetLocalReference_builder{Id: defaultSubnet.GetId()}.Build())
+		resolvedSubnet = defaultSubnet
+	} else {
+		resolvedSubnet, err = resolveAndCanonicalizeReference(ctx, s.subnetsDao, bmi.GetMetadata(),
+			attachment.GetSubnet(), "subnet", grpccodes.InvalidArgument)
+		if err != nil {
+			return err
+		}
+	}
+
+	subnetVN := refKey(resolvedSubnet.GetSpec().GetVirtualNetwork())
+	if securityGroupsMissing(attachment) {
+		if !subnetOnDefaultVirtualNetwork(subnetVN, defaultVN) {
+			return grpcstatus.Errorf(grpccodes.InvalidArgument,
+				"spec.network_attachments[0]: security_groups are required when the subnet is not on the tenant default virtual network")
+		}
+		sg, sgErr := findDefaultSecurityGroup(ctx, s.logger, s.securityGroupsDao, subnetVN, tenantName, project)
+		if sgErr != nil {
+			s.logger.ErrorContext(ctx, "Failed to look up default security group",
+				slog.String("tenant", tenantName), slog.Any("error", sgErr))
+			return grpcstatus.Errorf(grpccodes.Internal, "failed to find default security group")
+		}
+		if sg == nil {
+			return grpcstatus.Errorf(grpccodes.InvalidArgument,
+				"spec.network_attachments[0]: security_groups are required and no tenant default security group is available")
+		}
+		attachment.SetSecurityGroups([]*privatev1.SecurityGroupLocalReference{
+			privatev1.SecurityGroupLocalReference_builder{Id: sg.GetId()}.Build(),
+		})
+	}
+
+	if attachment.GetInterface() == "" {
+		ifaceName, ifaceErr := s.resolveDefaultInterface(ctx, bmi)
+		if ifaceErr != nil {
+			return ifaceErr
+		}
+		if ifaceName != "" {
+			attachment.SetInterface(ifaceName)
+		}
+	}
+
+	bmi.GetSpec().SetNetworkAttachments([]*privatev1.BareMetalNetworkAttachment{attachment})
+	return nil
+}
+
+func (s *PrivateBareMetalInstancesServer) injectFullDefaultNetworkAttachment(
+	ctx context.Context, bmi *privatev1.BareMetalInstance, tenantName, project string,
+	defaultSubnet *privatev1.Subnet) error {
+	if defaultSubnet == nil {
+		return grpcstatus.Errorf(grpccodes.InvalidArgument,
+			"spec.network_attachments: at least one network attachment is required and no tenant default subnet is available")
+	}
+	subnetVN := refKey(defaultSubnet.GetSpec().GetVirtualNetwork())
+	sg, err := findDefaultSecurityGroup(ctx, s.logger, s.securityGroupsDao, subnetVN, tenantName, project)
 	if err != nil {
-		return err
+		s.logger.ErrorContext(ctx, "Failed to look up default security group",
+			slog.String("tenant", tenantName), slog.Any("error", err))
+		return grpcstatus.Errorf(grpccodes.Internal, "failed to find default security group")
 	}
 	if sg == nil {
-		return nil
+		return grpcstatus.Errorf(grpccodes.InvalidArgument,
+			"spec.network_attachments: no tenant default security group is available")
 	}
 
 	ifaceName, err := s.resolveDefaultInterface(ctx, bmi)
@@ -606,66 +682,25 @@ func (s *PrivateBareMetalInstancesServer) applyDefaultNetworkAttachments(
 	}
 
 	attachment := privatev1.BareMetalNetworkAttachment_builder{
-		Subnet: privatev1.SubnetLocalReference_builder{Id: subnet.GetId()}.Build(),
+		Subnet: privatev1.SubnetLocalReference_builder{Id: defaultSubnet.GetId()}.Build(),
 		SecurityGroups: []*privatev1.SecurityGroupLocalReference{
 			privatev1.SecurityGroupLocalReference_builder{Id: sg.GetId()}.Build(),
 		},
-	}
+	}.Build()
 	if ifaceName != "" {
-		attachment.Interface = &ifaceName
+		attachment.SetInterface(ifaceName)
 	}
 
-	bmi.GetSpec().SetNetworkAttachments([]*privatev1.BareMetalNetworkAttachment{
-		attachment.Build(),
-	})
-
+	bmi.GetSpec().SetNetworkAttachments([]*privatev1.BareMetalNetworkAttachment{attachment})
 	return nil
 }
 
-func (s *PrivateBareMetalInstancesServer) findDefaultSubnet(
-	ctx context.Context, tenantName, project string) (*privatev1.Subnet, error) {
-	filter := fmt.Sprintf(
-		"this.metadata.labels['%s'] == 'true' && this.metadata.tenant == %q",
-		defaultLabel, tenantName,
-	)
-	filter += fmt.Sprintf(" && this.metadata.project == %q", project)
-	listResp, err := s.subnetsDao.List().SetFilter(filter).Do(ctx)
-	if err != nil {
-		s.logger.ErrorContext(ctx, "Failed to list default subnets",
-			slog.String("tenant", tenantName), slog.Any("error", err))
-		return nil, grpcstatus.Errorf(grpccodes.Internal, "failed to find default subnet")
-	}
-	for _, subnet := range listResp.GetItems() {
-		if subnet.GetMetadata().HasDeletionTimestamp() {
-			continue
-		}
-		if subnet.GetSpec().HasIpv4Cidr() {
-			return subnet, nil
-		}
-	}
-	return nil, nil
+func securityGroupsMissing(a *privatev1.BareMetalNetworkAttachment) bool {
+	return a == nil || len(a.GetSecurityGroups()) == 0
 }
 
-func (s *PrivateBareMetalInstancesServer) findDefaultSecurityGroup(
-	ctx context.Context, tenantName, project string) (*privatev1.SecurityGroup, error) {
-	filter := fmt.Sprintf(
-		"this.metadata.labels['%s'] == 'true' && this.metadata.tenant == %q",
-		defaultLabel, tenantName,
-	)
-	filter += fmt.Sprintf(" && this.metadata.project == %q", project)
-	listResp, err := s.securityGroupsDao.List().SetFilter(filter).Do(ctx)
-	if err != nil {
-		s.logger.ErrorContext(ctx, "Failed to list default security groups",
-			slog.String("tenant", tenantName), slog.Any("error", err))
-		return nil, grpcstatus.Errorf(grpccodes.Internal, "failed to find default security group")
-	}
-	for _, sg := range listResp.GetItems() {
-		if sg.GetMetadata().HasDeletionTimestamp() {
-			continue
-		}
-		return sg, nil
-	}
-	return nil, nil
+func subnetOnDefaultVirtualNetwork(subnetVN, defaultSubnetVN string) bool {
+	return subnetVN != "" && defaultSubnetVN != "" && subnetVN == defaultSubnetVN
 }
 
 // resolveDefaultInterface returns the first fabric-role interface name from the HostType
