@@ -1043,6 +1043,11 @@ func (s *PrivateClustersServer) applyDefaultNetworkAttachment(ctx context.Contex
 	var resolvedSubnet *privatev1.Subnet
 	if refKey(attachment.GetSubnet()) == "" {
 		if defaultSubnet == nil {
+			// Prefer the tenant-existence error when the assigned tenant is not in the DB,
+			// matching the DAO FK failure that Create would otherwise surface after prepare.
+			if err := s.requireTenantExists(ctx, tenant); err != nil {
+				return err
+			}
 			return grpcstatus.Errorf(grpccodes.InvalidArgument,
 				"spec.network_attachment: subnet is required and no tenant default subnet is available")
 		}
@@ -1082,6 +1087,33 @@ func (s *PrivateClustersServer) applyDefaultNetworkAttachment(ctx context.Contex
 		slog.String("subnet_id", refKey(attachment.GetSubnet())),
 		slog.String("security_group_id", sg.GetId()),
 	)
+	return nil
+}
+
+// requireTenantExists returns InvalidArgument when tenant is not present in the
+// tenants table. Used to preserve Create error precedence over missing network defaults.
+func (s *PrivateClustersServer) requireTenantExists(ctx context.Context, tenant string) error {
+	if tenant == "" {
+		return nil
+	}
+	tenantsDao, err := dao.NewGenericDAO[*privatev1.Tenant]().
+		SetLogger(s.logger).
+		SetTableName("tenants").
+		SetTenancyLogic(s.tenancyLogic).
+		Build()
+	if err != nil {
+		s.logger.ErrorContext(ctx, "failed to build tenants DAO for existence check", slog.Any("error", err))
+		return grpcstatus.Errorf(grpccodes.Internal, "failed to validate tenant")
+	}
+	_, err = tenantsDao.Get().SetId(tenant).Do(ctx)
+	if err != nil {
+		var notFound *dao.ErrNotFound
+		if errors.As(err, &notFound) {
+			return grpcstatus.Errorf(grpccodes.InvalidArgument, "tenant '%s' doesn't exist", tenant)
+		}
+		s.logger.ErrorContext(ctx, "failed to look up tenant", slog.String("tenant", tenant), slog.Any("error", err))
+		return grpcstatus.Errorf(grpccodes.Internal, "failed to validate tenant")
+	}
 	return nil
 }
 
