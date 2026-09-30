@@ -109,6 +109,10 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
+		// Lifecycle Creates omit network_attachments and use shared catalog items without
+		// network field policies; hard-fail defaulting needs a tenant-default Subnet/SG.
+		ensureTenantDefaultNetworkingFixture(ctx, usersGroup, "")
+
 		// Create BareMetalInstanceTemplate with an explicit ID that matches the BMFO CRD
 		// validation pattern (^[a-zA-Z_][a-zA-Z0-9._]*$). Auto-generated UUIDs start with
 		// a digit and are rejected by the CRD when the controller creates the CR.
