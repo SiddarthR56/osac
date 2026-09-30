@@ -905,7 +905,10 @@ var _ = Describe("Private NAT gateways server", func() {
 
 			object := createResp.GetObject()
 			object.GetMetadata().SetLabels(map[string]string{"env": "test"})
-			_, err = natGatewaysServer.Update(ctx, privatev1.NATGatewaysUpdateRequest_builder{Object: object}.Build())
+			_, err = natGatewaysServer.Update(ctx, privatev1.NATGatewaysUpdateRequest_builder{
+				Object:     object,
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"metadata.labels"}},
+			}.Build())
 			Expect(err).To(HaveOccurred())
 			status, ok := grpcstatus.FromError(err)
 			Expect(ok).To(BeTrue())
