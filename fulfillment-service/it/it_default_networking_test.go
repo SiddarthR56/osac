@@ -287,8 +287,11 @@ var _ = Describe("Default networking provisioning", func() {
 			tenantName,
 		)
 
-		By("Waiting for default VirtualNetwork, Subnet, and SecurityGroup")
-		var vnId, subnetId, sgId string
+		// Subnet/SG Create requires the parent VN to be READY. IT has no
+		// osac-operator, so force READY before waiting for child defaults —
+		// same pattern as the provisioning happy-path spec above.
+		By("Waiting for default VirtualNetwork")
+		var vnId string
 		Eventually(func(g Gomega) {
 			vnResp, err := virtualNetworksClient.List(ctx, privatev1.VirtualNetworksListRequest_builder{
 				Filter: &defaultLabelFilter,
@@ -296,7 +299,24 @@ var _ = Describe("Default networking provisioning", func() {
 			g.Expect(err).ToNot(HaveOccurred())
 			g.Expect(vnResp.GetItems()).ToNot(BeEmpty())
 			vnId = vnResp.GetItems()[0].GetId()
+		}, time.Minute, time.Second).Should(Succeed())
 
+		By("Setting default VirtualNetwork to READY (no osac-operator in IT)")
+		vnResp, err := virtualNetworksClient.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{Id: vnId}.Build())
+		Expect(err).ToNot(HaveOccurred())
+		vnObj := vnResp.GetObject()
+		vnObj.SetStatus(privatev1.VirtualNetworkStatus_builder{
+			State: privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_READY,
+		}.Build())
+		_, err = virtualNetworksClient.Update(ctx, privatev1.VirtualNetworksUpdateRequest_builder{
+			Object:     vnObj,
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"status.state"}},
+		}.Build())
+		Expect(err).ToNot(HaveOccurred())
+
+		By("Waiting for default Subnet and SecurityGroup")
+		var subnetId, sgId string
+		Eventually(func(g Gomega) {
 			subnetResp, err := subnetsClient.List(ctx, privatev1.SubnetsListRequest_builder{
 				Filter: &defaultLabelFilter,
 			}.Build())
@@ -350,7 +370,7 @@ var _ = Describe("Default networking provisioning", func() {
 		Expect(sgAfter.GetObject().GetStatus().GetState()).To(Equal(sgBefore.GetObject().GetStatus().GetState()))
 
 		By("Rejecting Update that strips the default label from VirtualNetwork")
-		vnObj := vnAfter.GetObject()
+		vnObj = vnAfter.GetObject()
 		vnObj.GetMetadata().SetLabels(map[string]string{"env": "test"})
 		_, err = virtualNetworksClient.Update(ctx, privatev1.VirtualNetworksUpdateRequest_builder{
 			Object:     vnObj,
