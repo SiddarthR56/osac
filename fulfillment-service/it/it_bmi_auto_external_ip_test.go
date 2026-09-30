@@ -7,7 +7,7 @@ License. You may obtain a copy of the License at
   http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an
-    10|"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific
 language governing permissions and limitations under the License.
 */
 
@@ -359,9 +359,7 @@ var _ = Describe("BMI auto ExternalIP", Ordered, Serial, Label("bmaas", "network
 		bmiID := bmi.GetId()
 		Expect(bmi.GetSpec().GetAutoExternalIpAttachment()).To(BeTrue())
 		DeferCleanup(func() {
-			_, _ = privateBareMetalInstancesClient.Delete(ctx, privatev1.BareMetalInstancesDeleteRequest_builder{
-				Id: bmiID,
-			}.Build())
+			deleteBMIAndWaitGone(bmiID)
 		})
 
 		eips := listAutoEIPs(bmiID)
@@ -443,7 +441,8 @@ var _ = Describe("BMI auto ExternalIP", Ordered, Serial, Label("bmaas", "network
 
 		var defaultVNID string
 		vnList, err := virtualNetworksClient.List(ctx, publicv1.VirtualNetworksListRequest_builder{}.Build())
-		if err == nil && len(vnList.GetItems()) > 0 {
+		Expect(err).ToNot(HaveOccurred())
+		if len(vnList.GetItems()) > 0 {
 			defaultVNID = vnList.GetItems()[0].GetId()
 		}
 
@@ -482,7 +481,6 @@ var _ = Describe("BMI auto ExternalIP", Ordered, Serial, Label("bmaas", "network
 
 		bmiListBefore, err := bareMetalInstancesClient.List(ctx, publicv1.BareMetalInstancesListRequest_builder{}.Build())
 		Expect(err).ToNot(HaveOccurred())
-		beforeCount := len(bmiListBefore.GetItems())
 		beforeIDs := map[string]struct{}{}
 		for _, item := range bmiListBefore.GetItems() {
 			beforeIDs[item.GetId()] = struct{}{}
@@ -491,7 +489,12 @@ var _ = Describe("BMI auto ExternalIP", Ordered, Serial, Label("bmaas", "network
 		poolBefore, err := poolsClient.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{Id: poolID}.Build())
 		Expect(err).ToNot(HaveOccurred())
 
-		_, err = createBMIWithAutoEIP(uuid.New()[24:32])
+		createResp, err := createBMIWithAutoEIP(uuid.New()[24:32])
+		if err == nil {
+			DeferCleanup(func() {
+				deleteBMIAndWaitGone(createResp.GetObject().GetId())
+			})
+		}
 		Expect(err).To(HaveOccurred())
 		status, ok := grpcstatus.FromError(err)
 		Expect(ok).To(BeTrue())
@@ -500,11 +503,12 @@ var _ = Describe("BMI auto ExternalIP", Ordered, Serial, Label("bmaas", "network
 
 		bmiListAfter, err := bareMetalInstancesClient.List(ctx, publicv1.BareMetalInstancesListRequest_builder{}.Build())
 		Expect(err).ToNot(HaveOccurred())
-		Expect(bmiListAfter.GetItems()).To(HaveLen(beforeCount),
-			"BMI must not leak when auto ExternalIP provisioning fails (requires OSAC-4982 rollback)")
+		// ID-subset check (not HaveLen): a BMI from an earlier Ordered spec can
+		// still be counted in the before-list while already gone after.
 		for _, item := range bmiListAfter.GetItems() {
 			_, known := beforeIDs[item.GetId()]
-			Expect(known).To(BeTrue(), "unexpected BMI %s after failed auto ExternalIP create", item.GetId())
+			Expect(known).To(BeTrue(),
+				"BMI %s leaked after failed auto ExternalIP create (requires OSAC-4982 rollback)", item.GetId())
 		}
 
 		poolAfter, err := poolsClient.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{Id: poolID}.Build())
@@ -542,14 +546,19 @@ var _ = Describe("BMI auto ExternalIP", Ordered, Serial, Label("bmaas", "network
 		}
 		wg.Wait()
 
+		// Register cleanup before assertions so a surprising 2-success race still GC's.
+		for _, s := range successes {
+			id := s.GetId()
+			DeferCleanup(func() {
+				deleteBMIAndWaitGone(id)
+			})
+		}
+
 		Expect(successes).To(HaveLen(1), "exactly one create should succeed")
 		Expect(failures).To(HaveLen(1), "exactly one create should fail")
 		Expect(grpcstatus.Code(failures[0])).To(Equal(grpccodes.FailedPrecondition))
 
 		winnerID := successes[0].GetId()
-		DeferCleanup(func() {
-			deleteBMIAndWaitGone(winnerID)
-		})
 
 		Expect(listAutoEIPs(winnerID)).To(HaveLen(1))
 		Expect(listAutoAttachments(winnerID)).To(HaveLen(1))

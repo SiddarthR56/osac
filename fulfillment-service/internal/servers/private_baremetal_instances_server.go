@@ -1093,14 +1093,15 @@ func (s *PrivateBareMetalInstancesServer) autoProvisionExternalIP(
 
 	tenant := bmi.GetMetadata().GetTenant()
 	bmiID := bmi.GetId()
-	shortID := bmiID
-	if len(shortID) > 8 {
-		shortID = shortID[:8]
-	}
+	// Use the full BMI ID in auto names. Soft-deleted rows still occupy
+	// (tenant, project, name) uniqueness, so an 8-char ULID prefix collides
+	// across rapid sequential creates in the same tenant.
+	autoEIPName := fmt.Sprintf("auto-eip-%s", bmiID)
+	autoEIPAName := fmt.Sprintf("auto-eipa-%s", bmiID)
 
 	eip := privatev1.ExternalIP_builder{
 		Metadata: privatev1.Metadata_builder{
-			Name:   fmt.Sprintf("auto-eip-%s", shortID),
+			Name:   autoEIPName,
 			Tenant: tenant,
 			Labels: map[string]string{
 				autoCreatedLabel:    "true",
@@ -1137,7 +1138,7 @@ func (s *PrivateBareMetalInstancesServer) autoProvisionExternalIP(
 
 	attachment := privatev1.ExternalIPAttachment_builder{
 		Metadata: privatev1.Metadata_builder{
-			Name:   fmt.Sprintf("auto-eipa-%s", shortID),
+			Name:   autoEIPAName,
 			Tenant: tenant,
 			Labels: map[string]string{
 				autoCreatedLabel:    "true",
