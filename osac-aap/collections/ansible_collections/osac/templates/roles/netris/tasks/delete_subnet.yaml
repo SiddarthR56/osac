@@ -9,6 +9,13 @@
     is_cudn_evpn: >-
       {{ (subnet.metadata.annotations | default({})).get('osac.openshift.io/k8s-cleanup-strategy', '') == 'cudn_evpn' }}
 
+- name: Refuse delete of default Subnet
+  ansible.builtin.include_tasks: _refuse_if_default.yaml
+  vars:
+    _default_refuse_resource: "{{ subnet }}"
+    _default_refuse_kind: Subnet
+    _default_refuse_name: "{{ subnet_name }}"
+
 - name: Display deletion information
   ansible.builtin.debug:
     msg: "Deleting Netris V-Net + IPAM subnet for Subnet '{{ subnet_name }}'"
