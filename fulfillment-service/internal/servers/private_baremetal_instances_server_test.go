@@ -2443,6 +2443,7 @@ var _ = Describe("Private bare metal instances server", func() {
 							privatev1.BareMetalNetworkAttachment_builder{
 								Subnet:    privatev1.SubnetLocalReference_builder{Id: subnetID1}.Build(),
 								Interface: strPtr("data-0"),
+								Primary:   boolPtr(true),
 								SecurityGroups: []*privatev1.SecurityGroupLocalReference{
 									privatev1.SecurityGroupLocalReference_builder{Id: "sg-1"}.Build(),
 								},
