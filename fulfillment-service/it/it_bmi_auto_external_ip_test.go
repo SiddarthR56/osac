@@ -307,7 +307,7 @@ var _ = Describe("BMI auto ExternalIP", Ordered, Serial, Label("bmaas", "network
 				}.Build(),
 				Spec: publicv1.BareMetalInstanceSpec_builder{
 					CatalogItem:              publicv1.BareMetalInstanceCatalogItemReference_builder{Id: catalogItemId}.Build(),
-					InstanceType:             publicv1.BareMetalInstanceTypeLocalReference_builder{Id: instanceTypeId}.Build(),
+					InstanceType:             publicv1.BareMetalInstanceTypeReference_builder{Id: instanceTypeId, Shared: true}.Build(),
 					SshPublicKey:             new(bmiTestSSHPublicKey),
 					DiskImage:                publicv1.DiskImageReference_builder{Id: defaultDiskImageId}.Build(),
 					AutoExternalIpAttachment: proto.Bool(true),
