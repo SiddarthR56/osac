@@ -59,6 +59,7 @@ type PrivateClustersServer struct {
 	clusterVersionsDao        *dao.GenericDAO[*privatev1.ClusterVersion]
 	subnetsDao                *dao.GenericDAO[*privatev1.Subnet]
 	securityGroupsDao         *dao.GenericDAO[*privatev1.SecurityGroup]
+	tenantsDao                *dao.GenericDAO[*privatev1.Tenant]
 	externalIPPoolDao         *dao.GenericDAO[*privatev1.ExternalIPPool]
 	externalIPDao             *dao.GenericDAO[*privatev1.ExternalIP]
 	externalIPAttachmentDao   *dao.GenericDAO[*privatev1.ExternalIPAttachment]
@@ -206,6 +207,16 @@ func (b *PrivateClustersServerBuilder) Build() (result *PrivateClustersServer, e
 		return
 	}
 
+	tenantsDao, err := dao.NewGenericDAO[*privatev1.Tenant]().
+		SetLogger(b.logger).
+		SetTableName("tenants").
+		SetTenancyLogic(b.tenancyLogic).
+		SetMetricsRegisterer(b.metricsRegisterer).
+		Build()
+	if err != nil {
+		return
+	}
+
 	externalIPDaoBuilder := dao.NewGenericDAO[*privatev1.ExternalIP]().
 		SetLogger(b.logger).
 		SetTenancyLogic(b.tenancyLogic).
@@ -262,6 +273,7 @@ func (b *PrivateClustersServerBuilder) Build() (result *PrivateClustersServer, e
 		clusterVersionsDao:        clusterVersionsDao,
 		subnetsDao:                subnetsDao,
 		securityGroupsDao:         securityGroupsDao,
+		tenantsDao:                tenantsDao,
 		externalIPPoolDao:         externalIPPoolDao,
 		externalIPDao:             externalIPDao,
 		externalIPAttachmentDao:   externalIPAttachmentDao,
@@ -1047,10 +1059,10 @@ func clusterSecurityGroupsMissing(att *privatev1.ClusterNetworkAttachment) bool 
 }
 
 // applyDefaultNetworkAttachment completes singular network_attachment at Create time.
-// Omitted/empty input gets the tenant default Subnet and default SecurityGroup. A supplied
-// attachment gets missing subnet and missing/empty security_groups filled independently;
-// empty security_groups is treated as missing; default SG applies only when the resolved
-// subnet is on the tenant default VirtualNetwork.
+// Nil attachment allocates an empty one, then missing subnet and missing/empty
+// security_groups are filled from tenant defaults without overwriting supplied values.
+// Default SecurityGroup applies only when the resolved subnet is on the tenant default
+// VirtualNetwork. Create fails with InvalidArgument when required defaults are unavailable.
 func (s *PrivateClustersServer) applyDefaultNetworkAttachment(ctx context.Context,
 	cluster *privatev1.Cluster) error {
 	tenant, err := s.resolveTargetTenant(ctx, cluster)
@@ -1141,16 +1153,7 @@ func (s *PrivateClustersServer) requireTenantExists(ctx context.Context, tenant 
 	if tenant == "" {
 		return nil
 	}
-	tenantsDao, err := dao.NewGenericDAO[*privatev1.Tenant]().
-		SetLogger(s.logger).
-		SetTableName("tenants").
-		SetTenancyLogic(s.tenancyLogic).
-		Build()
-	if err != nil {
-		s.logger.ErrorContext(ctx, "failed to build tenants DAO for existence check", slog.Any("error", err))
-		return grpcstatus.Errorf(grpccodes.Internal, "failed to validate tenant")
-	}
-	_, err = tenantsDao.Get().SetId(tenant).Do(ctx)
+	_, err := s.tenantsDao.Get().SetId(tenant).Do(ctx)
 	if err != nil {
 		var notFound *dao.ErrNotFound
 		if errors.As(err, &notFound) {

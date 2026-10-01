@@ -872,6 +872,7 @@ var _ = Describe("Private clusters server", func() {
 				Metadata: privatev1.Metadata_builder{Name: "workloads", Tenant: testTenant}.Build(),
 			}.Build()).Do(ctx)
 			Expect(err).ToNot(HaveOccurred())
+			seedTenantDefaultNetworking(ctx, testTenant, "workloads")
 
 			response, err := server.Create(ctx, privatev1.ClustersCreateRequest_builder{
 				Object: privatev1.Cluster_builder{
@@ -4607,6 +4608,11 @@ var _ = Describe("Private clusters server", func() {
 			})
 
 			It("Rejects cross-tenant subnet references", func() {
+				const otherTenant = "other-tenant-cluster-na"
+				createTenant(otherTenant)
+				seedTenantDefaultNetworking(ctx, otherTenant, "")
+				otherSubnetID := "tenant-default-subnet-" + otherTenant
+
 				_, err := server.Create(ctx, privatev1.ClustersCreateRequest_builder{
 					Object: privatev1.Cluster_builder{
 						Metadata: privatev1.Metadata_builder{Name: "na-cross-tenant"}.Build(),
@@ -4614,7 +4620,7 @@ var _ = Describe("Private clusters server", func() {
 							Template: privatev1.ClusterTemplateReference_builder{Id: "my-template-id"}.Build(),
 							NodeSets: baseNodeSets(),
 							NetworkAttachment: privatev1.ClusterNetworkAttachment_builder{
-								Subnet: privatev1.SubnetLocalReference_builder{Id: "does-not-exist"}.Build(),
+								Subnet: privatev1.SubnetLocalReference_builder{Id: otherSubnetID}.Build(),
 								SecurityGroups: []*privatev1.SecurityGroupLocalReference{
 									privatev1.SecurityGroupLocalReference_builder{Id: "sg-2"}.Build(),
 								},
