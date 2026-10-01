@@ -14,7 +14,7 @@ fulfillment-service/it/it_bmi_auto_external_ip_test.go — not here.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any
 
 import pytest
 
@@ -36,19 +36,11 @@ pytestmark = [pytest.mark.regression, pytest.mark.requires_bmaas]
 _BMI_RUNNING_RETRIES = 90
 
 
-def _require(state: dict[str, Any], *keys: str) -> None:
-    missing = [k for k in keys if k not in state]
-    if missing:
-        pytest.skip(f"Missing prerequisite state: {', '.join(missing)}")
-
-
 @pytest.mark.usefixtures("bmi_disk_image")
 class TestBmaasAutoExternalIPSmoke:
     """Create BMI with auto ExternalIP → Ready → delete GC."""
 
-    state: ClassVar[dict[str, Any]] = {}
-
-    def test_00_create_bmi_with_auto_eip(
+    def test_create_ready_and_garbage_collect(
         self,
         cli: OsacCLI,
         grpc: GRPCClient,
@@ -58,72 +50,73 @@ class TestBmaasAutoExternalIPSmoke:
         net_ssh_public_key: str,
         net_test_run_id: str,
     ) -> None:
-        bmi_name = f"autoeip-smoke-{net_test_run_id}"
-        bmi_id = cli.create_baremetal_instance(
-            name=bmi_name,
-            catalog_item=auto_eip_catalog_item_name,
-            ssh_key=net_ssh_public_key,
-            disk_image=bmi_disk_image,
-            external_ip_attachment=True,
-        )
-        cr_name = wait_for_bmi_cr(k8s=k8s_hub_client, uuid=bmi_id)
-        wait_for_bmi_running(grpc=grpc, bmi_id=bmi_id, retries=_BMI_RUNNING_RETRIES)
-        self.__class__.state.update(bmi_id=bmi_id, bmi_name=bmi_name, bmi_cr=cr_name)
-        print(f"Created BMI {bmi_name}: {bmi_id}")
+        bmi_id: str | None = None
+        bmi_cr: str | None = None
+        try:
+            bmi_name = f"autoeip-smoke-{net_test_run_id}"
+            bmi_id = cli.create_baremetal_instance(
+                name=bmi_name,
+                catalog_item=auto_eip_catalog_item_name,
+                ssh_key=net_ssh_public_key,
+                disk_image=bmi_disk_image,
+                external_ip_attachment=True,
+            )
+            bmi_cr = wait_for_bmi_cr(k8s=k8s_hub_client, uuid=bmi_id)
+            wait_for_bmi_running(grpc=grpc, bmi_id=bmi_id, retries=_BMI_RUNNING_RETRIES)
+            print(f"Created BMI {bmi_name}: {bmi_id}")
 
-    def test_10_auto_attachment_ready(self, grpc: GRPCClient, k8s_hub_client: K8sClient) -> None:
-        _require(self.state, "bmi_id")
-        bmi_id = self.state["bmi_id"]
+            def find_auto_attachment() -> dict[str, Any] | None:
+                attachments = grpc.call(service="osac.public.v1.ExternalIPAttachments/List")
+                for item in attachments.get("items", []):
+                    if item.get("spec", {}).get("baremetalInstance", {}).get("id") == bmi_id:
+                        return item
+                return None
 
-        def find_auto_attachment() -> dict[str, Any] | None:
-            attachments = grpc.call(service="osac.public.v1.ExternalIPAttachments/List")
-            for item in attachments.get("items", []):
-                if item.get("spec", {}).get("baremetalInstance", {}).get("id") == bmi_id:
-                    return item
-            return None
+            attachment = poll_until(
+                fn=find_auto_attachment,
+                until=lambda a: a is not None,
+                retries=60,
+                delay=5,
+                description="auto ExternalIPAttachment for BMI",
+            )
+            assert attachment is not None
+            attach_id = attachment["id"]
+            attach_cr = wait_for_external_ip_attachment_cr(k8s=k8s_hub_client, uuid=attach_id)
+            wait_for_external_ip_attachment_ready(k8s=k8s_hub_client, name=attach_cr)
 
-        attachment = poll_until(
-            fn=find_auto_attachment,
-            until=lambda a: a is not None,
-            retries=60,
-            delay=5,
-            description="auto ExternalIPAttachment for BMI",
-        )
-        assert attachment is not None
-        attach_id = attachment["id"]
-        attach_cr = wait_for_external_ip_attachment_cr(k8s=k8s_hub_client, uuid=attach_id)
-        wait_for_external_ip_attachment_ready(k8s=k8s_hub_client, name=attach_cr)
+            eip_id = attachment.get("spec", {}).get("externalIp", {}).get("id", "")
+            assert eip_id, "Auto attachment missing ExternalIP reference"
+            eip = grpc.get_external_ip(external_ip_id=eip_id)
+            address = eip.get("object", {}).get("status", {}).get("address", "")
+            assert address, "Auto ExternalIP should have an allocated address when Ready"
+            print(f"Auto EIP Ready: {address} (attachment={attach_id})")
 
-        eip_id = attachment.get("spec", {}).get("externalIp", {}).get("id", "")
-        assert eip_id, "Auto attachment missing ExternalIP reference"
-        eip = grpc.get_external_ip(external_ip_id=eip_id)
-        address = eip.get("object", {}).get("status", {}).get("address", "")
-        assert address, "Auto ExternalIP should have an allocated address when Ready"
+            cli.delete_baremetal_instance(uuid=bmi_id)
+            wait_for_bmi_deletion(k8s=k8s_hub_client, name=bmi_cr)
+            wait_for_bmi_grpc_removal(grpc=grpc, uuid=bmi_id)
+            bmi_id = None
+            bmi_cr = None
 
-        self.__class__.state.update(auto_attach_id=attach_id, auto_eip_id=eip_id, auto_ext_addr=address)
-        print(f"Auto EIP Ready: {address} (attachment={attach_id})")
-
-    def test_20_delete_bmi_garbage_collects_auto_eip(
-        self, cli: OsacCLI, grpc: GRPCClient, k8s_hub_client: K8sClient
-    ) -> None:
-        _require(self.state, "bmi_id", "bmi_cr", "auto_attach_id", "auto_eip_id")
-        bmi_id = self.state["bmi_id"]
-        cli.delete_baremetal_instance(uuid=bmi_id)
-        wait_for_bmi_deletion(k8s=k8s_hub_client, name=self.state["bmi_cr"])
-        wait_for_bmi_grpc_removal(grpc=grpc, uuid=bmi_id)
-
-        poll_until(
-            fn=lambda: self.state["auto_attach_id"] not in grpc.list_external_ip_attachment_ids(),
-            until=lambda gone: gone is True,
-            retries=30,
-            delay=5,
-            description="auto ExternalIPAttachment garbage collection",
-        )
-        poll_until(
-            fn=lambda: self.state["auto_eip_id"] not in grpc.list_external_ip_ids(),
-            until=lambda gone: gone is True,
-            retries=30,
-            delay=5,
-            description="auto ExternalIP garbage collection",
-        )
-        print("Auto EIP and attachment garbage collected after BMI delete")
+            poll_until(
+                fn=lambda: attach_id not in grpc.list_external_ip_attachment_ids(),
+                until=lambda gone: gone is True,
+                retries=30,
+                delay=5,
+                description="auto ExternalIPAttachment garbage collection",
+            )
+            poll_until(
+                fn=lambda: eip_id not in grpc.list_external_ip_ids(),
+                until=lambda gone: gone is True,
+                retries=30,
+                delay=5,
+                description="auto ExternalIP garbage collection",
+            )
+            print("Auto EIP and attachment garbage collected after BMI delete")
+        finally:
+            if bmi_id and bmi_cr:
+                try:
+                    cli.delete_baremetal_instance(uuid=bmi_id)
+                    wait_for_bmi_deletion(k8s=k8s_hub_client, name=bmi_cr)
+                    wait_for_bmi_grpc_removal(grpc=grpc, uuid=bmi_id)
+                except Exception as cleanup_err:
+                    print(f"BMI cleanup after failure: {cleanup_err}")

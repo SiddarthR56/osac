@@ -1247,8 +1247,10 @@ func (s *PrivateComputeInstancesServer) autoProvisionExternalIP(
 	tenant := ci.GetMetadata().GetTenant()
 	ciID := ci.GetId()
 	// Use the full CI ID in auto names. Soft-deleted rows still occupy
-	// (tenant, project, name) uniqueness, so an 8-char ULID prefix collides
+	// (tenant, project, name) uniqueness, so an 8-char UUID prefix collides
 	// across rapid sequential creates in the same tenant.
+	// Resource IDs are always uuid.New() strings (36 chars); auto-eipa-<id>
+	// is 46 chars, within metadata.name max_len 63 (DNS label).
 	autoEIPName := fmt.Sprintf("auto-eip-%s", ciID)
 	autoEIPAName := fmt.Sprintf("auto-eipa-%s", ciID)
 

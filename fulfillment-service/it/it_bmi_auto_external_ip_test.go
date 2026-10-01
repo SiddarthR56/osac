@@ -158,6 +158,14 @@ var _ = Describe("BMI auto ExternalIP", Ordered, Serial, Label("bmaas", "network
 						Memory: privatev1.BareMetalMemorySpec_builder{
 							TotalGb: 16,
 						}.Build(),
+						NetworkPorts: []*privatev1.BareMetalNetworkPortSpec{
+							privatev1.BareMetalNetworkPortSpec_builder{
+								Name:  "eth0",
+								Role:  "fabric",
+								Type:  "Ethernet",
+								Speed: "10Gbps",
+							}.Build(),
+						},
 					}.Build(),
 					HostLabelSelector: privatev1.BareMetalLabelSelector_builder{
 						MatchLabels: map[string]string{
@@ -439,12 +447,10 @@ var _ = Describe("BMI auto ExternalIP", Ordered, Serial, Label("bmaas", "network
 			_, _ = externalIPsClient.Delete(ctx, publicv1.ExternalIPsDeleteRequest_builder{Id: manualIPID}.Build())
 		})
 
-		var defaultVNID string
 		vnList, err := virtualNetworksClient.List(ctx, publicv1.VirtualNetworksListRequest_builder{}.Build())
 		Expect(err).ToNot(HaveOccurred())
-		if len(vnList.GetItems()) > 0 {
-			defaultVNID = vnList.GetItems()[0].GetId()
-		}
+		Expect(vnList.GetItems()).ToNot(BeEmpty(), "expected at least one VirtualNetwork for survival check")
+		defaultVNID := vnList.GetItems()[0].GetId()
 
 		deleteBMIAndWaitGone(bmiID)
 
@@ -469,10 +475,8 @@ var _ = Describe("BMI auto ExternalIP", Ordered, Serial, Label("bmaas", "network
 		Expect(err).ToNot(HaveOccurred())
 		Expect(manualGet.GetObject().GetId()).To(Equal(manualIPID))
 
-		if defaultVNID != "" {
-			_, err = virtualNetworksClient.Get(ctx, publicv1.VirtualNetworksGetRequest_builder{Id: defaultVNID}.Build())
-			Expect(err).ToNot(HaveOccurred(), "default/tenant VirtualNetwork must survive BMI delete")
-		}
+		_, err = virtualNetworksClient.Get(ctx, publicv1.VirtualNetworksGetRequest_builder{Id: defaultVNID}.Build())
+		Expect(err).ToNot(HaveOccurred(), "default/tenant VirtualNetwork must survive BMI delete")
 	})
 
 	It("rejects create when no READY pool has capacity and leaves no leaked BMI", func() {
@@ -598,8 +602,12 @@ var _ = Describe("BMI auto ExternalIP", Ordered, Serial, Label("bmaas", "network
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
 
-		_, err = bareMetalInstancesClient.Get(ctx, publicv1.BareMetalInstancesGetRequest_builder{Id: bmiID}.Build())
-		Expect(err).ToNot(HaveOccurred())
+		// Prove the BMI survives asynchronously — a single Get right after the
+		// Failed update would pass even if a controller later deleted it.
+		Consistently(func(g Gomega) {
+			_, getErr := bareMetalInstancesClient.Get(ctx, publicv1.BareMetalInstancesGetRequest_builder{Id: bmiID}.Build())
+			g.Expect(getErr).ToNot(HaveOccurred())
+		}, 5*time.Second, time.Second).Should(Succeed())
 
 		pubEIP, err := externalIPsClient.Get(ctx, publicv1.ExternalIPsGetRequest_builder{Id: eipID}.Build())
 		Expect(err).ToNot(HaveOccurred())
