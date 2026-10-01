@@ -63,6 +63,7 @@ type BareMetalNetworkAttachment struct {
 	// Primary designates this attachment as the default gateway.
 	// With a single attachment, omit primary or set true; false is rejected by the API.
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:XValidation:rule="self == true",message="primary must be true when specified"
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="primary is immutable"
 	Primary bool `json:"primary,omitempty"`
 }

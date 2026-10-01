@@ -111,6 +111,8 @@ spec:
                         With a single attachment, omit primary or set true; false is rejected by the API.
                       type: boolean
                       x-kubernetes-validations:
+                      - message: primary must be true when specified
+                        rule: self == true
                       - message: primary is immutable
                         rule: self == oldSelf
                     securityGroupRefs:
