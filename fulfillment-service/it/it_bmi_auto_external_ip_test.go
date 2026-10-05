@@ -208,6 +208,7 @@ var _ = Describe("BMI auto ExternalIP", Ordered, Serial, Label("bmaas", "network
 			g.Expect(err).ToNot(HaveOccurred())
 			g.Expect(resp.GetObject().GetStatus().GetState()).To(
 				Equal(privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_PENDING))
+			g.Expect(resp.GetObject().GetStatus().GetHub()).ToNot(BeEmpty())
 		}, time.Minute, time.Second).Should(Succeed())
 
 		getResp, err := poolsClient.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{Id: poolId}.Build())
