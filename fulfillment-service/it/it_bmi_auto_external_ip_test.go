@@ -228,6 +228,13 @@ var _ = Describe("BMI auto ExternalIP", Ordered, Serial, Label("bmaas", "network
 			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"status"}},
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
+		Eventually(func(g Gomega) {
+			resp, err := poolsClient.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{Id: poolId}.Build())
+			g.Expect(err).ToNot(HaveOccurred())
+			status := resp.GetObject().GetStatus()
+			g.Expect(status.GetState()).To(Equal(privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_READY))
+			g.Expect(status.GetAvailable()).To(BeNumerically(">=", available))
+		}, time.Minute, time.Second).Should(Succeed())
 
 		DeferCleanup(func(ctx context.Context) {
 			_, _ = poolsClient.Delete(ctx, privatev1.ExternalIPPoolsDeleteRequest_builder{Id: poolId}.Build())
