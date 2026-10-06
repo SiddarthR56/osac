@@ -1925,6 +1925,60 @@ var _ = Describe("Default networking readiness", func() {
 		Expect(cond.GetMessage()).To(ContainSubstring("Subnet/default-ipv4"))
 	})
 
+	It("ignores a pending legacy default IPv6 subnet", func() {
+		tenant := newSyncedTenant("legacy-ipv6-tenant")
+
+		mockVNs.EXPECT().List(gomock.Any(), gomock.Any()).Return(
+			privatev1.VirtualNetworksListResponse_builder{
+				Items: []*privatev1.VirtualNetwork{
+					privatev1.VirtualNetwork_builder{
+						Metadata: privatev1.Metadata_builder{Name: "default"}.Build(),
+						Status: privatev1.VirtualNetworkStatus_builder{
+							State: privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_READY,
+						}.Build(),
+					}.Build(),
+				},
+			}.Build(), nil)
+		mockSubnets.EXPECT().List(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, req *privatev1.SubnetsListRequest, _ ...grpc.CallOption) (*privatev1.SubnetsListResponse, error) {
+				Expect(req.GetFilter()).To(ContainSubstring("default-ipv4"))
+				return privatev1.SubnetsListResponse_builder{
+					Items: []*privatev1.Subnet{
+						privatev1.Subnet_builder{
+							Metadata: privatev1.Metadata_builder{Name: "default-ipv4"}.Build(),
+							Status: privatev1.SubnetStatus_builder{
+								State: privatev1.SubnetState_SUBNET_STATE_READY,
+							}.Build(),
+						}.Build(),
+					},
+				}.Build(), nil
+			})
+		mockSGs.EXPECT().List(gomock.Any(), gomock.Any()).Return(
+			privatev1.SecurityGroupsListResponse_builder{
+				Items: []*privatev1.SecurityGroup{
+					privatev1.SecurityGroup_builder{
+						Metadata: privatev1.Metadata_builder{Name: "default"}.Build(),
+						Status: privatev1.SecurityGroupStatus_builder{
+							State: privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY,
+						}.Build(),
+					}.Build(),
+				},
+			}.Build(), nil)
+		mockNGs.EXPECT().List(gomock.Any(), gomock.Any()).Return(
+			privatev1.NATGatewaysListResponse_builder{}.Build(), nil)
+
+		t := &task{r: reconciler, tenant: tenant}
+		t.setDefaults()
+		t.setConditionDefaults()
+		err := t.checkDefaultNetworkingReadiness(ctx)
+		Expect(err).ToNot(HaveOccurred())
+
+		cond := findCondition(tenant)
+		Expect(cond).ToNot(BeNil())
+		Expect(cond.GetStatus()).To(Equal(privatev1.ConditionStatus_CONDITION_STATUS_TRUE))
+		Expect(cond.GetReason()).To(Equal("AllResourcesReady"))
+	})
+
 	It("sets condition FALSE when some resources are FAILED", func() {
 		tenant := newSyncedTenant("failed-net-tenant")
 

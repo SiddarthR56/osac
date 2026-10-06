@@ -143,6 +143,9 @@ var _ = Describe("Private bare metal instances server", func() {
 						Name:   fmt.Sprintf("test-pool-%s", uuid.NewString()[:8]),
 						Tenant: auth.SharedTenant,
 					}.Build(),
+					Spec: privatev1.ExternalIPPoolSpec_builder{
+						IpFamily: privatev1.IPFamily_IP_FAMILY_IPV4,
+					}.Build(),
 					Status: privatev1.ExternalIPPoolStatus_builder{
 						State:     privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_READY,
 						Available: 10,

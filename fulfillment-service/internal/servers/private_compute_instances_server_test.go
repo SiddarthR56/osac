@@ -3755,6 +3755,9 @@ var _ = Describe("Private compute instances server", func() {
 					Metadata: privatev1.Metadata_builder{
 						Tenant: auth.SharedTenant,
 					}.Build(),
+					Spec: privatev1.ExternalIPPoolSpec_builder{
+						IpFamily: privatev1.IPFamily_IP_FAMILY_IPV4,
+					}.Build(),
 					Status: privatev1.ExternalIPPoolStatus_builder{
 						State:     privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_READY,
 						Available: available,
@@ -3863,6 +3866,31 @@ var _ = Describe("Private compute instances server", func() {
 			status, ok := grpcstatus.FromError(err)
 			Expect(ok).To(BeTrue())
 			Expect(status.Code()).To(Equal(grpccodes.FailedPrecondition))
+		})
+
+		It("Fails with FailedPrecondition when only an IPv6 pool has capacity", func() {
+			_, err := externalIPPoolDao.Create().SetObject(
+				privatev1.ExternalIPPool_builder{
+					Id: "ipv6-pool",
+					Metadata: privatev1.Metadata_builder{
+						Tenant: auth.SharedTenant,
+					}.Build(),
+					Spec: privatev1.ExternalIPPoolSpec_builder{
+						IpFamily: privatev1.IPFamily_IP_FAMILY_IPV6,
+					}.Build(),
+					Status: privatev1.ExternalIPPoolStatus_builder{
+						State:     privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_READY,
+						Available: 5,
+					}.Build(),
+				}.Build(),
+			).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = server.Create(ctx, createRequest(true))
+			Expect(grpcstatus.Code(err)).To(Equal(grpccodes.FailedPrecondition))
+			eipList, listErr := externalIPDao.List().Do(ctx)
+			Expect(listErr).ToNot(HaveOccurred())
+			Expect(eipList.GetItems()).To(BeEmpty())
 		})
 
 		It("Cascade-deletes auto-created resources on ComputeInstance delete", func() {

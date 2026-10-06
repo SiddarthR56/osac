@@ -774,6 +774,8 @@ func (t *task) checkDefaultNetworkingReadiness(ctx context.Context) error {
 	}
 
 	filter := fmt.Sprintf("%s && this.metadata.tenant == %q", defaultLabelFilter, tenantName)
+	subnetFilter := fmt.Sprintf("%s && this.metadata.tenant == %q && this.metadata.name == %q",
+		defaultLabelFilter, tenantName, "default-ipv4")
 
 	var pending, failed []string
 
@@ -794,7 +796,7 @@ func (t *task) checkDefaultNetworkingReadiness(ctx context.Context) error {
 	}
 
 	subnets, err := t.r.subnetsClient.List(ctx, privatev1.SubnetsListRequest_builder{
-		Filter: new(filter),
+		Filter: new(subnetFilter),
 	}.Build())
 	if err != nil {
 		return fmt.Errorf("failed to list default subnets: %w", err)
