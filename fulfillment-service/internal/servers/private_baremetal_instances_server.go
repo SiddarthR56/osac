@@ -637,7 +637,7 @@ func (s *PrivateBareMetalInstancesServer) applyDefaultNetworkAttachments(
 		sg, sgErr := findDefaultSecurityGroup(ctx, s.logger, s.securityGroupsDao, subnetVN, tenantName, project)
 		if sgErr != nil {
 			s.logger.ErrorContext(ctx, "Failed to look up default security group",
-				slog.String("tenant", tenantName), slog.Any("error", sgErr))
+				slog.Any("error", sgErr))
 			return grpcstatus.Errorf(grpccodes.Internal, "failed to find default security group")
 		}
 		if sg == nil {
@@ -663,6 +663,8 @@ func (s *PrivateBareMetalInstancesServer) applyDefaultNetworkAttachments(
 	return nil
 }
 
+// needsDefaultSubnetLookup reports whether completing an attachment requires
+// looking up the tenant's default subnet.
 func needsDefaultSubnetLookup(a *privatev1.BareMetalNetworkAttachment) bool {
 	if a == nil {
 		return true
@@ -673,6 +675,8 @@ func needsDefaultSubnetLookup(a *privatev1.BareMetalNetworkAttachment) bool {
 	return securityGroupsMissing(a)
 }
 
+// injectFullDefaultNetworkAttachment adds a complete tenant-default attachment
+// when the caller omits network_attachments.
 func (s *PrivateBareMetalInstancesServer) injectFullDefaultNetworkAttachment(
 	ctx context.Context, bmi *privatev1.BareMetalInstance, tenantName, project string,
 	defaultSubnet *privatev1.Subnet, instanceType *privatev1.BareMetalInstanceType) error {
@@ -684,7 +688,7 @@ func (s *PrivateBareMetalInstancesServer) injectFullDefaultNetworkAttachment(
 	sg, err := findDefaultSecurityGroup(ctx, s.logger, s.securityGroupsDao, subnetVN, tenantName, project)
 	if err != nil {
 		s.logger.ErrorContext(ctx, "Failed to look up default security group",
-			slog.String("tenant", tenantName), slog.Any("error", err))
+			slog.Any("error", err))
 		return grpcstatus.Errorf(grpccodes.Internal, "failed to find default security group")
 	}
 	if sg == nil {
@@ -711,10 +715,13 @@ func (s *PrivateBareMetalInstancesServer) injectFullDefaultNetworkAttachment(
 	return nil
 }
 
+// securityGroupsMissing reports whether an attachment has no security groups.
 func securityGroupsMissing(a *privatev1.BareMetalNetworkAttachment) bool {
 	return a == nil || len(a.GetSecurityGroups()) == 0
 }
 
+// subnetOnDefaultVirtualNetwork reports whether an attachment subnet belongs to
+// the tenant's selected default virtual network.
 func subnetOnDefaultVirtualNetwork(subnetVN, defaultSubnetVN string) bool {
 	return subnetVN != "" && defaultSubnetVN != "" && subnetVN == defaultSubnetVN
 }

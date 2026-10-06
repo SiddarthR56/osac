@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -852,7 +853,8 @@ const tenantDefaultNetworkingLabel = "osac.openshift.io/default"
 // ensureTenantDefaultNetworkingFixture seeds a READY default Subnet + SecurityGroup (and
 // backing VirtualNetwork) for tenant/project when BMI Create omits network_attachments.
 // Shared catalog items cannot carry tenant-local network defaults, so those Creates rely on
-// this tenant-default path. Idempotent: skips create when a READY default subnet already exists.
+// this tenant-default path. Idempotent: reuses the newest READY default subnet
+// only when its virtual network has a matching READY default security group.
 func ensureTenantDefaultNetworkingFixture(ctx context.Context, tenant, project string) {
 	GinkgoHelper()
 
@@ -864,6 +866,7 @@ func ensureTenantDefaultNetworkingFixture(ctx context.Context, tenant, project s
 	)
 	listed, err := subnets.List(ctx, privatev1.SubnetsListRequest_builder{Filter: &filter}.Build())
 	Expect(err).NotTo(HaveOccurred())
+	readySubnets := make([]*privatev1.Subnet, 0, len(listed.GetItems()))
 	for _, subnet := range listed.GetItems() {
 		if subnet.GetMetadata().HasDeletionTimestamp() {
 			continue
@@ -871,28 +874,35 @@ func ensureTenantDefaultNetworkingFixture(ctx context.Context, tenant, project s
 		if subnet.GetStatus().GetState() != privatev1.SubnetState_SUBNET_STATE_READY {
 			continue
 		}
+		readySubnets = append(readySubnets, subnet)
+	}
+	sort.Slice(readySubnets, func(i, j int) bool {
+		return readySubnets[i].GetMetadata().GetCreationTimestamp().AsTime().After(
+			readySubnets[j].GetMetadata().GetCreationTimestamp().AsTime())
+	})
+	if len(readySubnets) > 0 {
+		subnet := readySubnets[0]
 		vnID := ""
 		if ref := subnet.GetSpec().GetVirtualNetwork(); ref != nil {
 			vnID = ref.GetId()
 		}
-		if vnID == "" {
-			continue
-		}
-		sgFilter := fmt.Sprintf(
-			"this.metadata.labels[%q] == 'true' && this.metadata.tenant == %q && this.metadata.project == %q",
-			tenantDefaultNetworkingLabel, tenant, project,
-		)
-		sgListed, sgErr := groups.List(ctx, privatev1.SecurityGroupsListRequest_builder{Filter: &sgFilter}.Build())
-		Expect(sgErr).NotTo(HaveOccurred())
-		for _, sg := range sgListed.GetItems() {
-			if sg.GetMetadata().HasDeletionTimestamp() {
-				continue
-			}
-			if sg.GetStatus().GetState() != privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY {
-				continue
-			}
-			if sg.GetSpec().GetVirtualNetwork().GetId() == vnID {
-				return
+		if vnID != "" {
+			sgFilter := fmt.Sprintf(
+				"this.metadata.labels[%q] == 'true' && this.metadata.tenant == %q && this.metadata.project == %q",
+				tenantDefaultNetworkingLabel, tenant, project,
+			)
+			sgListed, sgErr := groups.List(ctx, privatev1.SecurityGroupsListRequest_builder{Filter: &sgFilter}.Build())
+			Expect(sgErr).NotTo(HaveOccurred())
+			for _, sg := range sgListed.GetItems() {
+				if sg.GetMetadata().HasDeletionTimestamp() {
+					continue
+				}
+				if sg.GetStatus().GetState() != privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY {
+					continue
+				}
+				if sg.GetSpec().GetVirtualNetwork().GetId() == vnID {
+					return
+				}
 			}
 		}
 	}
@@ -935,6 +945,11 @@ func ensureTenantDefaultNetworkingFixture(ctx context.Context, tenant, project s
 		UpdateMask: catalogItemUpdateMask("status.state"),
 	}.Build())
 	Expect(err).NotTo(HaveOccurred())
+	Eventually(func(g Gomega) {
+		current, getErr := networks.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{Id: networkID}.Build())
+		g.Expect(getErr).NotTo(HaveOccurred())
+		g.Expect(current.GetObject().GetStatus().GetState()).To(Equal(privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_READY))
+	}, time.Minute, time.Second).Should(Succeed())
 
 	subnetMeta := privatev1.Metadata_builder{
 		Name:    catalogItemFixtureName(),
@@ -969,6 +984,11 @@ func ensureTenantDefaultNetworkingFixture(ctx context.Context, tenant, project s
 		UpdateMask: catalogItemUpdateMask("status.state"),
 	}.Build())
 	Expect(err).NotTo(HaveOccurred())
+	Eventually(func(g Gomega) {
+		current, getErr := subnets.Get(ctx, privatev1.SubnetsGetRequest_builder{Id: subnetID}.Build())
+		g.Expect(getErr).NotTo(HaveOccurred())
+		g.Expect(current.GetObject().GetStatus().GetState()).To(Equal(privatev1.SubnetState_SUBNET_STATE_READY))
+	}, time.Minute, time.Second).Should(Succeed())
 
 	sgMeta := privatev1.Metadata_builder{
 		Name:    catalogItemFixtureName(),
@@ -1002,4 +1022,10 @@ func ensureTenantDefaultNetworkingFixture(ctx context.Context, tenant, project s
 		UpdateMask: catalogItemUpdateMask("status.state"),
 	}.Build())
 	Expect(err).NotTo(HaveOccurred())
+	Eventually(func(g Gomega) {
+		current, getErr := groups.Get(ctx, privatev1.SecurityGroupsGetRequest_builder{Id: groupID}.Build())
+		g.Expect(getErr).NotTo(HaveOccurred())
+		g.Expect(current.GetObject().GetStatus().GetState()).To(Equal(privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY))
+		g.Expect(current.GetObject().GetSpec().GetVirtualNetwork().GetId()).To(Equal(networkID))
+	}, time.Minute, time.Second).Should(Succeed())
 }
