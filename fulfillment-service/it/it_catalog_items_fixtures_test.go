@@ -16,7 +16,9 @@ package it
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -838,4 +840,186 @@ func createCatalogItemMemberFixture(ctx context.Context, tenant string) *grpc.Cl
 	Expect(err).NotTo(HaveOccurred())
 	DeferCleanup(conn.Close)
 	return conn
+}
+
+const tenantDefaultNetworkingLabel = "osac.openshift.io/default"
+
+// ensureTenantDefaultNetworkingFixture seeds a READY default Subnet + SecurityGroup (and
+// backing VirtualNetwork) for tenant/project when BMI Create omits network_attachments.
+// Shared catalog items cannot carry tenant-local network defaults, so those Creates rely on
+// this tenant-default path. Idempotent: reuses the newest READY default subnet
+// only when its virtual network has a matching READY default security group.
+func ensureTenantDefaultNetworkingFixture(ctx context.Context, tenant, project string) {
+	GinkgoHelper()
+
+	subnets := privatev1.NewSubnetsClient(tool.InternalView().AdminConn())
+	groups := privatev1.NewSecurityGroupsClient(tool.InternalView().AdminConn())
+	filter := fmt.Sprintf(
+		"this.metadata.labels[%q] == 'true' && this.metadata.tenant == %q && this.metadata.project == %q && has(this.spec.ipv4_cidr)",
+		tenantDefaultNetworkingLabel, tenant, project,
+	)
+	listed, err := subnets.List(ctx, privatev1.SubnetsListRequest_builder{Filter: &filter}.Build())
+	Expect(err).NotTo(HaveOccurred())
+	readySubnets := make([]*privatev1.Subnet, 0, len(listed.GetItems()))
+	for _, subnet := range listed.GetItems() {
+		if subnet.GetMetadata().HasDeletionTimestamp() {
+			continue
+		}
+		if subnet.GetStatus().GetState() != privatev1.SubnetState_SUBNET_STATE_READY {
+			continue
+		}
+		readySubnets = append(readySubnets, subnet)
+	}
+	sort.Slice(readySubnets, func(i, j int) bool {
+		return readySubnets[i].GetMetadata().GetCreationTimestamp().AsTime().After(
+			readySubnets[j].GetMetadata().GetCreationTimestamp().AsTime())
+	})
+	if len(readySubnets) > 0 {
+		subnet := readySubnets[0]
+		vnID := ""
+		if ref := subnet.GetSpec().GetVirtualNetwork(); ref != nil {
+			vnID = ref.GetId()
+		}
+		if vnID != "" {
+			sgFilter := fmt.Sprintf(
+				"this.metadata.labels[%q] == 'true' && this.metadata.tenant == %q && this.metadata.project == %q",
+				tenantDefaultNetworkingLabel, tenant, project,
+			)
+			sgListed, sgErr := groups.List(ctx, privatev1.SecurityGroupsListRequest_builder{Filter: &sgFilter}.Build())
+			Expect(sgErr).NotTo(HaveOccurred())
+			for _, sg := range sgListed.GetItems() {
+				if sg.GetMetadata().HasDeletionTimestamp() {
+					continue
+				}
+				if sg.GetStatus().GetState() != privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY {
+					continue
+				}
+				if sg.GetSpec().GetVirtualNetwork().GetId() == vnID {
+					return
+				}
+			}
+		}
+	}
+
+	classID := createCatalogItemNetworkClassFixture(ctx)
+	defaultLabels := map[string]string{tenantDefaultNetworkingLabel: "true"}
+	meta := privatev1.Metadata_builder{
+		Name:    catalogItemFixtureName(),
+		Tenant:  tenant,
+		Project: project,
+		Labels:  defaultLabels,
+	}.Build()
+
+	networks := privatev1.NewVirtualNetworksClient(tool.InternalView().AdminConn())
+	network, err := networks.Create(ctx, privatev1.VirtualNetworksCreateRequest_builder{
+		Object: privatev1.VirtualNetwork_builder{
+			Metadata: meta,
+			Spec: privatev1.VirtualNetworkSpec_builder{
+				NetworkClass: privatev1.NetworkClassReference_builder{Id: classID}.Build(),
+				Region:       "us-east-1",
+				Ipv4Cidr:     new("10.201.0.0/16"),
+			}.Build(),
+		}.Build(),
+	}.Build())
+	Expect(err).NotTo(HaveOccurred())
+	networkID := network.GetObject().GetId()
+
+	Eventually(func() privatev1.VirtualNetworkState {
+		r, e := networks.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{Id: networkID}.Build())
+		Expect(e).NotTo(HaveOccurred())
+		return r.GetObject().GetStatus().GetState()
+	}, time.Minute, time.Second).Should(Equal(privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_PENDING))
+	currentVN, err := networks.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{Id: networkID}.Build())
+	Expect(err).NotTo(HaveOccurred())
+	currentVN.GetObject().SetStatus(privatev1.VirtualNetworkStatus_builder{
+		State: privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_READY,
+	}.Build())
+	_, err = networks.Update(ctx, privatev1.VirtualNetworksUpdateRequest_builder{
+		Object:     currentVN.GetObject(),
+		UpdateMask: catalogItemUpdateMask("status.state"),
+	}.Build())
+	Expect(err).NotTo(HaveOccurred())
+	Eventually(func(g Gomega) {
+		current, getErr := networks.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{Id: networkID}.Build())
+		g.Expect(getErr).NotTo(HaveOccurred())
+		g.Expect(current.GetObject().GetStatus().GetState()).To(Equal(privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_READY))
+	}, time.Minute, time.Second).Should(Succeed())
+
+	subnetMeta := privatev1.Metadata_builder{
+		Name:    catalogItemFixtureName(),
+		Tenant:  tenant,
+		Project: project,
+		Labels:  defaultLabels,
+	}.Build()
+	subnet, err := subnets.Create(ctx, privatev1.SubnetsCreateRequest_builder{
+		Object: privatev1.Subnet_builder{
+			Metadata: subnetMeta,
+			Spec: privatev1.SubnetSpec_builder{
+				VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: networkID}.Build(),
+				Ipv4Cidr:       new("10.201.1.0/24"),
+			}.Build(),
+		}.Build(),
+	}.Build())
+	Expect(err).NotTo(HaveOccurred())
+	subnetID := subnet.GetObject().GetId()
+
+	Eventually(func() privatev1.SubnetState {
+		r, e := subnets.Get(ctx, privatev1.SubnetsGetRequest_builder{Id: subnetID}.Build())
+		Expect(e).NotTo(HaveOccurred())
+		return r.GetObject().GetStatus().GetState()
+	}, time.Minute, time.Second).Should(Equal(privatev1.SubnetState_SUBNET_STATE_PENDING))
+	currentSubnet, err := subnets.Get(ctx, privatev1.SubnetsGetRequest_builder{Id: subnetID}.Build())
+	Expect(err).NotTo(HaveOccurred())
+	currentSubnet.GetObject().SetStatus(privatev1.SubnetStatus_builder{
+		State: privatev1.SubnetState_SUBNET_STATE_READY,
+	}.Build())
+	_, err = subnets.Update(ctx, privatev1.SubnetsUpdateRequest_builder{
+		Object:     currentSubnet.GetObject(),
+		UpdateMask: catalogItemUpdateMask("status.state"),
+	}.Build())
+	Expect(err).NotTo(HaveOccurred())
+	Eventually(func(g Gomega) {
+		current, getErr := subnets.Get(ctx, privatev1.SubnetsGetRequest_builder{Id: subnetID}.Build())
+		g.Expect(getErr).NotTo(HaveOccurred())
+		g.Expect(current.GetObject().GetStatus().GetState()).To(Equal(privatev1.SubnetState_SUBNET_STATE_READY))
+	}, time.Minute, time.Second).Should(Succeed())
+
+	sgMeta := privatev1.Metadata_builder{
+		Name:    catalogItemFixtureName(),
+		Tenant:  tenant,
+		Project: project,
+		Labels:  defaultLabels,
+	}.Build()
+	group, err := groups.Create(ctx, privatev1.SecurityGroupsCreateRequest_builder{
+		Object: privatev1.SecurityGroup_builder{
+			Metadata: sgMeta,
+			Spec: privatev1.SecurityGroupSpec_builder{
+				VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: networkID}.Build(),
+			}.Build(),
+		}.Build(),
+	}.Build())
+	Expect(err).NotTo(HaveOccurred())
+	groupID := group.GetObject().GetId()
+
+	Eventually(func() privatev1.SecurityGroupState {
+		r, e := groups.Get(ctx, privatev1.SecurityGroupsGetRequest_builder{Id: groupID}.Build())
+		Expect(e).NotTo(HaveOccurred())
+		return r.GetObject().GetStatus().GetState()
+	}, time.Minute, time.Second).Should(Equal(privatev1.SecurityGroupState_SECURITY_GROUP_STATE_PENDING))
+	currentSG, err := groups.Get(ctx, privatev1.SecurityGroupsGetRequest_builder{Id: groupID}.Build())
+	Expect(err).NotTo(HaveOccurred())
+	currentSG.GetObject().SetStatus(privatev1.SecurityGroupStatus_builder{
+		State: privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY,
+	}.Build())
+	_, err = groups.Update(ctx, privatev1.SecurityGroupsUpdateRequest_builder{
+		Object:     currentSG.GetObject(),
+		UpdateMask: catalogItemUpdateMask("status.state"),
+	}.Build())
+	Expect(err).NotTo(HaveOccurred())
+	Eventually(func(g Gomega) {
+		current, getErr := groups.Get(ctx, privatev1.SecurityGroupsGetRequest_builder{Id: groupID}.Build())
+		g.Expect(getErr).NotTo(HaveOccurred())
+		g.Expect(current.GetObject().GetStatus().GetState()).To(Equal(privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY))
+		g.Expect(current.GetObject().GetSpec().GetVirtualNetwork().GetId()).To(Equal(networkID))
+	}, time.Minute, time.Second).Should(Succeed())
 }

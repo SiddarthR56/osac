@@ -64,6 +64,10 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 		bareMetalInstanceTypesClient = privatev1.NewBareMetalInstanceTypesClient(tool.InternalView().AdminConn())
 		diskImagesClient = privatev1.NewDiskImagesClient(tool.InternalView().AdminConn())
 
+		// Lifecycle Creates omit network_attachments and use shared catalog items without
+		// network field policies; hard-fail defaulting needs a tenant-default Subnet/SG.
+		ensureTenantDefaultNetworkingFixture(ctx, usersGroup, "")
+
 		// Create BareMetalInstanceTemplate with an explicit ID that matches the BMFO CRD
 		// validation pattern (^[a-zA-Z_][a-zA-Z0-9._]*$). Auto-generated UUIDs start with
 		// a digit and are rejected by the CRD when the controller creates the CR.
@@ -326,6 +330,7 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 		networkClassesClient := privatev1.NewNetworkClassesClient(tool.InternalView().AdminConn())
 		virtualNetworksClient := privatev1.NewVirtualNetworksClient(tool.InternalView().AdminConn())
 		subnetsClient := privatev1.NewSubnetsClient(tool.InternalView().AdminConn())
+		securityGroupsClient := privatev1.NewSecurityGroupsClient(tool.InternalView().AdminConn())
 		// Create a k8s-only NetworkClass (no fabric_manager):
 		ncResp, err := networkClassesClient.Create(ctx, privatev1.NetworkClassesCreateRequest_builder{
 			Object: privatev1.NetworkClass_builder{
@@ -415,6 +420,44 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
+		securityGroupID := fmt.Sprintf("test-security-group-%s", uuid.New())
+		_, err = securityGroupsClient.Create(ctx, privatev1.SecurityGroupsCreateRequest_builder{
+			Object: privatev1.SecurityGroup_builder{
+				Id: securityGroupID,
+				Metadata: privatev1.Metadata_builder{
+					Name:   fmt.Sprintf("test-security-group-%s", uuid.New()[24:32]),
+					Tenant: usersGroup,
+				}.Build(),
+				Spec: privatev1.SecurityGroupSpec_builder{
+					VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: virtualNetworkId}.Build(),
+				}.Build(),
+			}.Build(),
+		}.Build())
+		Expect(err).ToNot(HaveOccurred())
+		DeferCleanup(func(ctx context.Context) {
+			_, err := securityGroupsClient.Delete(ctx, privatev1.SecurityGroupsDeleteRequest_builder{Id: securityGroupID}.Build())
+			Expect(err).ToNot(HaveOccurred())
+		})
+		Eventually(func(g Gomega) {
+			resp, err := securityGroupsClient.Get(ctx, privatev1.SecurityGroupsGetRequest_builder{Id: securityGroupID}.Build())
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(resp.GetObject().GetStatus().GetState()).To(Equal(privatev1.SecurityGroupState_SECURITY_GROUP_STATE_PENDING))
+		}, time.Minute, time.Second).Should(Succeed())
+		groupResp, err := securityGroupsClient.Get(ctx, privatev1.SecurityGroupsGetRequest_builder{Id: securityGroupID}.Build())
+		Expect(err).ToNot(HaveOccurred())
+		group := groupResp.GetObject()
+		group.SetStatus(privatev1.SecurityGroupStatus_builder{State: privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY}.Build())
+		_, err = securityGroupsClient.Update(ctx, privatev1.SecurityGroupsUpdateRequest_builder{
+			Object:     group,
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"status.state"}},
+		}.Build())
+		Expect(err).ToNot(HaveOccurred())
+		Eventually(func(g Gomega) {
+			resp, err := securityGroupsClient.Get(ctx, privatev1.SecurityGroupsGetRequest_builder{Id: securityGroupID}.Build())
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(resp.GetObject().GetStatus().GetState()).To(Equal(privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY))
+		}, time.Minute, time.Second).Should(Succeed())
+
 		_, err = bareMetalInstancesClient.Create(ctx, publicv1.BareMetalInstancesCreateRequest_builder{
 			Object: publicv1.BareMetalInstance_builder{
 				Metadata: publicv1.Metadata_builder{
@@ -427,6 +470,9 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 					NetworkAttachments: []*publicv1.BareMetalNetworkAttachment{
 						publicv1.BareMetalNetworkAttachment_builder{
 							Subnet: publicv1.SubnetLocalReference_builder{Id: subnetId}.Build(),
+							SecurityGroups: []*publicv1.SecurityGroupLocalReference{
+								publicv1.SecurityGroupLocalReference_builder{Id: securityGroupID}.Build(),
+							},
 						}.Build(),
 					},
 				}.Build(),
