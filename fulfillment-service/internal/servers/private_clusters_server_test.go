@@ -4422,7 +4422,7 @@ var _ = Describe("Private clusters server", func() {
 				return map[string]*privatev1.ClusterNodeSet{
 					"compute": privatev1.ClusterNodeSet_builder{
 						Size: proto.Int32(3),
-						BaremetalInstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{
+						BaremetalInstanceType: privatev1.BareMetalInstanceTypeReference_builder{
 							Id: "bmit-fabric-id",
 						}.Build(),
 					}.Build(),
