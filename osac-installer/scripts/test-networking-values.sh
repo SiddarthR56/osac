@@ -40,9 +40,15 @@ render_ipv4_only_manager_success() {
     echo "ERROR: ${name} rendered, but did not contain the IPv4 manager capability" >&2
     exit 1
   fi
-  if rg -n -i -- 'capabilities: "[^\"]*(ipv6|dual[_-]?stack)' "${output}"; then
+  if grep -Ein -- 'capabilities: "[^"]*(ipv6|dual[_-]?stack)' "${output}"; then
     echo "ERROR: ${name} rendered an IPv6 or dual-stack manager capability" >&2
     exit 1
+  else
+    search_status=$?
+    if [[ ${search_status} -ne 1 ]]; then
+      echo "ERROR: failed to check ${name} for IPv6 or dual-stack manager capabilities" >&2
+      exit 1
+    fi
   fi
 }
 
