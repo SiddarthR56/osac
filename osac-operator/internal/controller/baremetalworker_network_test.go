@@ -32,8 +32,9 @@ var _ = Describe("buildWorkerNetworkAttachments", func() {
 					SecurityGroupRefs: []string{"sg-a", "sg-b"},
 				},
 				NodeRequests: []v1alpha1.NodeRequest{{
-					ResourceClass:   "bm-standard",
+					NodeSet:         "workers",
 					NumberOfNodes:   3,
+					BareMetal:       &v1alpha1.BareMetalNodeSpec{InstanceType: "bm-standard"},
 					FabricInterface: "data-0",
 				}},
 			},

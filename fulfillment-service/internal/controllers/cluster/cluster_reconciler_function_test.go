@@ -133,6 +133,7 @@ var _ = Describe("prepareNodeRequest", func() {
 		Expect(nr.FabricInterface).To(BeEmpty())
 	})
 })
+
 var _ = Describe("update tenant annotation", func() {
 	const (
 		clusterID    = "test-cluster-id"
