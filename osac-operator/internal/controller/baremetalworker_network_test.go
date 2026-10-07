@@ -90,10 +90,10 @@ var _ = Describe("buildWorkerNetworkAttachments", func() {
 		Expect(err.Error()).To(ContainSubstring("subnetRef"))
 	})
 
-	It("returns an error when cluster order is nil", func() {
+	It("returns an error when clusterOrder is nil", func() {
 		_, err := buildWorkerNetworkAttachments(nil, v1alpha1.NodeRequest{FabricInterface: "data-0"})
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("cluster order"))
+		Expect(err.Error()).To(ContainSubstring("clusterOrder"))
 	})
 
 	It("copies security group refs without sharing the backing array", func() {
