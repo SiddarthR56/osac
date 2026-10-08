@@ -35,6 +35,7 @@ var _ = Describe("Node set removal", func() {
 		workerBmitName      string
 		storageBmitName     string
 		templateId          string
+		network             catalogItemNetworkFixture
 	)
 
 	BeforeEach(func() {
@@ -43,6 +44,7 @@ var _ = Describe("Node set removal", func() {
 		clustersClient = publicv1.NewClustersClient(tool.ExternalView().UserConn())
 		instanceTypesClient = privatev1.NewBareMetalInstanceTypesClient(tool.InternalView().AdminConn())
 		templatesClient = privatev1.NewClusterTemplatesClient(tool.InternalView().AdminConn())
+		network = createCatalogItemNetworkFixture(ctx, usersGroup, "")
 
 		// Create worker bare metal instance type:
 		workerBmitName = fmt.Sprintf("worker-bmit-%s", uuid.New()[24:32])
@@ -123,7 +125,8 @@ var _ = Describe("Node set removal", func() {
 					Name: fmt.Sprintf("nodeset-rm-%s", uuid.New()[24:32]),
 				}.Build(),
 				Spec: publicv1.ClusterSpec_builder{
-					Template: publicv1.ClusterTemplateReference_builder{Id: templateId}.Build(),
+					Template:          publicv1.ClusterTemplateReference_builder{Id: templateId}.Build(),
+					NetworkAttachment: network.clusterAttachment(),
 					NodeSets: map[string]*publicv1.ClusterNodeSet{
 						"workers": publicv1.ClusterNodeSet_builder{Size: new(int32(3)), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: workerBmitName}.Build()}.Build(),
 						"storage": publicv1.ClusterNodeSet_builder{Size: new(int32(2)), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: storageBmitName}.Build()}.Build(),

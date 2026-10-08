@@ -95,8 +95,11 @@ var _ = Describe("Multitenancy basic tenant isolation", Ordered, Label("multiten
 		})
 
 		Describe("cluster resources", func() {
-			var tenantClusterMapping map[string][]string
-			var clusterBMIT string
+			var (
+				tenantClusterMapping map[string][]string
+				clusterBMIT          string
+				tenantNetworks       map[string]catalogItemNetworkFixture
+			)
 
 			BeforeAll(func(ctx context.Context) {
 				// Create map to track which clusters belong to which tenants
@@ -154,6 +157,13 @@ var _ = Describe("Multitenancy basic tenant isolation", Ordered, Label("multiten
 					}
 					Expect(err).ToNot(HaveOccurred())
 				}
+				networkClassID := createCatalogItemNetworkClassFixture(ctx)
+				tenantNetworks = make(map[string]catalogItemNetworkFixture)
+				for _, tenant := range ServiceAccountTenants {
+					if _, exists := tenantNetworks[tenant]; !exists {
+						tenantNetworks[tenant] = createCatalogItemNetworkInClassFixture(ctx, tenant, "", networkClassID)
+					}
+				}
 
 				// Create cluster template for testing
 				templateId := fmt.Sprintf("sa-isolation-template-%s", uuid.New())
@@ -188,8 +198,9 @@ var _ = Describe("Multitenancy basic tenant isolation", Ordered, Label("multiten
 								Name: fmt.Sprintf("test-cluster-%s", uuid.New()[24:32]),
 							}.Build(),
 							Spec: publicv1.ClusterSpec_builder{
-								Template: publicv1.ClusterTemplateReference_builder{Id: templateId}.Build(),
-								NodeSets: testClusterNodeSets(clusterBMIT, 3),
+								Template:          publicv1.ClusterTemplateReference_builder{Id: templateId}.Build(),
+								NetworkAttachment: tenantNetworks[tenant].clusterAttachment(),
+								NodeSets:          testClusterNodeSets(clusterBMIT, 3),
 							}.Build(),
 						}.Build(),
 					}.Build())
@@ -363,6 +374,7 @@ var _ = Describe("Multitenancy basic tenant isolation", Ordered, Label("multiten
 				tenantClusterMapping map[string][]string
 				clusterTenantMapping map[string][]string
 				clusterBMIT          string
+				tenantNetworks       map[string]catalogItemNetworkFixture
 			)
 
 			BeforeAll(func(ctx context.Context) {
@@ -393,6 +405,11 @@ var _ = Describe("Multitenancy basic tenant isolation", Ordered, Label("multiten
 						err = nil
 					}
 					Expect(err).ToNot(HaveOccurred())
+				}
+				networkClassID := createCatalogItemNetworkClassFixture(ctx)
+				tenantNetworks = make(map[string]catalogItemNetworkFixture, len(uniqueTenants))
+				for tenant := range uniqueTenants {
+					tenantNetworks[tenant] = createCatalogItemNetworkInClassFixture(ctx, tenant, "", networkClassID)
 				}
 
 				// Create a bare metal instance type for testing
@@ -464,8 +481,9 @@ var _ = Describe("Multitenancy basic tenant isolation", Ordered, Label("multiten
 								Name: fmt.Sprintf("test-cluster-%s", uuid.New()[24:32]),
 							}.Build(),
 							Spec: publicv1.ClusterSpec_builder{
-								Template: publicv1.ClusterTemplateReference_builder{Id: templateId}.Build(),
-								NodeSets: testClusterNodeSets(clusterBMIT, 3),
+								Template:          publicv1.ClusterTemplateReference_builder{Id: templateId}.Build(),
+								NetworkAttachment: tenantNetworks[OIDCTenants[user][0]].clusterAttachment(),
+								NodeSets:          testClusterNodeSets(clusterBMIT, 3),
 							}.Build(),
 						}.Build(),
 					}.Build())
