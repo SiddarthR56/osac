@@ -19,6 +19,8 @@ import (
 
 	. "github.com/onsi/ginkgo/v2/dsl/core"
 	. "github.com/onsi/gomega"
+	grpccodes "google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/uuid"
@@ -136,6 +138,20 @@ var _ = Describe("Node set removal", func() {
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
 		clusterId := createResponse.Object.Id
+		deferCatalogItemFixtureDeletion(func(ctx context.Context) error {
+			_, err := clustersClient.Delete(ctx, publicv1.ClustersDeleteRequest_builder{
+				Id: clusterId,
+			}.Build())
+			return err
+		}, func(ctx context.Context) (bool, error) {
+			_, err := clustersClient.Get(ctx, publicv1.ClustersGetRequest_builder{
+				Id: clusterId,
+			}.Build())
+			if grpcstatus.Code(err) == grpccodes.NotFound {
+				return true, nil
+			}
+			return false, err
+		})
 
 		// Step 2: Verify cluster has 2 node sets
 		getResponse, err := clustersClient.Get(ctx, publicv1.ClustersGetRequest_builder{

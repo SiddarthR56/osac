@@ -170,7 +170,8 @@ var _ = Describe("Annotations", func() {
 					},
 				}.Build(),
 				Spec: publicv1.ClusterSpec_builder{
-					Template: publicv1.ClusterTemplateReference_builder{Id: templateId}.Build(),
+					Template:          publicv1.ClusterTemplateReference_builder{Id: templateId}.Build(),
+					NetworkAttachment: object.GetSpec().GetNetworkAttachment(),
 				}.Build(),
 			}.Build(),
 		}.Build())
