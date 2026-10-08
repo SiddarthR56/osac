@@ -57,6 +57,7 @@ type PrivateClustersServer struct {
 	templatesDao              *dao.GenericDAO[*privatev1.ClusterTemplate]
 	catalogItemsDao           *dao.GenericDAO[*privatev1.ClusterCatalogItem]
 	clusterVersionsDao        *dao.GenericDAO[*privatev1.ClusterVersion]
+	virtualNetworksDao        *dao.GenericDAO[*privatev1.VirtualNetwork]
 	subnetsDao                *dao.GenericDAO[*privatev1.Subnet]
 	securityGroupsDao         *dao.GenericDAO[*privatev1.SecurityGroup]
 	tenantsDao                *dao.GenericDAO[*privatev1.Tenant]
@@ -177,7 +178,16 @@ func (b *PrivateClustersServerBuilder) Build() (result *PrivateClustersServer, e
 		return
 	}
 
-	// Create the subnets DAO:
+	// Create the networking resource DAOs:
+	virtualNetworksDao, err := dao.NewGenericDAO[*privatev1.VirtualNetwork]().
+		SetLogger(b.logger).
+		SetTenancyLogic(b.tenancyLogic).
+		SetMetricsRegisterer(b.metricsRegisterer).
+		Build()
+	if err != nil {
+		return
+	}
+
 	subnetsDao, err := dao.NewGenericDAO[*privatev1.Subnet]().
 		SetLogger(b.logger).
 		SetTenancyLogic(b.tenancyLogic).
@@ -271,6 +281,7 @@ func (b *PrivateClustersServerBuilder) Build() (result *PrivateClustersServer, e
 		catalogItemsDao:           catalogItemsDao,
 		bareMetalInstanceTypesDao: bareMetalInstanceTypesDao,
 		clusterVersionsDao:        clusterVersionsDao,
+		virtualNetworksDao:        virtualNetworksDao,
 		subnetsDao:                subnetsDao,
 		securityGroupsDao:         securityGroupsDao,
 		tenantsDao:                tenantsDao,
@@ -1087,9 +1098,14 @@ func (s *PrivateClustersServer) applyDefaultNetworkAttachment(ctx context.Contex
 		s.logger.ErrorContext(ctx, "failed to look up default subnet", slog.Any("error", err))
 		return grpcstatus.Errorf(grpccodes.Internal, "failed to look up default subnet")
 	}
+	defaultVirtualNetwork, err := findDefaultVirtualNetwork(ctx, s.logger, s.virtualNetworksDao, tenant, project)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "failed to look up default virtual network", slog.Any("error", err))
+		return grpcstatus.Errorf(grpccodes.Internal, "failed to look up default virtual network")
+	}
 	defaultVN := ""
-	if defaultSubnet != nil {
-		defaultVN = refKey(defaultSubnet.GetSpec().GetVirtualNetwork())
+	if defaultVirtualNetwork != nil {
+		defaultVN = defaultVirtualNetwork.GetId()
 	}
 
 	if attachment == nil {

@@ -438,6 +438,10 @@ var _ = Describe("Private clusters server", func() {
 				Metadata: privatev1.Metadata_builder{
 					Name:   "test-vnet",
 					Tenant: testTenant,
+					Labels: map[string]string{defaultLabel: "true"},
+				}.Build(),
+				Status: privatev1.VirtualNetworkStatus_builder{
+					State: privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_READY,
 				}.Build(),
 			}.Build()).Do(ctx)
 			Expect(err).ToNot(HaveOccurred())
@@ -4423,7 +4427,7 @@ var _ = Describe("Private clusters server", func() {
 					"compute": privatev1.ClusterNodeSet_builder{
 						Size: proto.Int32(3),
 						BaremetalInstanceType: privatev1.BareMetalInstanceTypeReference_builder{
-							Id: "bmit-fabric-id",
+							Id: "acme-bmit-id",
 						}.Build(),
 					}.Build(),
 				}
@@ -4506,6 +4510,97 @@ var _ = Describe("Private clusters server", func() {
 				Expect(attachment.GetSubnet().GetId()).To(Equal("subnet-1"))
 				Expect(attachment.GetSecurityGroups()).To(HaveLen(1))
 				Expect(attachment.GetSecurityGroups()[0].GetId()).To(Equal("tenant-default-sg"))
+			})
+
+			It("Fills the default security group when the project has a default VN but no default subnet", func() {
+				const project = "project-default-vn-without-subnet"
+				projectsDao, err := dao.NewGenericDAO[*privatev1.Project]().
+					SetLogger(logger).
+					SetTenancyLogic(tenancy).
+					Build()
+				Expect(err).ToNot(HaveOccurred())
+				_, err = projectsDao.Create().SetObject(privatev1.Project_builder{
+					Metadata: privatev1.Metadata_builder{Name: project, Tenant: testTenant}.Build(),
+				}.Build()).Do(ctx)
+				Expect(err).ToNot(HaveOccurred())
+
+				vnID := "project-default-vn"
+				vnDao, err := dao.NewGenericDAO[*privatev1.VirtualNetwork]().
+					SetLogger(logger).
+					SetTenancyLogic(tenancy).
+					Build()
+				Expect(err).ToNot(HaveOccurred())
+				_, err = vnDao.Create().SetObject(privatev1.VirtualNetwork_builder{
+					Id: vnID,
+					Metadata: privatev1.Metadata_builder{
+						Name: vnID, Tenant: testTenant, Project: project,
+						Labels: map[string]string{defaultLabel: "true"},
+					}.Build(),
+					Status: privatev1.VirtualNetworkStatus_builder{
+						State: privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_READY,
+					}.Build(),
+				}.Build()).Do(ctx)
+				Expect(err).ToNot(HaveOccurred())
+
+				subnetID := "project-subnet-without-default-label"
+				projectSubnetsDao, err := dao.NewGenericDAO[*privatev1.Subnet]().
+					SetLogger(logger).
+					SetTenancyLogic(tenancy).
+					Build()
+				Expect(err).ToNot(HaveOccurred())
+				_, err = projectSubnetsDao.Create().SetObject(privatev1.Subnet_builder{
+					Id: subnetID,
+					Metadata: privatev1.Metadata_builder{
+						Name: subnetID, Tenant: testTenant, Project: project,
+					}.Build(),
+					Spec: privatev1.SubnetSpec_builder{
+						VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: vnID}.Build(),
+						Ipv4Cidr:       new("10.2.0.0/24"),
+					}.Build(),
+					Status: privatev1.SubnetStatus_builder{
+						State: privatev1.SubnetState_SUBNET_STATE_READY,
+					}.Build(),
+				}.Build()).Do(ctx)
+				Expect(err).ToNot(HaveOccurred())
+
+				const defaultSGID = "project-default-sg"
+				projectSecurityGroupsDao, err := dao.NewGenericDAO[*privatev1.SecurityGroup]().
+					SetLogger(logger).
+					SetTenancyLogic(tenancy).
+					Build()
+				Expect(err).ToNot(HaveOccurred())
+				_, err = projectSecurityGroupsDao.Create().SetObject(privatev1.SecurityGroup_builder{
+					Id: defaultSGID,
+					Metadata: privatev1.Metadata_builder{
+						Name: defaultSGID, Tenant: testTenant, Project: project,
+						Labels: map[string]string{defaultLabel: "true"},
+					}.Build(),
+					Spec: privatev1.SecurityGroupSpec_builder{
+						VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: vnID}.Build(),
+					}.Build(),
+					Status: privatev1.SecurityGroupStatus_builder{
+						State: privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY,
+					}.Build(),
+				}.Build()).Do(ctx)
+				Expect(err).ToNot(HaveOccurred())
+
+				response, err := server.Create(ctx, privatev1.ClustersCreateRequest_builder{
+					Object: privatev1.Cluster_builder{
+						Metadata: privatev1.Metadata_builder{Name: "na-default-vn-without-default-subnet", Project: project}.Build(),
+						Spec: privatev1.ClusterSpec_builder{
+							Template: privatev1.ClusterTemplateReference_builder{Id: "my-template-id"}.Build(),
+							NodeSets: baseNodeSets(),
+							NetworkAttachment: privatev1.ClusterNetworkAttachment_builder{
+								Subnet: privatev1.SubnetLocalReference_builder{Id: subnetID}.Build(),
+							}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build())
+				Expect(err).ToNot(HaveOccurred())
+				attachment := response.GetObject().GetSpec().GetNetworkAttachment()
+				Expect(attachment.GetSubnet().GetId()).To(Equal(subnetID))
+				Expect(attachment.GetSecurityGroups()).To(HaveLen(1))
+				Expect(attachment.GetSecurityGroups()[0].GetId()).To(Equal(defaultSGID))
 			})
 
 			It("Does not overwrite fully specified network_attachment", func() {
@@ -4707,7 +4802,7 @@ var _ = Describe("Private clusters server", func() {
 				Expect(st.Message()).To(ContainSubstring("no network port with role 'fabric'"))
 			})
 
-			It("Injects defaults when network_attachment is omitted and skips fabric without BMIT", func() {
+			It("Injects defaults and resolves the wrapper-provided BMIT fabric when network_attachment is omitted", func() {
 				response, err := server.Create(ctx, privatev1.ClustersCreateRequest_builder{
 					Object: privatev1.Cluster_builder{
 						Metadata: privatev1.Metadata_builder{Name: "fabric-no-net"}.Build(),
@@ -4723,8 +4818,8 @@ var _ = Describe("Private clusters server", func() {
 				Expect(attachment.GetSubnet().GetId()).To(Equal("tenant-default-subnet"))
 				nodeSet := response.GetObject().GetSpec().GetNodeSets()["compute"]
 				Expect(nodeSet).ToNot(BeNil())
-				// Template-derived node sets have HostType but no BMIT, so fabric stays empty.
-				Expect(nodeSet.GetFabricInterface()).To(BeEmpty())
+				Expect(nodeSet.GetBaremetalInstanceType().GetId()).To(Equal("acme-bmit-id"))
+				Expect(nodeSet.GetFabricInterface()).To(Equal("data-0"))
 			})
 
 			It("Selects the first fabric port when multiple exist", func() {

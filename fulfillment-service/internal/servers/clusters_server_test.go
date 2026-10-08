@@ -1886,7 +1886,7 @@ var _ = Describe("Clusters server", func() {
 							NodeSets: map[string]*publicv1.ClusterNodeSet{
 								"workers": publicv1.ClusterNodeSet_builder{
 									BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{
-										Id: "bmit_no_fabric",
+										Id: "bmit_standard",
 									}.Build(),
 									Size: proto.Int32(3),
 								}.Build(),
@@ -1895,7 +1895,7 @@ var _ = Describe("Clusters server", func() {
 					}.Build(),
 				}.Build())
 				Expect(err).ToNot(HaveOccurred())
-				Expect(response.GetObject().GetSpec().GetNodeSets()["workers"].GetBaremetalInstanceType().GetId()).To(Equal("bmit_no_fabric"))
+				Expect(response.GetObject().GetSpec().GetNodeSets()["workers"].GetBaremetalInstanceType().GetId()).To(Equal("bmit_standard"))
 			})
 
 			It("Accepts node set with baremetal_instance_type when template has none", func() {
@@ -2057,8 +2057,11 @@ var _ = Describe("Clusters server", func() {
 							},
 							NetworkAttachment: publicv1.ClusterNetworkAttachment_builder{
 								Subnet: publicv1.SubnetLocalReference_builder{
-									Name: "dummy-subnet",
+									Id: "tenant-default-subnet-" + testTenant,
 								}.Build(),
+								SecurityGroups: []*publicv1.SecurityGroupLocalReference{
+									publicv1.SecurityGroupLocalReference_builder{Id: "tenant-default-sg-" + testTenant}.Build(),
+								},
 							}.Build(),
 						}.Build(),
 					}.Build(),

@@ -144,6 +144,10 @@ func seedTenantDefaultNetworking(ctx context.Context, tenant, project string) {
 			Name:    vnID,
 			Tenant:  tenant,
 			Project: project,
+			Labels:  map[string]string{defaultLabel: "true"},
+		}.Build(),
+		Status: privatev1.VirtualNetworkStatus_builder{
+			State: privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_READY,
 		}.Build(),
 	}.Build()).Do(ctx)
 	ExpectWithOffset(1, err).ToNot(HaveOccurred())
