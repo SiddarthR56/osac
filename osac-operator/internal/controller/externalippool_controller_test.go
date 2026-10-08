@@ -114,7 +114,7 @@ var _ = Describe("ExternalIPPoolReconciler", func() {
 		It("should add finalizer on first reconcile", func() {
 			key := types.NamespacedName{Name: pool.Name, Namespace: pool.Namespace}
 			result, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
-			Expect(err).To(HaveOccurred())
+			Expect(err).NotTo(HaveOccurred())
 			Expect(result).NotTo(BeNil())
 
 			updated := &osacv1alpha1.ExternalIPPool{}
