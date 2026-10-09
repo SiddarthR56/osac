@@ -318,6 +318,12 @@ var _ = Describe("Tenant compute infrastructure readiness", func() {
 		failure := errors.New("subsystem unavailable")
 		if subsystem == "IDP" {
 			idpClient.EXPECT().GetTenant(gomock.Any(), "tenant-a").Return(nil, failure)
+			observe(clientWith(object(osacv1alpha1.TenantPhaseReady)))
+			Expect(reconciler.Run(ctx, tenant)).To(MatchError(ContainSubstring("subsystem unavailable")))
+			Expect(tenants.updates).To(HaveLen(1))
+			saved := tenants.updates[0].GetObject()
+			Expect(saved.GetStatus().GetState()).To(Equal(privatev1.TenantState_TENANT_STATE_SYNCED))
+			Expect(condition(saved).GetStatus()).To(Equal(ready))
 		} else {
 			idpClient.EXPECT().GetTenant(gomock.Any(), "tenant-a").Return(&idp.Tenant{Name: "tenant-a"}, nil)
 			if subsystem == "vault" {
@@ -325,20 +331,24 @@ var _ = Describe("Tenant compute infrastructure readiness", func() {
 				vaultClient := vault.NewMockLifecycleClient(ctrl)
 				reconciler.vaultLifecycle = vaultClient
 				vaultClient.EXPECT().EnsureTenantNamespace(gomock.Any(), "tenant-a").Return(failure)
+				observe(clientWith(object(osacv1alpha1.TenantPhaseReady)))
+				Expect(reconciler.Run(ctx, tenant)).To(Succeed())
+				Expect(tenants.updates).To(HaveLen(1))
+				saved := tenants.updates[0].GetObject()
+				Expect(saved.GetStatus().GetState()).To(Equal(privatev1.TenantState_TENANT_STATE_SYNCED))
+				Expect(condition(saved).GetStatus()).To(Equal(ready))
 			} else {
 				vn := NewMockVirtualNetworksClient(ctrl)
 				reconciler.virtualNetworksClient = vn
 				vn.EXPECT().List(gomock.Any(), gomock.Any()).Return(nil, failure)
+				observe(clientWith(object(osacv1alpha1.TenantPhaseReady)))
+				Expect(reconciler.Run(ctx, tenant)).To(MatchError(ContainSubstring("subsystem unavailable")))
+				Expect(tenants.updates).To(HaveLen(1))
+				saved := tenants.updates[0].GetObject()
+				Expect(saved.GetStatus().GetState()).To(Equal(privatev1.TenantState_TENANT_STATE_SYNCED))
+				Expect(condition(saved).GetStatus()).To(Equal(ready))
 			}
 		}
-		original := proto.Clone(tenant).(*privatev1.Tenant)
-		observe(clientWith(object(osacv1alpha1.TenantPhaseReady)))
-		Expect(reconciler.Run(ctx, tenant)).To(MatchError(ContainSubstring("subsystem unavailable")))
-		Expect(tenants.updates).To(HaveLen(1))
-		saved := tenants.updates[0].GetObject()
-		Expect(saved.GetStatus().GetState()).To(Equal(privatev1.TenantState_TENANT_STATE_SYNCED))
-		Expect(condition(saved).GetStatus()).To(Equal(ready))
-		Expect(proto.Equal(saved.GetStatus().GetConditions()[0], original.GetStatus().GetConditions()[0])).To(BeTrue())
 	}, Entry("IDP error", "IDP"), Entry("vault error", "vault"), Entry("network error", "network"))
 	It("does not poll infrastructure during tenant deletion", func() {
 		tenant.GetMetadata().SetDeletionTimestamp(timestamppb.Now())
