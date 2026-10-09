@@ -454,6 +454,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 		SetAttributionLogic(deps.PublicAttributionLogic).
 		SetTenancyLogic(deps.TenancyLogic).
 		SetMetricsRegisterer(deps.MetricsRegisterer).
+		SetHubClientProvider(hubClientProvider).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create subnets server: %w", err)
@@ -466,6 +467,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 		SetLogger(deps.Logger).
 		SetAttributionLogic(deps.PrivateAttributionLogic).
 		SetTenancyLogic(deps.TenancyLogic).
+		SetHubClientProvider(hubClientProvider).
 		SetMetricsRegisterer(deps.MetricsRegisterer).
 		Build()
 	if err != nil {
