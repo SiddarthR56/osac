@@ -278,7 +278,9 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 	})
 
 	It("rejects public updates that change network attachments", func(ctx context.Context) {
-		network := createCatalogItemNetworkFixture(ctx, usersGroup, "")
+		// NetworkClass is a deployment singleton. Reuse the tenant-default subnet
+		// and security group instead of creating a second NetworkClass.
+		network := getTenantDefaultNetworkFixture(ctx, usersGroup, "")
 		createResp, err := bareMetalInstancesClient.Create(ctx, publicv1.BareMetalInstancesCreateRequest_builder{
 			Object: publicv1.BareMetalInstance_builder{
 				Metadata: publicv1.Metadata_builder{
@@ -337,6 +339,19 @@ var _ = Describe("BareMetalInstance lifecycle", func() {
 		virtualNetworksClient := privatev1.NewVirtualNetworksClient(tool.InternalView().AdminConn())
 		subnetsClient := privatev1.NewSubnetsClient(tool.InternalView().AdminConn())
 		securityGroupsClient := privatev1.NewSecurityGroupsClient(tool.InternalView().AdminConn())
+		// NetworkClass is a deployment singleton. Remove the fabric-backed default
+		// class created by BeforeEach before creating the k8s-only class needed by
+		// this validation case. The next spec will recreate the default fixture.
+		listedClasses, err := networkClassesClient.List(ctx, privatev1.NetworkClassesListRequest_builder{
+			Filter: new("!has(this.metadata.deletion_timestamp)"),
+		}.Build())
+		Expect(err).ToNot(HaveOccurred())
+		Expect(listedClasses.GetItems()).To(HaveLen(1))
+		_, err = networkClassesClient.Delete(ctx, privatev1.NetworkClassesDeleteRequest_builder{
+			Id: listedClasses.GetItems()[0].GetId(),
+		}.Build())
+		Expect(err).ToNot(HaveOccurred())
+
 		// Create a k8s-only NetworkClass (no fabric_manager):
 		ncResp, err := networkClassesClient.Create(ctx, privatev1.NetworkClassesCreateRequest_builder{
 			Object: privatev1.NetworkClass_builder{

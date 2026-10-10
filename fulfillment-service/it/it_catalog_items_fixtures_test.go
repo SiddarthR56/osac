@@ -201,17 +201,57 @@ type catalogItemNetworkFixture struct {
 
 func createCatalogItemNetworkClassFixture(ctx context.Context) string {
 	GinkgoHelper()
+	classID := createCatalogItemNetworkClassFixtureWithoutCleanup(ctx)
+	classes := privatev1.NewNetworkClassesClient(tool.InternalView().AdminConn())
+	deferCatalogItemFixtureDeletion(func(ctx context.Context) error {
+		_, err := classes.Delete(ctx, privatev1.NetworkClassesDeleteRequest_builder{Id: classID}.Build())
+		return err
+	}, nil)
+	return classID
+}
+
+func createCatalogItemNetworkClassFixtureWithoutCleanup(ctx context.Context) string {
+	GinkgoHelper()
 	classes := privatev1.NewNetworkClassesClient(tool.InternalView().AdminConn())
 	class, err := classes.Create(ctx, privatev1.NetworkClassesCreateRequest_builder{
 		Object: privatev1.NetworkClass_builder{Metadata: catalogItemFixtureMetadata("shared", ""), Title: "Catalog item integration network", FabricManager: new("netris")}.Build(),
 	}.Build())
 	Expect(err).NotTo(HaveOccurred())
 	classID := class.GetObject().GetId()
+	waitForNetworkClassReady(ctx, classes, classID)
+	return classID
+}
+
+func getOrCreateTenantDefaultNetworkClassFixture(ctx context.Context) string {
+	GinkgoHelper()
+	classes := privatev1.NewNetworkClassesClient(tool.InternalView().AdminConn())
+	listed, err := classes.List(ctx, privatev1.NetworkClassesListRequest_builder{
+		Filter: new("!has(this.metadata.deletion_timestamp)"),
+	}.Build())
+	Expect(err).NotTo(HaveOccurred())
+	if items := listed.GetItems(); len(items) > 0 {
+		Expect(items[0].GetFabricManager()).NotTo(BeEmpty(), "tenant default networking requires a fabric-backed NetworkClass")
+		return items[0].GetId()
+	}
+
+	classID := createCatalogItemNetworkClassFixtureWithoutCleanup(ctx)
+	// Default VN/Subnet/SecurityGroup resources are system-managed and cannot be
+	// deleted by the test harness. The deployment NetworkClass is still a
+	// singleton, so release it after this spec to let later specs create their
+	// own test class.
 	deferCatalogItemFixtureDeletion(func(ctx context.Context) error {
 		_, err := classes.Delete(ctx, privatev1.NetworkClassesDeleteRequest_builder{Id: classID}.Build())
 		return err
-	}, nil)
-	waitForNetworkClassReady(ctx, classes, classID)
+	}, func(ctx context.Context) (bool, error) {
+		_, err := classes.Get(ctx, privatev1.NetworkClassesGetRequest_builder{Id: classID}.Build())
+		if status.Code(err) == codes.NotFound {
+			return true, nil
+		}
+		if err != nil {
+			return false, nil
+		}
+		return false, nil
+	})
 	return classID
 }
 
@@ -861,6 +901,8 @@ func ensureTenantDefaultNetworkingFixture(ctx context.Context, tenant, project s
 
 	subnets := privatev1.NewSubnetsClient(tool.InternalView().AdminConn())
 	groups := privatev1.NewSecurityGroupsClient(tool.InternalView().AdminConn())
+	networks := privatev1.NewVirtualNetworksClient(tool.InternalView().AdminConn())
+	classes := privatev1.NewNetworkClassesClient(tool.InternalView().AdminConn())
 	filter := fmt.Sprintf(
 		"this.metadata.labels[%q] == 'true' && this.metadata.tenant == %q && this.metadata.project == %q && has(this.spec.ipv4_cidr)",
 		tenantDefaultNetworkingLabel, tenant, project,
@@ -888,6 +930,21 @@ func ensureTenantDefaultNetworkingFixture(ctx context.Context, tenant, project s
 			vnID = ref.GetId()
 		}
 		if vnID != "" {
+			vnResponse, vnErr := networks.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{Id: vnID}.Build())
+			if vnErr != nil || vnResponse.GetObject().GetMetadata().HasDeletionTimestamp() ||
+				vnResponse.GetObject().GetStatus().GetState() != privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_READY {
+				vnID = ""
+			}
+			if vnID != "" {
+				classID := vnResponse.GetObject().GetSpec().GetNetworkClass().GetId()
+				classResponse, classErr := classes.Get(ctx, privatev1.NetworkClassesGetRequest_builder{Id: classID}.Build())
+				if classErr != nil || classResponse.GetObject().GetMetadata().HasDeletionTimestamp() ||
+					classResponse.GetObject().GetFabricManager() == "" {
+					vnID = ""
+				}
+			}
+		}
+		if vnID != "" {
 			sgFilter := fmt.Sprintf(
 				"this.metadata.labels[%q] == 'true' && this.metadata.tenant == %q && this.metadata.project == %q",
 				tenantDefaultNetworkingLabel, tenant, project,
@@ -908,7 +965,7 @@ func ensureTenantDefaultNetworkingFixture(ctx context.Context, tenant, project s
 		}
 	}
 
-	classID := createCatalogItemNetworkClassFixture(ctx)
+	classID := getOrCreateTenantDefaultNetworkClassFixture(ctx)
 	defaultLabels := map[string]string{tenantDefaultNetworkingLabel: "true"}
 	meta := privatev1.Metadata_builder{
 		Name:    catalogItemFixtureName(),
@@ -917,7 +974,6 @@ func ensureTenantDefaultNetworkingFixture(ctx context.Context, tenant, project s
 		Labels:  defaultLabels,
 	}.Build()
 
-	networks := privatev1.NewVirtualNetworksClient(tool.InternalView().AdminConn())
 	network, err := networks.Create(ctx, privatev1.VirtualNetworksCreateRequest_builder{
 		Object: privatev1.VirtualNetwork_builder{
 			Metadata: meta,
@@ -1029,4 +1085,62 @@ func ensureTenantDefaultNetworkingFixture(ctx context.Context, tenant, project s
 		g.Expect(current.GetObject().GetStatus().GetState()).To(Equal(privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY))
 		g.Expect(current.GetObject().GetSpec().GetVirtualNetwork().GetId()).To(Equal(networkID))
 	}, time.Minute, time.Second).Should(Succeed())
+}
+
+func getTenantDefaultNetworkFixture(ctx context.Context, tenant, project string) catalogItemNetworkFixture {
+	GinkgoHelper()
+
+	subnets := privatev1.NewSubnetsClient(tool.InternalView().AdminConn())
+	groups := privatev1.NewSecurityGroupsClient(tool.InternalView().AdminConn())
+	networks := privatev1.NewVirtualNetworksClient(tool.InternalView().AdminConn())
+	classes := privatev1.NewNetworkClassesClient(tool.InternalView().AdminConn())
+	filter := fmt.Sprintf(
+		"this.metadata.labels[%q] == 'true' && this.metadata.tenant == %q && this.metadata.project == %q && has(this.spec.ipv4_cidr)",
+		tenantDefaultNetworkingLabel, tenant, project,
+	)
+	listed, err := subnets.List(ctx, privatev1.SubnetsListRequest_builder{Filter: &filter}.Build())
+	Expect(err).NotTo(HaveOccurred())
+	readySubnets := append([]*privatev1.Subnet(nil), listed.GetItems()...)
+	sort.Slice(readySubnets, func(i, j int) bool {
+		return readySubnets[i].GetMetadata().GetCreationTimestamp().AsTime().After(
+			readySubnets[j].GetMetadata().GetCreationTimestamp().AsTime())
+	})
+
+	for _, subnet := range readySubnets {
+		if subnet.GetMetadata().HasDeletionTimestamp() ||
+			subnet.GetStatus().GetState() != privatev1.SubnetState_SUBNET_STATE_READY {
+			continue
+		}
+		vnID := subnet.GetSpec().GetVirtualNetwork().GetId()
+		vnResponse, err := networks.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{Id: vnID}.Build())
+		if err != nil || vnResponse.GetObject().GetMetadata().HasDeletionTimestamp() ||
+			vnResponse.GetObject().GetStatus().GetState() != privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_READY {
+			continue
+		}
+		classID := vnResponse.GetObject().GetSpec().GetNetworkClass().GetId()
+		classResponse, err := classes.Get(ctx, privatev1.NetworkClassesGetRequest_builder{Id: classID}.Build())
+		if err != nil || classResponse.GetObject().GetMetadata().HasDeletionTimestamp() ||
+			classResponse.GetObject().GetFabricManager() == "" {
+			continue
+		}
+		sgFilter := fmt.Sprintf(
+			"this.metadata.labels[%q] == 'true' && this.metadata.tenant == %q && this.metadata.project == %q",
+			tenantDefaultNetworkingLabel, tenant, project,
+		)
+		groupsResponse, err := groups.List(ctx, privatev1.SecurityGroupsListRequest_builder{Filter: &sgFilter}.Build())
+		Expect(err).NotTo(HaveOccurred())
+		for _, group := range groupsResponse.GetItems() {
+			if !group.GetMetadata().HasDeletionTimestamp() &&
+				group.GetStatus().GetState() == privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY &&
+				group.GetSpec().GetVirtualNetwork().GetId() == vnID {
+				return catalogItemNetworkFixture{
+					subnetID: subnet.GetId(), securityGroupID: group.GetId(),
+					virtualNetworkID: vnID, networkClassID: classID,
+				}
+			}
+		}
+	}
+
+	Fail("tenant default networking fixture is missing a READY subnet, virtual network, and security group")
+	return catalogItemNetworkFixture{}
 }

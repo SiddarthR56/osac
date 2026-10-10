@@ -400,7 +400,7 @@ var _ = Describe("Cluster reconciler", func() {
 				}.Build(),
 			}.Build(),
 			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{
-				"spec.template", "spec.template_parameters", "spec.node_sets",
+				"spec.node_sets",
 			}},
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
