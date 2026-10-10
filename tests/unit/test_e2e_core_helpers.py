@@ -49,27 +49,86 @@ def test_delete_instance_type_if_present_propagates_other_errors() -> None:
 
 
 def test_wait_for_tenant_default_networking_ready_waits_for_all_resources(monkeypatch: pytest.MonkeyPatch) -> None:
-    k8s = Mock(spec=K8sClient)
-    k8s.get_tenant_condition.side_effect = [
-        {"status": "False", "reason": "ResourcesPending", "message": "SecurityGroup/default"},
-        {"status": "True", "reason": "AllResourcesReady", "message": "All defaults are ready"},
+    grpc = Mock(spec=GRPCClient)
+    grpc.get_tenant_by_name.side_effect = [
+        {
+            "status": {
+                "conditions": [
+                    {
+                        "type": "TENANT_CONDITION_TYPE_DEFAULT_NETWORKING_READY",
+                        "status": "CONDITION_STATUS_FALSE",
+                        "reason": "ResourcesPending",
+                        "message": "SecurityGroup/default",
+                    }
+                ]
+            }
+        },
+        {
+            "status": {
+                "conditions": [
+                    {
+                        "type": "TENANT_CONDITION_TYPE_DEFAULT_NETWORKING_READY",
+                        "status": "CONDITION_STATUS_TRUE",
+                        "reason": "AllResourcesReady",
+                        "message": "All defaults are ready",
+                    }
+                ]
+            }
+        },
     ]
     monkeypatch.setattr(runner.time, "sleep", lambda _: None)
 
-    helpers.wait_for_tenant_default_networking_ready(k8s=k8s, tenant_name="tenant1")
+    helpers.wait_for_tenant_default_networking_ready(grpc=grpc, tenant_name="tenant1")
 
-    assert k8s.get_tenant_condition.call_count == 2
-    k8s.get_tenant_condition.assert_called_with(name="tenant1", condition_type="DefaultNetworkingReady", checked=False)
+    assert grpc.get_tenant_by_name.call_count == 2
+    grpc.get_tenant_by_name.assert_called_with(name="tenant1")
 
 
 @pytest.mark.parametrize(
     ("reason", "status"), [("NoDefaultNetworking", "True"), ("ResourceFailed", "False"), ("ReservedTenant", "True")]
 )
 def test_wait_for_tenant_default_networking_ready_fails_on_terminal_conditions(reason: str, status: str) -> None:
-    k8s = Mock(spec=K8sClient)
-    k8s.get_tenant_condition.return_value = {"status": status, "reason": reason, "message": "fixture networking state"}
+    grpc = Mock(spec=GRPCClient)
+    grpc.get_tenant_by_name.return_value = {
+        "status": {
+            "conditions": [
+                {
+                    "type": "TENANT_CONDITION_TYPE_DEFAULT_NETWORKING_READY",
+                    "status": f"CONDITION_STATUS_{status.upper()}",
+                    "reason": reason,
+                    "message": "fixture networking state",
+                }
+            ]
+        }
+    }
 
     with pytest.raises(RuntimeError, match=reason) as exc_info:
-        helpers.wait_for_tenant_default_networking_ready(k8s=k8s, tenant_name="tenant1")
+        helpers.wait_for_tenant_default_networking_ready(grpc=grpc, tenant_name="tenant1")
 
     assert "fixture networking state" in str(exc_info.value)
+    assert grpc.get_tenant_by_name.call_count == 1
+
+
+def test_wait_for_tenant_default_networking_ready_times_out_with_missing_condition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    grpc = Mock(spec=GRPCClient)
+    grpc.get_tenant_by_name.return_value = {"status": {"conditions": []}}
+    monkeypatch.setattr(runner.time, "sleep", lambda _: None)
+
+    with pytest.raises(TimeoutError, match="last status=<missing>, reason=<missing>, message=<no message>"):
+        helpers.wait_for_tenant_default_networking_ready(grpc=grpc, tenant_name="tenant1")
+
+    assert grpc.get_tenant_by_name.call_count == 120
+
+
+def test_wait_for_tenant_default_networking_ready_does_not_swallow_grpc_errors() -> None:
+    grpc = Mock(spec=GRPCClient)
+    error = subprocess.CalledProcessError(returncode=1, cmd="grpcurl", stderr="permission denied")
+    grpc.get_tenant_by_name.side_effect = error
+
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        helpers.wait_for_tenant_default_networking_ready(grpc=grpc, tenant_name="tenant1")
+
+    assert exc_info.value is error
+    assert grpc.get_tenant_by_name.call_count == 1

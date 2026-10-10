@@ -188,7 +188,7 @@ def ensure_tenants(ensure_k8s_only_network_class: None, private_grpc: GRPCClient
 
 @pytest.fixture(scope="session", autouse=True)
 def _wait_for_default_networking_ready(
-    ensure_jwt_users: None, setup_organization_memberships: None, grpc: GRPCClient, k8s_hub_client: K8sClient
+    ensure_jwt_users: None, setup_organization_memberships: None, grpc: GRPCClient, private_grpc: GRPCClient
 ) -> None:
     """Wait for tenant defaults, including the default SecurityGroup, to be READY.
 
@@ -212,7 +212,7 @@ def _wait_for_default_networking_ready(
     """
     # OSAC-5564: subnet readiness alone does not guarantee the matching default
     # SecurityGroup is READY, which Cluster Create now requires for defaulting.
-    wait_for_tenant_default_networking_ready(k8s=k8s_hub_client, tenant_name="tenant1")
+    wait_for_tenant_default_networking_ready(grpc=private_grpc, tenant_name="tenant1")
 
     # Timeout must exceed 2x the operator's statusPollInterval (30s) to
     # accommodate two sequential polling cycles (VirtualNetwork -> Subnet).
