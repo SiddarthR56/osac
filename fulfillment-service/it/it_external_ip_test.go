@@ -250,6 +250,9 @@ var _ = Describe("Private ExternalIPPool CRUD", func() {
 	})
 
 	It("Rejects delete when IPs are allocated", func() {
+		networkClassesClient := privatev1.NewNetworkClassesClient(tool.InternalView().AdminConn())
+		createReadyExternalIPNetworkClass(ctx, networkClassesClient)
+
 		poolId := fmt.Sprintf("test-pool-%s", uuid.New())
 		_, err := client.Create(ctx, privatev1.ExternalIPPoolsCreateRequest_builder{
 			Object: privatev1.ExternalIPPool_builder{
@@ -272,6 +275,7 @@ var _ = Describe("Private ExternalIPPool CRUD", func() {
 			g.Expect(err).ToNot(HaveOccurred())
 			g.Expect(resp.GetObject().GetStatus().GetState()).To(
 				Equal(privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_PENDING))
+			g.Expect(resp.GetObject().GetStatus().GetHub()).ToNot(BeEmpty())
 		}, time.Minute, time.Second).Should(Succeed())
 
 		getResp, err := client.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{
@@ -290,6 +294,15 @@ var _ = Describe("Private ExternalIPPool CRUD", func() {
 			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"status.state"}},
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
+
+		Eventually(func(g Gomega) {
+			resp, err := client.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{
+				Id: poolId,
+			}.Build())
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(resp.GetObject().GetStatus().GetState()).To(
+				Equal(privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_READY))
+		}, time.Minute, time.Second).Should(Succeed())
 
 		externalIPsClient := publicv1.NewExternalIPsClient(tool.ExternalView().UserConn())
 		ipId := fmt.Sprintf("test-ip-%s", uuid.New())

@@ -604,6 +604,34 @@ var _ = Describe("Private clusters server", func() {
 			Expect(nodeSets["gpu"].GetSize()).To(BeNumerically("==", 1))
 		})
 
+		It("rejects an IPv6-only pool for automatic ExternalIP allocation", func() {
+			_, err := server.externalIPPoolDao.Create().SetObject(
+				privatev1.ExternalIPPool_builder{
+					Id: "ipv6-auto-pool",
+					Metadata: privatev1.Metadata_builder{
+						Tenant: testTenant,
+					}.Build(),
+					Spec: privatev1.ExternalIPPoolSpec_builder{
+						IpFamily: privatev1.IPFamily_IP_FAMILY_IPV6,
+					}.Build(),
+					Status: privatev1.ExternalIPPoolStatus_builder{
+						State:     privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_READY,
+						Available: 2,
+					}.Build(),
+				}.Build(),
+			).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			err = server.autoProvisionExternalIPs(ctx, privatev1.Cluster_builder{
+				Id: "cluster-ipv6-only",
+				Metadata: privatev1.Metadata_builder{
+					Tenant: testTenant,
+				}.Build(),
+			}.Build())
+			Expect(grpcstatus.Code(err)).To(Equal(grpccodes.FailedPrecondition))
+			Expect(err.Error()).To(ContainSubstring("IP_FAMILY_IPV4"))
+		})
+
 		It("Preserves direct add-on operators through create and get", func() {
 			operators := []*privatev1.AddOnOperatorReference{
 				privatev1.AddOnOperatorReference_builder{Id: "operator-1", Name: "operator-one"}.Build(),
@@ -4432,6 +4460,52 @@ var _ = Describe("Private clusters server", func() {
 					}.Build(),
 				}
 			}
+
+			It("finds a READY default VirtualNetwork beyond the first DAO page", func() {
+				const project = "default-vn-pagination"
+				projectsDao, err := dao.NewGenericDAO[*privatev1.Project]().
+					SetLogger(logger).
+					SetTenancyLogic(tenancy).
+					Build()
+				Expect(err).ToNot(HaveOccurred())
+				_, err = projectsDao.Create().SetObject(privatev1.Project_builder{
+					Metadata: privatev1.Metadata_builder{Name: project, Tenant: testTenant}.Build(),
+				}.Build()).Do(ctx)
+				Expect(err).ToNot(HaveOccurred())
+
+				virtualNetworksDao, err := dao.NewGenericDAO[*privatev1.VirtualNetwork]().
+					SetLogger(logger).
+					SetTenancyLogic(tenancy).
+					SetDefaultLimit(2).
+					SetMaxLimit(2).
+					Build()
+				Expect(err).ToNot(HaveOccurred())
+
+				var expectedID string
+				for i := range 3 {
+					id := fmt.Sprintf("default-vn-page-%03d", i)
+					object := privatev1.VirtualNetwork_builder{
+						Id: id,
+						Metadata: privatev1.Metadata_builder{
+							Name: id, Tenant: testTenant, Project: project,
+							Labels: map[string]string{defaultLabel: "true"},
+						}.Build(),
+					}.Build()
+					if i == 2 {
+						object.SetStatus(privatev1.VirtualNetworkStatus_builder{
+							State: privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_READY,
+						}.Build())
+						expectedID = id
+					}
+					_, err = virtualNetworksDao.Create().SetObject(object).Do(ctx)
+					Expect(err).ToNot(HaveOccurred())
+				}
+
+				selected, err := findDefaultVirtualNetwork(ctx, logger, virtualNetworksDao, testTenant, project)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(selected).ToNot(BeNil())
+				Expect(selected.GetId()).To(Equal(expectedID))
+			})
 
 			It("Populates omitted network_attachment from tenant defaults", func() {
 				response, err := server.Create(ctx, privatev1.ClustersCreateRequest_builder{

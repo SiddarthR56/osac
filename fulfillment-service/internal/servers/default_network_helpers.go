@@ -35,21 +35,30 @@ func findDefaultVirtualNetwork(
 		"this.metadata.labels[%q] == \"true\" && this.metadata.tenant == %q && this.metadata.project == %q",
 		defaultLabel, tenant, project,
 	)
-	listResponse, err := virtualNetworksDao.List().
-		SetFilter(filter).
-		Do(ctx)
-	if err != nil {
-		return nil, err
-	}
 	var items []*privatev1.VirtualNetwork
-	for _, virtualNetwork := range listResponse.GetItems() {
-		if virtualNetwork.GetMetadata().HasDeletionTimestamp() {
-			continue
+	const pageSize int32 = 1000
+	for offset := int32(0); ; {
+		listResponse, err := virtualNetworksDao.List().
+			SetFilter(filter).
+			SetOffset(offset).
+			SetLimit(pageSize).
+			Do(ctx)
+		if err != nil {
+			return nil, err
 		}
-		if virtualNetwork.GetStatus().GetState() != privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_READY {
-			continue
+		for _, virtualNetwork := range listResponse.GetItems() {
+			if virtualNetwork.GetMetadata().HasDeletionTimestamp() {
+				continue
+			}
+			if virtualNetwork.GetStatus().GetState() != privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_READY {
+				continue
+			}
+			items = append(items, virtualNetwork)
 		}
-		items = append(items, virtualNetwork)
+		if listResponse.GetSize() == 0 || offset+listResponse.GetSize() >= listResponse.GetTotal() {
+			break
+		}
+		offset += listResponse.GetSize()
 	}
 	if len(items) == 0 {
 		return nil, nil
