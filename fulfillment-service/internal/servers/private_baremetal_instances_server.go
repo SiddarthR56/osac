@@ -592,7 +592,7 @@ func (s *PrivateBareMetalInstancesServer) applyDefaultNetworkAttachments(
 	var defaultSubnet *privatev1.Subnet
 	if len(attachments) == 0 || needsDefaultSubnetLookup(attachments[0]) {
 		var err error
-		defaultSubnet, err = s.findDefaultSubnet(ctx, tenantName, project)
+		defaultSubnet, err = findDefaultSubnet(ctx, s.logger, s.subnetsDao, tenantName, project)
 		if err != nil {
 			return err
 		}
