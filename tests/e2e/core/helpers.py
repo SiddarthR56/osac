@@ -882,6 +882,50 @@ def wait_for_tenant_condition(*, k8s: K8sClient, name: str, condition_type: str,
     )
 
 
+def wait_for_tenant_default_networking_ready(*, k8s: K8sClient, tenant_name: str) -> None:
+    """Wait for configured tenant defaults, not merely the Tenant's ready flag.
+
+    A tenant with no NetworkClass defaults can report DefaultNetworkingReady=True
+    with reason NoDefaultNetworking. Workload creation that omits an attachment
+    still requires the actual defaults to be READY, so accept only
+    AllResourcesReady and fail immediately for known terminal setup states.
+    """
+    condition_type = "DefaultNetworkingReady"
+    expected_reason = "AllResourcesReady"
+    terminal_reasons = {"NoDefaultNetworking", "ResourceFailed", "ReservedTenant"}
+    last_condition: dict[str, Any] = {}
+
+    def _read_condition() -> dict[str, Any]:
+        nonlocal last_condition
+        last_condition = k8s.get_tenant_condition(name=tenant_name, condition_type=condition_type, checked=False)
+        reason = last_condition.get("reason", "")
+        if reason in terminal_reasons:
+            status = last_condition.get("status", "") or "<missing>"
+            message = last_condition.get("message", "") or "<no message>"
+            raise RuntimeError(
+                f"Tenant {tenant_name} default networking is unavailable "
+                f"(condition status={status}, reason={reason}): {message}"
+            )
+        return last_condition
+
+    try:
+        poll_until(
+            fn=_read_condition,
+            until=lambda condition: condition.get("status") == "True" and condition.get("reason") == expected_reason,
+            retries=120,
+            delay=5,
+            description=f"Tenant {tenant_name} {condition_type}=True/{expected_reason}",
+        )
+    except TimeoutError:
+        status = last_condition.get("status", "") or "<missing>"
+        reason = last_condition.get("reason", "") or "<missing>"
+        message = last_condition.get("message", "") or "<no message>"
+        raise TimeoutError(
+            f"Tenant {tenant_name} did not reach {condition_type}=True/{expected_reason} "
+            f"(last status={status}, reason={reason}, message={message})"
+        ) from None
+
+
 def wait_for_tenant_deletion(*, k8s: K8sClient, name: str) -> None:
     poll_until(
         fn=lambda: not k8s.is_present(resource="tenant", name=name),
