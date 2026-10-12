@@ -349,6 +349,8 @@ var _ = Describe("Clusters server", func() {
 			}.Build())
 			seedAddOnOperator(ctx, "published-operator-id", "published-operator", true)
 			seedAddOnOperator(ctx, "unpublished-operator-id", "unpublished-operator", false)
+			// Cluster Create hard-fails when network_attachment is omitted and no tenant defaults exist.
+			seedClusterTenantDefaultNetworking(ctx, testTenant, "")
 		})
 
 		It("rejects reserved metadata on public create", func() {
@@ -1065,6 +1067,7 @@ var _ = Describe("Clusters server", func() {
 						},
 					}.Build(),
 				}.Build(),
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.node_sets"}},
 			}.Build())
 			Expect(err).ToNot(HaveOccurred())
 			object = updateResponse.GetObject()
@@ -1110,6 +1113,7 @@ var _ = Describe("Clusters server", func() {
 						ConsoleUrl: "https://my.console.com",
 					}.Build(),
 				}.Build(),
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"status.api_url", "status.console_url"}},
 			}.Build())
 			Expect(err).ToNot(HaveOccurred())
 			object = updateResponse.GetObject()
@@ -1229,6 +1233,7 @@ var _ = Describe("Clusters server", func() {
 						},
 					}.Build(),
 				}.Build(),
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.node_sets"}},
 			}.Build())
 			Expect(err).ToNot(HaveOccurred())
 
@@ -1295,7 +1300,8 @@ var _ = Describe("Clusters server", func() {
 			Expect(err).ToNot(HaveOccurred())
 			object := createResponse.GetObject()
 			name := object.GetMetadata().GetName()
-			// Try to update the status:
+			// Try to update the status. Use a non-status UpdateMask so status is not
+			// applied (and network_attachment is not cleared by a full replace):
 			_, err = server.Update(ctx, publicv1.ClustersUpdateRequest_builder{
 				Object: publicv1.Cluster_builder{
 					Id:       object.GetId(),
@@ -1307,6 +1313,7 @@ var _ = Describe("Clusters server", func() {
 						ApiUrl: "https://your.api",
 					}.Build(),
 				}.Build(),
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.template"}},
 			}.Build())
 			Expect(err).ToNot(HaveOccurred())
 
@@ -1827,6 +1834,7 @@ var _ = Describe("Clusters server", func() {
 						},
 					}.Build(),
 				}.Build(),
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"metadata.labels"}},
 			}.Build())
 			Expect(err).ToNot(HaveOccurred())
 			object = updateResponse.GetObject()
@@ -1872,6 +1880,7 @@ var _ = Describe("Clusters server", func() {
 						},
 					}.Build(),
 				}.Build(),
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"metadata.labels"}},
 			}.Build())
 			Expect(err).ToNot(HaveOccurred())
 			object = updateResponse.GetObject()
@@ -1915,6 +1924,7 @@ var _ = Describe("Clusters server", func() {
 						Labels: map[string]string{},
 					}.Build(),
 				}.Build(),
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"metadata.labels"}},
 			}.Build())
 			Expect(err).ToNot(HaveOccurred())
 			object = updateResponse.GetObject()
@@ -2044,7 +2054,7 @@ var _ = Describe("Clusters server", func() {
 							Template: publicv1.ClusterTemplateReference_builder{Id: "my_bmit_template"}.Build(),
 							NodeSets: map[string]*publicv1.ClusterNodeSet{
 								"workers": publicv1.ClusterNodeSet_builder{
-									BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "bmit_no_fabric", Shared: true}.
+									BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "bmit_standard", Shared: true}.
 										Build(),
 									Size: proto.Int32(3),
 								}.Build(),
@@ -2053,7 +2063,7 @@ var _ = Describe("Clusters server", func() {
 					}.Build(),
 				}.Build())
 				Expect(err).ToNot(HaveOccurred())
-				Expect(response.GetObject().GetSpec().GetNodeSets()["workers"].GetBaremetalInstanceType().GetId()).To(Equal("bmit_no_fabric"))
+				Expect(response.GetObject().GetSpec().GetNodeSets()["workers"].GetBaremetalInstanceType().GetId()).To(Equal("bmit_standard"))
 			})
 
 			It("Accepts node set with baremetal_instance_type when template has none", func() {
@@ -2212,8 +2222,11 @@ var _ = Describe("Clusters server", func() {
 							},
 							NetworkAttachment: publicv1.ClusterNetworkAttachment_builder{
 								Subnet: publicv1.SubnetLocalReference_builder{
-									Name: "dummy-subnet",
+									Id: "tenant-default-subnet-" + testTenant,
 								}.Build(),
+								SecurityGroups: []*publicv1.SecurityGroupLocalReference{
+									publicv1.SecurityGroupLocalReference_builder{Id: "tenant-default-sg-" + testTenant}.Build(),
+								},
 							}.Build(),
 						}.Build(),
 					}.Build(),
@@ -2327,6 +2340,7 @@ var _ = Describe("Clusters server", func() {
 					State:     privatev1.ClusterVersionState_CLUSTER_VERSION_STATE_ACTIVE,
 				}.Build(),
 			}.Build())
+			seedClusterTenantDefaultNetworking(ctx, testTenant, "")
 		})
 
 		It("Preserves explicit fields through create and get", func() {
@@ -2472,6 +2486,7 @@ var _ = Describe("Clusters server", func() {
 						}.Build(),
 					}.Build(),
 				}.Build(),
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.network.pod_cidr"}},
 			}.Build())
 			Expect(err).To(HaveOccurred())
 			status, ok := grpcstatus.FromError(err)
@@ -2503,6 +2518,7 @@ var _ = Describe("Clusters server", func() {
 						}.Build(),
 					}.Build(),
 				}.Build(),
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.network.service_cidr"}},
 			}.Build())
 			Expect(err).To(HaveOccurred())
 			status, ok := grpcstatus.FromError(err)
