@@ -124,6 +124,16 @@ VM/BMH image application and provisioning, DiskImage-backed CaaS, and deletion
 protection through real workload teardown remain [QE] E2E. See the
 [DiskImage coverage boundaries](../docs/INTEGRATION-TESTING.md#fulfillment-service).
 
+#### ExternalIP capacity touched-area map
+
+| Area | Required coverage | Location |
+|---|---|---|
+| ExternalIP pool capacity release, finalizer retries, underflow protection, and auto-created ComputeInstance cascade rollback | Unit | `internal/servers/private_external_ips_server_test.go` and `internal/servers/private_compute_instances_server_test.go`; run `ginkgo run --timeout 10m internal/servers` |
+
+The server suite uses its PostgreSQL test container. It does not exercise a
+deployed Fulfillment Service, operator, AAP controller, or network provider.
+See the [ExternalIP capacity coverage boundary](../docs/INTEGRATION-TESTING.md#fulfillment-service).
+
 #### Environment and commands
 
 ```bash
