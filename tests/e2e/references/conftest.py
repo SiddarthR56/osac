@@ -97,6 +97,63 @@ def ref_eip_pool(
                 raise ExceptionGroup("ExternalIPPool teardown failed", errors)
 
 
+@pytest.fixture
+def external_ip_ownership_pool(
+    private_grpc: GRPCClient, k8s_hub_client: K8sClient
+) -> Generator[dict[str, str], None, None]:
+    """Create a private, two-address pool for ExternalIP ownership lifecycle tests."""
+    pool_name = f"ref-eip-ownership-{uuid4().hex[:8]}"
+    pool_cidr = str(allocate_worker_subnet(prefix=30))
+    pool_id: str | None = None
+    pool_cr_name: str | None = None
+
+    try:
+        pool_id = private_grpc.create_external_ip_pool(name=pool_name, cidrs=[pool_cidr])
+        pool_cr_name = wait_for_external_ip_pool_cr(k8s=k8s_hub_client, uuid=pool_id)
+        wait_for_external_ip_pool_ready(k8s=k8s_hub_client, name=pool_cr_name)
+        wait_for_external_ip_pool_grpc_ready(private_grpc=private_grpc, pool_id=pool_id)
+        yield {"id": pool_id, "name": pool_name, "cr_name": pool_cr_name, "cidr": pool_cidr}
+    finally:
+        if pool_id:
+            errors: list[Exception] = []
+            try:
+                _cleanup_ref_pool_external_ips(private_grpc, k8s_hub_client, pool_id)
+            except Exception as exc:
+                errors.append(exc)
+
+            pool_deleted = False
+            try:
+                private_grpc.delete_external_ip_pool(pool_id=pool_id)
+            except subprocess.CalledProcessError as exc:
+                combined = (exc.stderr or "") + (exc.stdout or "")
+                if re.search(r"Code:\s*NotFound", combined):
+                    pool_deleted = True
+                else:
+                    errors.append(exc)
+            except Exception as exc:
+                errors.append(exc)
+            else:
+                pool_deleted = True
+
+            if pool_deleted and not pool_cr_name:
+                pool_cr_name = k8s_hub_client.get_external_ip_pool_name(uuid=pool_id, checked=False)
+
+            if (
+                pool_deleted
+                and pool_cr_name
+                and k8s_hub_client.is_present(resource="externalippool", name=pool_cr_name)
+            ):
+                try:
+                    wait_for_external_ip_pool_deletion(k8s=k8s_hub_client, name=pool_cr_name)
+                except Exception as exc:
+                    errors.append(exc)
+
+            if len(errors) == 1:
+                raise errors[0]
+            if errors:
+                raise ExceptionGroup("ExternalIP ownership pool teardown failed", errors)
+
+
 def _cleanup_ref_pool_external_ips(private_grpc: GRPCClient, k8s: K8sClient, pool_id: str) -> None:
     """Delete and wait for ExternalIPs owned by a reference-test pool."""
     pool_ip_ids: list[str] = []
