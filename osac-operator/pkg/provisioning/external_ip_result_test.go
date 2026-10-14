@@ -72,6 +72,16 @@ var _ = Describe("ParseExternalIPResult", func() {
 			result["osac_result"].(map[string]any)["generation"] = float64(3.5)
 			return result
 		}()),
+		Entry("negative generation", func() map[string]any {
+			result := validResult()
+			result["osac_result"].(map[string]any)["generation"] = int64(-1)
+			return result
+		}()),
+		Entry("generation above int64 range", func() map[string]any {
+			result := validResult()
+			result["osac_result"].(map[string]any)["generation"] = float64(1 << 63)
+			return result
+		}()),
 		Entry("missing data", func() map[string]any {
 			result := validResult()
 			delete(result["osac_result"].(map[string]any), "data")

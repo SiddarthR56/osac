@@ -29,18 +29,8 @@
         tasks_from: delete_external_ip
 
     - name: Publish the successful ExternalIP release result
-      ansible.builtin.set_stats:
-        data: >-
-          {{
-            {
-              'osac_result': {
-                'schemaVersion': 'v1',
-                'operation': 'external_ip.release',
-                'resourceUID': external_ip.metadata.uid,
-                'generation': external_ip.metadata.generation | int,
-                'data': {}
-              }
-            }
-          }}
-        per_host: false
-        aggregate: true
+      ansible.builtin.include_role:
+        name: osac.service.common
+        tasks_from: publish_external_ip_result.yaml
+      vars:
+        external_ip_result_operation: external_ip.release

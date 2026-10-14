@@ -15,38 +15,18 @@
       ExternalIP UID, generation, namespace, pool reference, and pool-name
       annotation are required to allocate an address.
 
-- name: Resolve the referenced ExternalIPPool
-  kubernetes.core.k8s_info:
-    api_version: osac.openshift.io/v1alpha1
-    kind: ExternalIPPool
-    namespace: "{{ external_ip.metadata.namespace }}"
-    label_selectors:
-      - "osac.openshift.io/externalippool-uuid={{ external_ip.spec.pool }}"
-  register: _eip_pool_lookup
-  when: external_ip_pool is not defined
-
-- name: Use the supplied ExternalIPPool
-  ansible.builtin.set_fact:
-    _eip_pool: "{{ external_ip_pool }}"
-  when: external_ip_pool is defined
-
-- name: Use the resolved ExternalIPPool
-  ansible.builtin.set_fact:
-    _eip_pool: "{{ _eip_pool_lookup.resources[0] }}"
-  when: external_ip_pool is not defined and _eip_pool_lookup.resources | length == 1
+- name: Resolve and validate the ExternalIPPool
+  ansible.builtin.include_tasks: _resolve_external_ip_pool.yaml
 
 - name: Verify the ExternalIPPool reference resolved uniquely
   ansible.builtin.assert:
     that:
       - _eip_pool is defined
       - _eip_pool.metadata.uid is defined
-      - _eip_pool.metadata.namespace == external_ip.metadata.namespace
-      - _eip_pool.metadata.labels['osac.openshift.io/externalippool-uuid'] == external_ip.spec.pool
       - _eip_pool.spec.cidrs is defined
       - _eip_pool.spec.cidrs | length > 0
     fail_msg: >-
-      Could not resolve exactly the ExternalIPPool referenced by UUID
-      '{{ external_ip.spec.pool }}' in namespace '{{ external_ip.metadata.namespace }}'.
+      ExternalIPPool '{{ external_ip.spec.pool }}' must define at least one CIDR.
 
 - name: Extract ExternalIP allocation identity
   ansible.builtin.set_fact:

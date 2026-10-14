@@ -17,9 +17,7 @@ limitations under the License.
 package provisioning
 
 import (
-	"encoding/json"
 	"fmt"
-	"math"
 )
 
 // ExternalIPOperation identifies a normalized ExternalIP manager operation.
@@ -90,37 +88,9 @@ func ParseExternalIPResult(artifacts map[string]any) (ExternalIPOutcome, error) 
 }
 
 func parseExternalIPResultGeneration(value any) (int64, error) {
-	var generation int64
-	switch typed := value.(type) {
-	case int:
-		generation = int64(typed)
-	case int32:
-		generation = int64(typed)
-	case int64:
-		generation = typed
-	case uint:
-		if uint64(typed) > math.MaxInt64 {
-			return 0, fmt.Errorf("osac_result generation is out of range")
-		}
-		generation = int64(typed)
-	case uint64:
-		if typed > math.MaxInt64 {
-			return 0, fmt.Errorf("osac_result generation is out of range")
-		}
-		generation = int64(typed)
-	case float64:
-		if math.IsNaN(typed) || math.IsInf(typed, 0) || math.Trunc(typed) != typed || typed > math.MaxInt64 || typed < math.MinInt64 {
-			return 0, fmt.Errorf("osac_result generation must be an integer")
-		}
-		generation = int64(typed)
-	case json.Number:
-		parsed, err := typed.Int64()
-		if err != nil {
-			return 0, fmt.Errorf("osac_result generation must be an integer: %w", err)
-		}
-		generation = parsed
-	default:
-		return 0, fmt.Errorf("osac_result generation must be a number")
+	generation, err := int64FromNumber(value)
+	if err != nil {
+		return 0, fmt.Errorf("osac_result generation must be an integer: %w", err)
 	}
 	if generation < 0 {
 		return 0, fmt.Errorf("osac_result generation must not be negative")

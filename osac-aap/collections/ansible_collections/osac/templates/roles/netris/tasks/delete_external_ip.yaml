@@ -14,36 +14,8 @@
       ExternalIP UID, generation, namespace, and pool reference are required
       to release its provider reservation.
 
-- name: Resolve the referenced ExternalIPPool for the release lock
-  kubernetes.core.k8s_info:
-    api_version: osac.openshift.io/v1alpha1
-    kind: ExternalIPPool
-    namespace: "{{ external_ip.metadata.namespace }}"
-    label_selectors:
-      - "osac.openshift.io/externalippool-uuid={{ external_ip.spec.pool }}"
-  register: _eip_pool_lookup
-  when: external_ip_pool is not defined
-
-- name: Use the supplied ExternalIPPool for release
-  ansible.builtin.set_fact:
-    _eip_pool: "{{ external_ip_pool }}"
-  when: external_ip_pool is defined
-
-- name: Use the resolved ExternalIPPool for release
-  ansible.builtin.set_fact:
-    _eip_pool: "{{ _eip_pool_lookup.resources[0] }}"
-  when: external_ip_pool is not defined and _eip_pool_lookup.resources | length == 1
-
-- name: Verify the ExternalIPPool reference resolved uniquely for release
-  ansible.builtin.assert:
-    that:
-      - _eip_pool is defined
-      - _eip_pool.metadata.uid is defined
-      - _eip_pool.metadata.namespace == external_ip.metadata.namespace
-      - _eip_pool.metadata.labels['osac.openshift.io/externalippool-uuid'] == external_ip.spec.pool
-    fail_msg: >-
-      Could not resolve exactly the ExternalIPPool referenced by UUID
-      '{{ external_ip.spec.pool }}' to serialize release with allocations.
+- name: Resolve and validate the ExternalIPPool for release
+  ansible.builtin.include_tasks: _resolve_external_ip_pool.yaml
 
 - name: Set ExternalIP release lock identity
   ansible.builtin.set_fact:
@@ -73,34 +45,10 @@
         _vnet_lock_max_retries: 24
         _vnet_lock_retry_delay: 5
 
-    - name: Find this ExternalIP UID's Netris reservation
-      ansible.builtin.include_role:
-        name: netris.controller.ipam
-        tasks_from: read_subnets
-
-    - name: Find a legacy name-keyed reservation for this ExternalIP
-      ansible.builtin.set_fact:
-        _eip_legacy_subnets: >-
-          {{ netris_ipam_subnets
-             | selectattr('name', 'equalto', eip_name)
-             | rejectattr('name', 'equalto', 'osac-eip-' ~ eip_uid)
-             | list }}
-
-    - name: Keep release pending while an ambiguous legacy reservation exists
-      ansible.builtin.assert:
-        that:
-          - _eip_legacy_subnets | length == 0
-        fail_msg: >-
-          Netris has a legacy reservation named '{{ eip_name }}' without an
-          ExternalIP UID. Its owner cannot be proven, so release is blocked
-          until an administrator safely migrates or removes that reservation.
-
-    - name: Select the reservation owned by this UID
-      ansible.builtin.set_fact:
-        _eip_owned_subnet: >-
-          {{ (netris_ipam_subnets
-              | selectattr('name', 'equalto', 'osac-eip-' ~ eip_uid)
-              | list | first | default(none)) }}
+    - name: Read and validate this ExternalIP's Netris reservations
+      ansible.builtin.include_tasks: _read_external_ip_reservations.yaml
+      vars:
+        _eip_reservation_operation: release
 
     - name: Delete the UID-owned Netris reservation
       ansible.builtin.include_role:
