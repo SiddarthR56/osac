@@ -48,15 +48,18 @@ import (
 )
 
 type config struct {
-	fulfillmentAddr        string
-	fulfillmentToken       string
-	tlsCACert              string
-	healthAddr             string
-	kafka                  kafkapub.ConnectionConfig
-	dbURLFile              string
-	heartbeatInterval      time.Duration
-	reconciliationInterval time.Duration
-	deploymentID           string
+	fulfillmentAddr             string
+	fulfillmentIssuerURL        string
+	fulfillmentClientIDFile     string
+	fulfillmentClientSecretFile string
+	tlsCACert                   string
+	fulfillmentTrustEnabled     bool
+	healthAddr                  string
+	kafka                       kafkapub.ConnectionConfig
+	dbURLFile                   string
+	heartbeatInterval           time.Duration
+	reconciliationInterval      time.Duration
+	deploymentID                string
 }
 
 func main() {
@@ -79,10 +82,13 @@ func main() {
 
 func configFromEnv() *config {
 	return &config{
-		fulfillmentAddr:  os.Getenv("FULFILLMENT_SERVER_ADDRESS"),
-		fulfillmentToken: envOrDefault("FULFILLMENT_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
-		tlsCACert:        os.Getenv("TLS_CA_CERT"),
-		healthAddr:       envOrDefault("HEALTH_ADDR", ":8080"),
+		fulfillmentAddr:             os.Getenv("FULFILLMENT_SERVER_ADDRESS"),
+		fulfillmentIssuerURL:        os.Getenv("FULFILLMENT_ISSUER_URL"),
+		fulfillmentClientIDFile:     envOrDefault("FULFILLMENT_CLIENT_ID_FILE", "/etc/fulfillment-credentials/client-id"),
+		fulfillmentClientSecretFile: envOrDefault("FULFILLMENT_CLIENT_SECRET_FILE", "/etc/fulfillment-credentials/client-secret"),
+		tlsCACert:                   os.Getenv("TLS_CA_CERT"),
+		fulfillmentTrustEnabled:     os.Getenv("FULFILLMENT_TRUST_ENABLED") == "true",
+		healthAddr:                  envOrDefault("HEALTH_ADDR", ":8080"),
 		kafka: kafkapub.ConnectionConfig{
 			Brokers:      os.Getenv("KAFKA_BROKERS"),
 			TLSCACert:    os.Getenv("KAFKA_TLS_CA_CERT"),
@@ -106,6 +112,15 @@ func envOrDefault(key, fallback string) string {
 func (c *config) validate() error {
 	if c.fulfillmentAddr == "" {
 		return fmt.Errorf("FULFILLMENT_SERVER_ADDRESS is required")
+	}
+	if c.fulfillmentIssuerURL == "" {
+		return fmt.Errorf("FULFILLMENT_ISSUER_URL is required")
+	}
+	if c.fulfillmentClientIDFile == "" {
+		return fmt.Errorf("FULFILLMENT_CLIENT_ID_FILE is required")
+	}
+	if c.fulfillmentClientSecretFile == "" {
+		return fmt.Errorf("FULFILLMENT_CLIENT_SECRET_FILE is required")
 	}
 	if c.kafka.Brokers == "" {
 		return fmt.Errorf("KAFKA_BROKERS is required")
@@ -135,7 +150,7 @@ func readDBURL(dir string) (string, error) {
 
 type serviceHealth struct {
 	ready atomic.Bool
-	conn  *grpc.ClientConn
+	conn  interface{ GetState() connectivity.State }
 }
 
 func run(ctx context.Context, logger logr.Logger, cfg *config) error {
@@ -143,6 +158,15 @@ func run(ctx context.Context, logger logr.Logger, cfg *config) error {
 	defer runCancel()
 
 	health := &serviceHealth{}
+	tokenSource, err := newFulfillmentTokenSource(fulfillmentOAuthConfig{
+		issuerURL:        cfg.fulfillmentIssuerURL,
+		clientIDFile:     cfg.fulfillmentClientIDFile,
+		clientSecretFile: cfg.fulfillmentClientSecretFile,
+		caFile:           cfg.tlsCACert,
+	})
+	if err != nil {
+		return fmt.Errorf("configuring fulfillment authentication: %w", err)
+	}
 
 	healthListener, err := net.Listen("tcp", cfg.healthAddr)
 	if err != nil {
@@ -150,23 +174,40 @@ func run(ctx context.Context, logger logr.Logger, cfg *config) error {
 	}
 	go serveHealth(healthListener, health, logger, runCancel)
 
-	grpcConn, err := dialFulfillment(cfg.fulfillmentAddr, cfg.tlsCACert, cfg.fulfillmentToken)
-	if err != nil {
-		return fmt.Errorf("connecting to fulfillment service: %w", err)
-	}
-	defer func() { _ = grpcConn.Close() }()
-
-	connectCtx, connectCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer connectCancel()
-	grpcConn.Connect()
-	for {
-		state := grpcConn.GetState()
-		if state == connectivity.Ready {
-			break
+	var grpcConn grpc.ClientConnInterface
+	if cfg.fulfillmentTrustEnabled {
+		if cfg.tlsCACert == "" {
+			return fmt.Errorf("TLS_CA_CERT is required for verified fulfillment trust")
 		}
-		if !grpcConn.WaitForStateChange(connectCtx, state) {
-			return fmt.Errorf("fulfillment service at %s is unreachable (state: %s)", cfg.fulfillmentAddr, grpcConn.GetState())
+		verified := &verifiedFulfillmentConn{address: cfg.fulfillmentAddr, caFile: cfg.tlsCACert, tokenSource: tokenSource}
+		if err := waitForVerifiedFulfillment(ctx, verified.reload); err != nil {
+			return fmt.Errorf("verifying fulfillment service: %w", err)
 		}
+		logger.Info("verified fulfillment CA bundle", "sha256", verified.observedHash())
+		defer verified.close()
+		go verified.watch(ctx, logger)
+		grpcConn = verified
+		health.conn = verified
+	} else {
+		legacy, dialErr := dialFulfillment(cfg.fulfillmentAddr, cfg.tlsCACert, tokenSource)
+		if dialErr != nil {
+			return fmt.Errorf("connecting to fulfillment service: %w", dialErr)
+		}
+		defer func() { _ = legacy.Close() }()
+		connectCtx, connectCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer connectCancel()
+		legacy.Connect()
+		for {
+			state := legacy.GetState()
+			if state == connectivity.Ready {
+				break
+			}
+			if !legacy.WaitForStateChange(connectCtx, state) {
+				return fmt.Errorf("fulfillment service at %s is unreachable (state: %s)", cfg.fulfillmentAddr, legacy.GetState())
+			}
+		}
+		grpcConn = legacy
+		health.conn = legacy
 	}
 	logger.Info("connected to fulfillment service", "address", cfg.fulfillmentAddr)
 
@@ -247,7 +288,6 @@ func run(ctx context.Context, logger logr.Logger, cfg *config) error {
 	}
 	logger.Info("startup reconciliation completed")
 
-	health.conn = grpcConn
 	health.ready.Store(true)
 	logger.Info("service ready")
 
@@ -284,7 +324,7 @@ func run(ctx context.Context, logger logr.Logger, cfg *config) error {
 	return err
 }
 
-func dialFulfillment(addr, caCertPath, tokenFile string) (*grpc.ClientConn, error) {
+func dialFulfillment(addr, caCertPath string, tokenSource oauth2.TokenSource) (*grpc.ClientConn, error) {
 	var creds credentials.TransportCredentials
 	if caCertPath != "" {
 		var err error
@@ -296,24 +336,12 @@ func dialFulfillment(addr, caCertPath, tokenFile string) (*grpc.ClientConn, erro
 		creds = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
 	}
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
-	if tokenFile != "" {
+	if tokenSource != nil {
 		opts = append(opts, grpc.WithPerRPCCredentials(oauth.TokenSource{
-			TokenSource: &fileTokenSource{tokenFile: tokenFile},
+			TokenSource: tokenSource,
 		}))
 	}
 	return grpc.NewClient(addr, opts...)
-}
-
-type fileTokenSource struct {
-	tokenFile string
-}
-
-func (s *fileTokenSource) Token() (*oauth2.Token, error) {
-	data, err := os.ReadFile(s.tokenFile)
-	if err != nil {
-		return nil, fmt.Errorf("reading token from %s: %w", s.tokenFile, err)
-	}
-	return &oauth2.Token{AccessToken: strings.TrimSpace(string(data))}, nil
 }
 
 func tlsCredentialsFromCA(caCertPath string) (credentials.TransportCredentials, error) {

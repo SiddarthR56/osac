@@ -13,6 +13,7 @@ export const buildBareMetalInstanceCreatePayload = (
 ): MessageInitShape<typeof BareMetalInstanceSchema> => {
   const sshKey = values.spec.sshKey.trim();
   const userData = values.spec.userData.trim();
+  const userDataSecretName = values.spec.userDataSecret.name.trim();
 
   const bmi: MessageInitShape<typeof BareMetalInstanceSchema> = {
     metadata: { name: values.metadata.name.trim(), project: values.metadata.project },
@@ -22,9 +23,17 @@ export const buildBareMetalInstanceCreatePayload = (
       },
       runStrategy: BareMetalInstanceRunStrategy.ALWAYS,
       ...(sshKey && { sshPublicKey: sshKey }),
-      ...(userData && { userData }),
-      instanceType: {
-        name: values.spec.instanceType.name,
+      ...(values.spec.userDataSource === 'secret'
+        ? userDataSecretName && { userDataSecret: { name: userDataSecretName } }
+        : userData && { userData }),
+      ...(values.spec.instanceType.name && {
+        instanceType: {
+          name: values.spec.instanceType.name,
+          shared: true,
+        },
+      }),
+      diskImage: {
+        id: values.spec.diskImage.id,
       },
     },
   };
@@ -38,8 +47,8 @@ export const buildBareMetalInstanceCreatePayload = (
       ...bmi.spec,
       networkAttachments: networking.attachments.slice(0, 1).map((attachment) =>
         create(BareMetalNetworkAttachmentSchema, {
-          subnet: { id: attachment.subnet },
-          securityGroups: attachment.securityGroups.map((id) => ({ id })),
+          subnet: { id: attachment.subnet.id },
+          securityGroups: attachment.securityGroups.map((sg) => ({ id: sg.id })),
         }),
       ),
     };

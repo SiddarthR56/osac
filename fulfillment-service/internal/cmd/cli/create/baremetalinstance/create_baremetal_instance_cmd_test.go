@@ -167,18 +167,16 @@ var _ = Describe("parseBareMetalNetworkAttachmentFlag", func() {
 })
 
 var _ = Describe("applyNetworkingFlags", func() {
-	It("should populate attachments when network-attachment flags are set", func() {
+	It("should populate attachments when a single network-attachment flag is set", func() {
 		c := &runnerContext{}
 		c.args.networkAttachments = []string{
 			"subnet=n1,interface=data-0,primary",
-			"subnet=n2,interface=data-1,security-groups=g1",
 		}
 		spec := publicv1.BareMetalInstanceSpec_builder{}
 		err := c.applyNetworkingFlags(&spec)
 		Expect(err).NotTo(HaveOccurred())
 
 		iface0 := "data-0"
-		iface1 := "data-1"
 		isPrimary := true
 		want := publicv1.BareMetalInstanceSpec_builder{
 			NetworkAttachments: []*publicv1.BareMetalNetworkAttachment{
@@ -187,14 +185,21 @@ var _ = Describe("applyNetworkingFlags", func() {
 					Interface: &iface0,
 					Primary:   &isPrimary,
 				}.Build(),
-				publicv1.BareMetalNetworkAttachment_builder{
-					Subnet:         &publicv1.SubnetLocalReference{Id: "n2"},
-					Interface:      &iface1,
-					SecurityGroups: []*publicv1.SecurityGroupLocalReference{{Id: "g1"}},
-				}.Build(),
 			},
 		}.Build()
 		Expect(proto.Equal(spec.Build(), want)).To(BeTrue(), "spec should equal expected spec")
+	})
+
+	It("should reject multiple network-attachment flags", func() {
+		c := &runnerContext{}
+		c.args.networkAttachments = []string{
+			"subnet=n1,interface=data-0,primary",
+			"subnet=n2,interface=data-1,security-groups=g1",
+		}
+		spec := publicv1.BareMetalInstanceSpec_builder{}
+		err := c.applyNetworkingFlags(&spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("at most one --network-attachment"))
 	})
 
 	It("should leave attachments nil when no network flags are set", func() {
@@ -224,6 +229,17 @@ var _ = Describe("Create baremetalinstance flag registration", func() {
 		Expect(flag).NotTo(BeNil())
 		Expect(flag.Usage).To(ContainSubstring("DiskImage"))
 		Expect(cmd.ParseFlags([]string{"--disk-image", "rhel-9"})).To(Succeed())
+	})
+
+	It("should register --instance-type flag", func() {
+		cmd := Cmd()
+		cmd.SetOut(GinkgoWriter)
+		cmd.SetErr(GinkgoWriter)
+
+		flag := cmd.Flags().Lookup("instance-type")
+		Expect(flag).NotTo(BeNil())
+		Expect(flag.Usage).To(ContainSubstring("InstanceType"))
+		Expect(cmd.ParseFlags([]string{"--instance-type", "standard-bm"})).To(Succeed())
 	})
 
 	It("should not register legacy image flags", func() {
@@ -288,6 +304,33 @@ var _ = Describe("buildSpec", func() {
 		spec, err := c.buildSpec("catalog-item-id", false)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(spec.HasDiskImage()).To(BeFalse())
+	})
+
+	It("should apply an instance type reference through the set flag", func() {
+		c := &runnerContext{}
+		c.args.setFields = []string{"instance_type.name=bare-metal.large", "instance_type.shared=true"}
+
+		spec, err := c.buildSpec("catalog-item-id", false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(spec.GetInstanceType().GetName()).To(Equal("bare-metal.large"))
+		Expect(spec.GetInstanceType().GetShared()).To(BeTrue())
+	})
+
+	It("should set instance_type from the instance-type flag", func() {
+		c := &runnerContext{}
+		c.args.instanceType = "standard-bm"
+
+		spec, err := c.buildSpec("catalog-item-id", false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(spec.GetInstanceType().GetName()).To(Equal("standard-bm"))
+	})
+
+	It("should leave instance_type unset when the instance-type flag is empty", func() {
+		c := &runnerContext{}
+
+		spec, err := c.buildSpec("catalog-item-id", false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(spec.HasInstanceType()).To(BeFalse())
 	})
 })
 

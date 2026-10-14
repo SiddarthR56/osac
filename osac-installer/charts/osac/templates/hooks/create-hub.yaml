@@ -71,6 +71,7 @@ spec:
           - pipefail
           - -c
           - |
+            {{- include "osac.fulfillmentAccessTokenFunction" . | nindent 12 }}
             NAMESPACE="{{ .Release.Namespace }}"
 
             echo "Reading hub-access token..."
@@ -109,13 +110,12 @@ spec:
             KUBECONFIG_B64=$(echo "${KUBECONFIG_YAML}" | base64 -w0)
             echo "  kubeconfig: ${#KUBECONFIG_B64} chars (base64)"
 
-            AUTH_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-            [[ -n "${AUTH_TOKEN}" ]] || { echo "ERROR: No service account token mounted"; exit 1; }
+            AUTH_TOKEN=$(get_fulfillment_access_token)
 
             FULFILLMENT_URL="https://fulfillment-internal-api:8001"
 
             echo "Checking if hub 'hub' already exists..."
-            HTTP_CODE=$(curl -sk --connect-timeout 5 --max-time 30 \
+            HTTP_CODE=$(curl -s {{ include "osac.fulfillmentCurlTLS" . }} --connect-timeout 5 --max-time 30 \
               -o /tmp/hub-response.json -w '%{http_code}' \
               -H "Authorization: Bearer ${AUTH_TOKEN}" \
               "${FULFILLMENT_URL}/api/private/v1/hubs/hub")
@@ -123,19 +123,19 @@ spec:
 
             if [[ "${HTTP_CODE}" == "200" ]]; then
               echo "Hub exists, updating..."
-              HTTP_CODE=$(curl -sk --connect-timeout 5 --max-time 30 \
+              HTTP_CODE=$(curl -s {{ include "osac.fulfillmentCurlTLS" . }} --connect-timeout 5 --max-time 30 \
                 -o /tmp/hub-update.json -w '%{http_code}' \
                 -X PATCH \
                 -H "Authorization: Bearer ${AUTH_TOKEN}" \
                 -H "Content-Type: application/json" \
-                -d "{\"spec\":{\"kubeconfig\":\"${KUBECONFIG_B64}\",\"namespace\":\"${NAMESPACE}\"}}" \
+                -d "{\"id\":\"hub\",\"metadata\":{\"name\":\"hub\"},\"spec\":{\"kubeconfig\":\"${KUBECONFIG_B64}\",\"namespace\":\"${NAMESPACE}\"}}" \
                 "${FULFILLMENT_URL}/api/private/v1/hubs/hub")
               echo "  PATCH: HTTP ${HTTP_CODE}"
               [[ "${HTTP_CODE}" =~ ^2 ]] || { echo "ERROR: Hub update failed"; cat /tmp/hub-update.json; exit 1; }
               echo "Hub updated."
             else
               echo "Creating hub..."
-              HTTP_CODE=$(curl -sk --connect-timeout 5 --max-time 30 \
+              HTTP_CODE=$(curl -s {{ include "osac.fulfillmentCurlTLS" . }} --connect-timeout 5 --max-time 30 \
                 -o /tmp/hub-create.json -w '%{http_code}' \
                 -X POST \
                 -H "Authorization: Bearer ${AUTH_TOKEN}" \
@@ -149,9 +149,14 @@ spec:
         env:
         - name: HOME
           value: /tmp
+        {{- include "osac.fulfillmentAuthEnv" . | nindent 8 }}
         volumeMounts:
         - name: tmp
           mountPath: /tmp
+        - name: ca-bundle
+          mountPath: /etc/ca-bundle
+          readOnly: true
+        {{- include "osac.fulfillmentAuthVolumeMount" . | nindent 8 }}
         resources:
           requests:
             cpu: 50m
@@ -167,5 +172,12 @@ spec:
       volumes:
       - name: tmp
         emptyDir: {}
+      - name: ca-bundle
+        configMap:
+          name: {{ .Values.service.certs.caBundle.configMap | required "service.certs.caBundle.configMap is required" }}
+          items:
+          - key: bundle.pem
+            path: bundle.pem
+      {{- include "osac.fulfillmentAuthVolume" . | nindent 6 }}
       restartPolicy: OnFailure
 {{- end }}

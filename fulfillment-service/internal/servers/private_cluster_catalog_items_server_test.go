@@ -89,26 +89,154 @@ var _ = Describe("Private cluster catalog items server", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
-		DescribeTable("checks inherited node sets against concrete network policies", func(hasFabric bool) {
-			host := privatev1.HostType_builder{
-				Id:       "inherited-host",
-				Metadata: privatev1.Metadata_builder{Name: "inherited-host", Tenant: testTenant}.Build(),
-			}.Build()
+		DescribeTable("checks catalog node sets against concrete network policies", func(hasFabric bool) {
+			hardware := &privatev1.BareMetalHardwareSpec{}
 			if hasFabric {
-				host.SetInterfaces([]*privatev1.NetworkInterface{
-					privatev1.NetworkInterface_builder{Name: "data-0", Role: "fabric"}.Build(),
+				hardware.SetNetworkPorts([]*privatev1.BareMetalNetworkPortSpec{
+					privatev1.BareMetalNetworkPortSpec_builder{Name: "data-0", Role: "fabric"}.Build(),
 				})
 			}
-			_, err := server.hostTypesDao.Create().SetObject(host).Do(ctx)
-			Expect(err).ToNot(HaveOccurred())
-			template := privatev1.ClusterTemplate_builder{
-				Metadata: privatev1.Metadata_builder{Tenant: testTenant}.Build(),
-				NodeSets: map[string]*privatev1.ClusterTemplateNodeSet{
-					"workers": privatev1.ClusterTemplateNodeSet_builder{
-						HostType: privatev1.HostTypeReference_builder{Id: host.GetId()}.Build(), Size: 1,
-					}.Build(),
-				},
+			instanceType := privatev1.BareMetalInstanceType_builder{
+				Id:       "inherited-host",
+				Metadata: privatev1.Metadata_builder{Name: "inherited-host", Tenant: auth.SharedTenant}.Build(),
+				Spec:     privatev1.BareMetalInstanceTypeSpec_builder{Hardware: hardware}.Build(),
 			}.Build()
+			_, err := server.bareMetalInstanceTypesDao.Create().SetObject(instanceType).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			item := privatev1.ClusterCatalogItem_builder{
+				Metadata: privatev1.Metadata_builder{Tenant: testTenant}.Build(),
+				Fields: privatev1.ClusterCatalogItemFields_builder{
+					NodeSets: privatev1.ClusterNodeSetMapPolicy_builder{
+						Locked: privatev1.ClusterNodeSetMap_builder{
+							Items: map[string]*privatev1.ClusterCatalogNodeSet{
+								"workers": privatev1.ClusterCatalogNodeSet_builder{
+									BaremetalInstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: instanceType.GetId(), Shared: true}.Build(), Size: 1,
+								}.Build(),
+							},
+						}.Build(),
+					}.Build(),
+					NetworkAttachment: privatev1.ClusterNetworkAttachmentFieldPolicy_builder{
+						Locked: privatev1.ClusterNetworkAttachment_builder{
+							Subnet: privatev1.SubnetLocalReference_builder{Id: "subnet"}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build(),
+			}.Build()
+			err = validateClusterCatalogItemNodeSetPolicy(ctx, item, server.bareMetalInstanceTypesDao)
+			if hasFabric {
+				Expect(err).ToNot(HaveOccurred())
+			} else {
+				Expect(err).To(MatchError(ContainSubstring("has no network port with role 'fabric'")))
+			}
+		}, Entry("accepts a fabric interface", true), Entry("rejects a missing fabric interface", false))
+
+		It("reports the policy field when a catalog hardware reference cannot be resolved", func() {
+			item := privatev1.ClusterCatalogItem_builder{
+				Metadata: privatev1.Metadata_builder{Tenant: testTenant}.Build(),
+				Fields: privatev1.ClusterCatalogItemFields_builder{
+					NodeSets: privatev1.ClusterNodeSetMapPolicy_builder{
+						Locked: privatev1.ClusterNodeSetMap_builder{
+							Items: map[string]*privatev1.ClusterCatalogNodeSet{
+								"workers": privatev1.ClusterCatalogNodeSet_builder{
+									Size: 2, BaremetalInstanceType: privatev1.BareMetalInstanceTypeReference_builder{Name: "missing-type"}.Build(),
+								}.Build(),
+							},
+						}.Build(),
+					}.Build(),
+				}.Build(),
+			}.Build()
+			err := validateClusterCatalogItemNodeSetPolicy(ctx, item, server.bareMetalInstanceTypesDao)
+			Expect(grpcstatus.Code(err)).To(Equal(grpccodes.InvalidArgument))
+			Expect(err).To(MatchError(ContainSubstring("fields.node_sets.workers.baremetal_instance_type")))
+		})
+
+		It("reports the policy field when a catalog hardware reference has been deleted", func() {
+			instanceType := privatev1.BareMetalInstanceType_builder{
+				Id: "deleted-policy-type",
+				Metadata: privatev1.Metadata_builder{
+					Name: "deleted-policy-type", Tenant: auth.SharedTenant,
+					Finalizers: []string{"test-finalizer"},
+				}.Build(),
+			}.Build()
+			_, err := server.bareMetalInstanceTypesDao.Create().SetObject(instanceType).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			_, err = server.bareMetalInstanceTypesDao.Delete().SetId(instanceType.GetId()).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			item := privatev1.ClusterCatalogItem_builder{
+				Metadata: privatev1.Metadata_builder{Tenant: testTenant}.Build(),
+				Fields: privatev1.ClusterCatalogItemFields_builder{
+					NodeSets: privatev1.ClusterNodeSetMapPolicy_builder{
+						Locked: privatev1.ClusterNodeSetMap_builder{
+							Items: map[string]*privatev1.ClusterCatalogNodeSet{
+								"workers": privatev1.ClusterCatalogNodeSet_builder{
+									Size: 2, BaremetalInstanceType: privatev1.BareMetalInstanceTypeReference_builder{
+										Id: instanceType.GetId(), Shared: true,
+									}.Build(),
+								}.Build(),
+							},
+						}.Build(),
+					}.Build(),
+				}.Build(),
+			}.Build()
+
+			err = validateClusterCatalogItemNodeSetPolicy(ctx, item, server.bareMetalInstanceTypesDao)
+			Expect(grpcstatus.Code(err)).To(Equal(grpccodes.InvalidArgument))
+			Expect(grpcstatus.Convert(err).Message()).To(Equal(
+				"bare metal instance type 'deleted-policy-type' in fields.node_sets.workers.baremetal_instance_type has been deleted"))
+		})
+
+		It("resolves name-only shared BMIT references for a tenant-owned catalog item", func() {
+			instanceType := privatev1.BareMetalInstanceType_builder{
+				Id:       "shared-policy-type",
+				Metadata: privatev1.Metadata_builder{Name: "shared-policy-type", Tenant: auth.SharedTenant}.Build(),
+			}.Build()
+			_, err := server.bareMetalInstanceTypesDao.Create().SetObject(instanceType).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			ref := privatev1.BareMetalInstanceTypeReference_builder{Name: "shared-policy-type", Shared: true}.Build()
+			item := privatev1.ClusterCatalogItem_builder{
+				Metadata: privatev1.Metadata_builder{Tenant: testTenant}.Build(),
+				Fields: privatev1.ClusterCatalogItemFields_builder{
+					NodeSets: privatev1.ClusterNodeSetMapPolicy_builder{
+						Locked: privatev1.ClusterNodeSetMap_builder{
+							Items: map[string]*privatev1.ClusterCatalogNodeSet{
+								"workers": privatev1.ClusterCatalogNodeSet_builder{Size: 2, BaremetalInstanceType: ref}.Build(),
+							},
+						}.Build(),
+					}.Build(),
+				}.Build(),
+			}.Build()
+			Expect(validateClusterCatalogItemNodeSetPolicy(ctx, item, server.bareMetalInstanceTypesDao)).To(Succeed())
+			Expect(ref.GetId()).To(Equal("shared-policy-type"))
+			Expect(ref.GetName()).To(Equal("shared-policy-type"))
+			Expect(ref.GetShared()).To(BeTrue())
+		})
+
+		It("resolves editable default NodeSet references to shared for a tenant-owned catalog item", func() {
+			instanceType := privatev1.BareMetalInstanceType_builder{
+				Id:       "shared-default-policy-type",
+				Metadata: privatev1.Metadata_builder{Name: "shared-default-policy-type", Tenant: auth.SharedTenant}.Build(),
+			}.Build()
+			_, err := server.bareMetalInstanceTypesDao.Create().SetObject(instanceType).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			ref := privatev1.BareMetalInstanceTypeReference_builder{Name: "shared-default-policy-type", Shared: true}.Build()
+			item := privatev1.ClusterCatalogItem_builder{
+				Metadata: privatev1.Metadata_builder{Tenant: testTenant}.Build(),
+				Fields: privatev1.ClusterCatalogItemFields_builder{
+					NodeSets: privatev1.ClusterNodeSetMapPolicy_builder{
+						Editable: privatev1.EditableClusterNodeSetMap_builder{
+							DefaultValue: privatev1.ClusterNodeSetMap_builder{Items: map[string]*privatev1.ClusterCatalogNodeSet{
+								"workers": privatev1.ClusterCatalogNodeSet_builder{Size: 2, BaremetalInstanceType: ref}.Build(),
+							}}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build(),
+			}.Build()
+			Expect(validateClusterCatalogItemNodeSetPolicy(ctx, item, server.bareMetalInstanceTypesDao)).To(Succeed())
+			Expect(ref.GetId()).To(Equal("shared-default-policy-type"))
+			Expect(ref.GetShared()).To(BeTrue())
+		})
+
+		It("does not take node sets from the referenced template", func() {
 			item := privatev1.ClusterCatalogItem_builder{
 				Metadata: privatev1.Metadata_builder{Tenant: testTenant}.Build(),
 				Fields: privatev1.ClusterCatalogItemFields_builder{
@@ -119,13 +247,8 @@ var _ = Describe("Private cluster catalog items server", func() {
 					}.Build(),
 				}.Build(),
 			}.Build()
-			err = validateClusterCatalogItemNodeSetPolicy(ctx, item, template, server.hostTypesDao)
-			if hasFabric {
-				Expect(err).ToNot(HaveOccurred())
-			} else {
-				Expect(err).To(MatchError(ContainSubstring("has no interface with role 'fabric'")))
-			}
-		}, Entry("accepts a fabric interface", true), Entry("rejects a missing fabric interface", false))
+			Expect(validateClusterCatalogItemNodeSetPolicy(ctx, item, server.bareMetalInstanceTypesDao)).To(Succeed())
+		})
 
 		It("Creates object", func() {
 			response, err := server.Create(ctx, privatev1.ClusterCatalogItemsCreateRequest_builder{
@@ -728,6 +851,30 @@ var _ = Describe("Private cluster catalog items server", func() {
 				Expect(err).ToNot(HaveOccurred())
 			})
 
+			It("Rejects create with a version default without a disk image", func() {
+				seedClusterVersionWithoutDiskImage(ctx, privatev1.ClusterVersion_builder{
+					Metadata: privatev1.Metadata_builder{Name: "version-without-disk-image", Tenant: testTenant}.Build(),
+					Spec:     privatev1.ClusterVersionSpec_builder{Version: "4.20.0", Image: "quay.io/ocp:4.20.0", Enabled: proto.Bool(true)}.Build(),
+				}.Build())
+				_, err := validatedServer.Create(ctx, privatev1.ClusterCatalogItemsCreateRequest_builder{
+					Object: privatev1.ClusterCatalogItem_builder{
+						Metadata: privatev1.Metadata_builder{Name: "catalog-without-disk-image"}.Build(),
+						Title:    "Catalog item without a disk image",
+						Template: &privatev1.ClusterTemplateReference{Id: "my-template-id"},
+						Fields: privatev1.ClusterCatalogItemFields_builder{
+							Version: privatev1.ClusterVersionReferenceFieldPolicy_builder{
+								Editable: privatev1.EditableClusterVersionReferenceField_builder{
+									DefaultValue: &privatev1.ClusterVersionReference{Name: "version-without-disk-image"},
+								}.Build(),
+							}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build())
+				Expect(grpcstatus.Code(err)).To(Equal(grpccodes.FailedPrecondition))
+				Expect(grpcstatus.Convert(err).Message()).To(ContainSubstring(" in fields.version"))
+				Expect(grpcstatus.Convert(err).Message()).To(ContainSubstring("disk image"))
+			})
+
 			It("Rejects create with non-existent version default in fields", func() {
 				_, err := validatedServer.Create(ctx, privatev1.ClusterCatalogItemsCreateRequest_builder{
 					Object: privatev1.ClusterCatalogItem_builder{
@@ -849,8 +996,8 @@ var _ = Describe("Cluster Catalog Item policy application", func() {
 		}.Build()
 		workerSize := int32(3)
 		nodeMap := privatev1.ClusterNodeSetMap_builder{
-			Items: map[string]*privatev1.ClusterTemplateNodeSet{
-				"workers": privatev1.ClusterTemplateNodeSet_builder{Size: workerSize}.Build(),
+			Items: map[string]*privatev1.ClusterCatalogNodeSet{
+				"workers": privatev1.ClusterCatalogNodeSet_builder{Size: workerSize}.Build(),
 				"empty":   nil,
 			},
 		}.Build()
@@ -883,6 +1030,7 @@ var _ = Describe("Cluster Catalog Item policy application", func() {
 		Expect(spec.GetNodeSets()).To(HaveLen(2))
 		Expect(spec.GetNodeSets()["workers"].GetSize()).To(Equal(workerSize))
 		Expect(spec.GetNodeSets()["empty"]).To(BeNil())
+		Expect(spec.GetNodeSets()["workers"].GetBaremetalInstanceType()).To(BeNil())
 
 		spec.GetVersion().SetName("changed")
 		spec.GetNetworkAttachment().GetSubnet().SetName("changed")

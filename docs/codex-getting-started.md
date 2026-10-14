@@ -11,6 +11,15 @@ map load without extra configuration. Start there — this guide only covers
 Codex-specific setup. Graphify is optional; when `graphify-out/graph.json`
 exists, follow the root `AGENTS.md` guidance for code-structure discovery.
 
+When launched at the repository root, Codex does not preload every nested
+component instruction file or the documents linked from it. Follow the root
+instruction to read all applicable component `AGENTS.md` files and their
+required references before changing files. Shared project knowledge lives in
+[`docs/agent-context/`](agent-context/README.md), available in a fresh clone
+without bootstrap or a skill invocation. The bootstrap-managed
+`.design/context/*.md` paths forward workflows to these canonical documents;
+follow those references instead of treating the forwarding file as the full context.
+
 ## Prerequisites
 
 - A standard OSAC checkout with `tools/bootstrap.sh` already run (see the root
@@ -118,6 +127,10 @@ MCP server definitions may carry over via `/import`, but custom authentication
 may require you to sign in again. Verify the servers you rely on are connected
 at the start of a session rather than discovering missing authorization
 mid-task.
+
+For the opt-in OSAC MCP development endpoint, follow the
+[local MCP client guide](guides/developer/mcp-local-clients.md) for
+OAuth client registration, private CA trust, and write approvals.
 
 ## Per-worktree Jira context (`.ai-context/jira.md`)
 

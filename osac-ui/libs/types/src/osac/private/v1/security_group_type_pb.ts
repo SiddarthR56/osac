@@ -31,7 +31,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file osac/private/v1/security_group_type.proto.
  */
 export const file_osac_private_v1_security_group_type: GenFile = /*@__PURE__*/
-  fileDesc("Cilvc2FjL3ByaXZhdGUvdjEvc2VjdXJpdHlfZ3JvdXBfdHlwZS5wcm90bxIPb3NhYy5wcml2YXRlLnYxIrABCg1TZWN1cml0eUdyb3VwEgoKAmlkGAEgASgJEisKCG1ldGFkYXRhGAIgASgLMhkub3NhYy5wcml2YXRlLnYxLk1ldGFkYXRhEjAKBHNwZWMYAyABKAsyIi5vc2FjLnByaXZhdGUudjEuU2VjdXJpdHlHcm91cFNwZWMSNAoGc3RhdHVzGAQgASgLMiQub3NhYy5wcml2YXRlLnYxLlNlY3VyaXR5R3JvdXBTdGF0dXMiwgEKEVNlY3VyaXR5R3JvdXBTcGVjEk4KD3ZpcnR1YWxfbmV0d29yaxgBIAEoCzItLm9zYWMucHJpdmF0ZS52MS5WaXJ0dWFsTmV0d29ya0xvY2FsUmVmZXJlbmNlQgbgQQLgQQUSLgoHaW5ncmVzcxgCIAMoCzIdLm9zYWMucHJpdmF0ZS52MS5TZWN1cml0eVJ1bGUSLQoGZWdyZXNzGAMgAygLMh0ub3NhYy5wcml2YXRlLnYxLlNlY3VyaXR5UnVsZSJrChNTZWN1cml0eUdyb3VwU3RhdHVzEjIKBXN0YXRlGAEgASgOMiMub3NhYy5wcml2YXRlLnYxLlNlY3VyaXR5R3JvdXBTdGF0ZRIUCgdtZXNzYWdlGAIgASgJSACIAQFCCgoIX21lc3NhZ2UiNwobU2VjdXJpdHlHcm91cExvY2FsUmVmZXJlbmNlEgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkq6AEKElNlY3VyaXR5R3JvdXBTdGF0ZRIkCiBTRUNVUklUWV9HUk9VUF9TVEFURV9VTlNQRUNJRklFRBAAEiAKHFNFQ1VSSVRZX0dST1VQX1NUQVRFX1BFTkRJTkcQARIeChpTRUNVUklUWV9HUk9VUF9TVEFURV9SRUFEWRACEh8KG1NFQ1VSSVRZX0dST1VQX1NUQVRFX0ZBSUxFRBADEiEKHVNFQ1VSSVRZX0dST1VQX1NUQVRFX0RFTEVUSU5HEAQSJgoiU0VDVVJJVFlfR1JPVVBfU1RBVEVfREVMRVRFX0ZBSUxFRBAFQhSKtRgQEg5vc2FjLnB1YmxpYy52MWIGcHJvdG8z", [file_cleanapi_cleanapi, file_google_api_field_behavior, file_osac_private_v1_metadata_type, file_osac_private_v1_security_rule_type, file_osac_private_v1_virtual_network_type]);
+  fileDesc("Cilvc2FjL3ByaXZhdGUvdjEvc2VjdXJpdHlfZ3JvdXBfdHlwZS5wcm90bxIPb3NhYy5wcml2YXRlLnYxIrUBCg1TZWN1cml0eUdyb3VwEgoKAmlkGAEgASgJEisKCG1ldGFkYXRhGAIgASgLMhkub3NhYy5wcml2YXRlLnYxLk1ldGFkYXRhEjUKBHNwZWMYAyABKAsyIi5vc2FjLnByaXZhdGUudjEuU2VjdXJpdHlHcm91cFNwZWNCA+BBBRI0CgZzdGF0dXMYBCABKAsyJC5vc2FjLnByaXZhdGUudjEuU2VjdXJpdHlHcm91cFN0YXR1cyLCAQoRU2VjdXJpdHlHcm91cFNwZWMSTgoPdmlydHVhbF9uZXR3b3JrGAEgASgLMi0ub3NhYy5wcml2YXRlLnYxLlZpcnR1YWxOZXR3b3JrTG9jYWxSZWZlcmVuY2VCBuBBAuBBBRIuCgdpbmdyZXNzGAIgAygLMh0ub3NhYy5wcml2YXRlLnYxLlNlY3VyaXR5UnVsZRItCgZlZ3Jlc3MYAyADKAsyHS5vc2FjLnByaXZhdGUudjEuU2VjdXJpdHlSdWxlIoMBChNTZWN1cml0eUdyb3VwU3RhdHVzEjIKBXN0YXRlGAEgASgOMiMub3NhYy5wcml2YXRlLnYxLlNlY3VyaXR5R3JvdXBTdGF0ZRIUCgdtZXNzYWdlGAIgASgJSACIAQESFgoDaHViGAMgASgJQgngQQOKtRgCCAFCCgoIX21lc3NhZ2UiNwobU2VjdXJpdHlHcm91cExvY2FsUmVmZXJlbmNlEgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkq6AEKElNlY3VyaXR5R3JvdXBTdGF0ZRIkCiBTRUNVUklUWV9HUk9VUF9TVEFURV9VTlNQRUNJRklFRBAAEiAKHFNFQ1VSSVRZX0dST1VQX1NUQVRFX1BFTkRJTkcQARIeChpTRUNVUklUWV9HUk9VUF9TVEFURV9SRUFEWRACEh8KG1NFQ1VSSVRZX0dST1VQX1NUQVRFX0ZBSUxFRBADEiEKHVNFQ1VSSVRZX0dST1VQX1NUQVRFX0RFTEVUSU5HEAQSJgoiU0VDVVJJVFlfR1JPVVBfU1RBVEVfREVMRVRFX0ZBSUxFRBAFQhSKtRgQEg5vc2FjLnB1YmxpYy52MWIGcHJvdG8z", [file_cleanapi_cleanapi, file_google_api_field_behavior, file_osac_private_v1_metadata_type, file_osac_private_v1_security_rule_type, file_osac_private_v1_virtual_network_type]);
 
 /**
  * Represents a virtual firewall controlling network traffic for compute instances.
@@ -72,7 +72,7 @@ export type SecurityGroup = Message<"osac.private.v1.SecurityGroup"> & {
   metadata?: Metadata | undefined;
 
   /**
-   * Desired configuration of the security group (user-modifiable).
+   * Desired configuration of the security group, immutable after creation.
    *
    * @generated from field: osac.private.v1.SecurityGroupSpec spec = 3;
    */
@@ -181,6 +181,16 @@ export type SecurityGroupStatus = Message<"osac.private.v1.SecurityGroupStatus">
    * @generated from field: optional string message = 2;
    */
   message?: string | undefined;
+
+  /**
+   * Identifier of the hub cluster that this security group is deployed to.
+   *
+   * The fulfillment-service controller sets this field before creating the Kubernetes object so the
+   * security group remains assigned to the same hub throughout its lifecycle.
+   *
+   * @generated from field: string hub = 3;
+   */
+  hub: string;
 };
 
 /**

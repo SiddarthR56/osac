@@ -23,6 +23,22 @@
           },
           "additionalProperties": false
         },
+        "fulfillmentTrust": {
+          "type": "object",
+          "description": "Cross-cluster fulfillment trust configuration shared with tenant-cluster workloads",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable fulfillment trust synchronization for tenant-scoped ClusterOrders when tenant CSI trust support is deployed",
+              "default": false
+            },
+            "tenantNamespace": {
+              "type": "string",
+              "description": "Namespace containing fulfillment trust resources in tenant clusters",
+              "default": "osac-csi"
+            }
+          }
+        },
         "services": {
           "type": "object",
           "description": "Service tier enablement flags. Controls which tiers are active across all OSAC components.",
@@ -225,6 +241,34 @@
           },
           "additionalProperties": false
         },
+        "ignition": {
+          "type": "object",
+          "description": "Assisted Service discovery ignition HTTPS trust",
+          "properties": {
+            "trustIngressCA": {
+              "type": "boolean",
+              "description": "Trust the OpenShift-managed default-ingress-cert CA in addition to system roots",
+              "default": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "stall": {
+          "type": "object",
+          "description": "ClusterOrder provisioning stage stall thresholds",
+          "properties": {
+            "preparingInfrastructureThreshold": {"$ref": "#/$defs/positiveDuration"},
+            "controlPlaneStartingThreshold": {"$ref": "#/$defs/positiveDuration"},
+            "workersJoiningThreshold": {"$ref": "#/$defs/positiveDuration"},
+            "workersJoiningByInstanceType": {
+              "type": "object",
+              "description": "Per-BareMetalInstanceType worker-join threshold durations, keyed by the exact instance type name",
+              "propertyNames": {"minLength": 1, "maxLength": 253},
+              "additionalProperties": {"$ref": "#/$defs/positiveDuration"}
+            }
+          },
+          "additionalProperties": false
+        },
         "aap": {
           "type": "object",
           "description": "AAP connection settings for the operator",
@@ -276,12 +320,52 @@
           "properties": {
             "serverAddress": {
               "type": "string",
-              "description": "Fulfillment service gRPC address",
+              "description": "Fulfillment service gRPC address; leave empty to disable the operator Fulfillment client",
               "default": "fulfillment-internal-api:8001"
             },
-            "tokenFile": {
-              "type": "string",
-              "description": "Path to service account token file"
+            "credentials": {
+              "type": "object",
+              "description": "Reference to the existing osac-controller Keycloak service-account credentials; osac-infra provisions this for bundled Keycloak, while external Keycloak deployments must provide an equivalent Secret",
+              "properties": {
+                "secretName": {
+                  "type": "string",
+                  "description": "Secret name",
+                  "default": "fulfillment-controller-credentials"
+                },
+                "clientIdKey": {
+                  "type": "string",
+                  "description": "Key within the Secret containing the OAuth client ID",
+                  "default": "client-id"
+                },
+                "clientSecretKey": {
+                  "type": "string",
+                  "description": "Key within the Secret containing the OAuth client secret",
+                  "default": "client-secret"
+                }
+              },
+              "additionalProperties": false
+            },
+            "tls": {
+              "type": "object",
+              "description": "Verified TLS settings for the operator fulfillment client",
+              "properties": {
+                "caBundle": {
+                  "type": "object",
+                  "description": "ConfigMap key containing the fulfillment CA bundle",
+                  "properties": {
+                    "configMap": {
+                      "type": "string",
+                      "default": "ca-bundle"
+                    },
+                    "key": {
+                      "type": "string",
+                      "default": "bundle.pem"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
             },
             "configMap": {
               "type": "object",
@@ -294,8 +378,8 @@
                 },
                 "optional": {
                   "type": "boolean",
-                  "description": "Allow the ConfigMap to be absent when external CSI configuration is disabled",
-                  "default": true
+                  "description": "Allow the ConfigMap to be absent when external fulfillment configuration is disabled",
+                  "default": false
                 }
               },
               "additionalProperties": false
@@ -305,8 +389,16 @@
         },
         "controllers": {
           "type": "object",
-          "description": "Enable or disable shared-infrastructure operator controllers (service-tier controllers are driven by global.services.*)",
+          "description": "Enable or disable operator controllers. Service-tier controllers default to global.services.* unless explicitly overridden.",
           "properties": {
+            "computeInstance": {
+              "type": "boolean",
+              "description": "Override the VMaaS ComputeInstance controller toggle"
+            },
+            "bareMetalInstance": {
+              "type": "boolean",
+              "description": "Override the BMaaS BareMetalInstance controller toggle"
+            },
             "tenant": {
               "type": "boolean",
               "description": "Enable Tenant controller",
@@ -472,9 +564,9 @@
               "default": "20m",
               "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
             },
-            "workersJoiningByHostType": {
+            "workersJoiningByInstanceType": {
               "type": "object",
-              "description": "Per-host-type overrides for the WorkersJoining stall threshold. Keys are host-type labels, values are Go duration strings.",
+              "description": "Per-BareMetalInstanceType overrides for the WorkersJoining stall threshold. Keys are exact instance type names, values are Go duration strings.",
               "additionalProperties": {
                 "type": "string",
                 "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
@@ -540,7 +632,12 @@
         },
         "vendorControllers": {
           "type": "object",
-          "description": "Vendor-specific controller configuration (subchart default)"
+          "description": "Map provider identifiers to vendor controller gRPC endpoints consumed by the Volume controller. Use 'none' for node-local providers such as LVMS.",
+          "default": {},
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "remoteClusterKubeconfig": {
           "type": "string",
@@ -568,6 +665,18 @@
           "description": "Deploy the fulfillment service",
           "default": true
         },
+        "controller": {
+          "type": "object",
+          "description": "Fulfillment controller configuration",
+          "properties": {
+            "sync": {
+              "type": "boolean",
+              "description": "Enable full synchronization for all fulfillment controllers",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        },
         "externalHostname": {
           "type": "string",
           "minLength": 1,
@@ -577,6 +686,74 @@
           "type": "string",
           "minLength": 1,
           "description": "Hostname for the internal API Route"
+        },
+        "mcp": {
+          "type": "object",
+          "description": "Optional fulfillment MCP endpoint",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Deploy the fulfillment MCP server",
+              "default": false
+            },
+            "externalHostname": {
+              "type": "string",
+              "description": "DNS hostname advertised by the MCP server; Kind requires mcp.<namespace>.localhost"
+            },
+            "externalPort": {
+              "type": "integer",
+              "description": "Externally reachable TLS port for the MCP server; OpenShift Routes require 443",
+              "minimum": 1,
+              "maximum": 65535,
+              "default": 443
+            },
+            "exchangeClientId": {
+              "type": "string",
+              "description": "Confidential OAuth token exchange client ID; use the MCP resource URL ending in / for Keycloak audience validation"
+            },
+            "exchangeCredentialsSecret": {
+              "type": "string",
+              "description": "Secret containing client-secret for the MCP token exchange client"
+            },
+            "resources": {
+              "type": "object",
+              "description": "CPU and memory resources for the MCP server container",
+              "required": ["requests", "limits"],
+              "properties": {
+                "requests": {
+                  "type": "object",
+                  "required": ["cpu", "memory"],
+                  "properties": {
+                    "cpu": {"type": "string", "minLength": 1, "default": "50m"},
+                    "memory": {"type": "string", "minLength": 1, "default": "128Mi"}
+                  },
+                  "additionalProperties": false
+                },
+                "limits": {
+                  "type": "object",
+                  "required": ["cpu", "memory"],
+                  "properties": {
+                    "cpu": {"type": "string", "minLength": 1, "default": "500m"},
+                    "memory": {"type": "string", "minLength": 1, "default": "512Mi"}
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "allOf": [{
+            "if": {"properties": {"enabled": {"const": true}}},
+            "then": {
+              "required": ["externalHostname", "exchangeClientId", "exchangeCredentialsSecret"],
+              "properties": {
+                "externalHostname": {"minLength": 1},
+                "exchangeClientId": {"minLength": 1},
+                "exchangeCredentialsSecret": {"minLength": 1}
+              }
+            }
+          }],
+          "additionalProperties": false
         },
         "variant": {
           "type": "string",
@@ -591,24 +768,58 @@
           "type": "object",
           "properties": {
             "service": {
-              "type": "string",
-              "description": "Fulfillment service container image"
+              "type": "object",
+              "description": "Fulfillment service container image",
+              "properties": {
+                "repository": {
+                  "type": "string",
+                  "description": "Container image repository"
+                },
+                "tag": {
+                  "type": "string",
+                  "description": "Container image tag"
+                },
+                "pullPolicy": {
+                  "type": "string",
+                  "description": "Image pull policy",
+                  "enum": ["Always", "IfNotPresent", "Never"]
+                }
+              },
+              "additionalProperties": false
             },
             "envoy": {
-              "type": "string",
-              "description": "Envoy proxy container image"
-            },
-            "pullPolicy": {
-              "type": "string",
-              "description": "Default image pull policy for service containers",
-              "enum": [
-                "Always",
-                "IfNotPresent",
-                "Never"
-              ]
+              "type": "object",
+              "description": "Envoy proxy container image",
+              "properties": {
+                "repository": {
+                  "type": "string",
+                  "description": "Container image repository"
+                },
+                "tag": {
+                  "type": "string",
+                  "description": "Container image tag"
+                },
+                "pullPolicy": {
+                  "type": "string",
+                  "description": "Image pull policy",
+                  "enum": ["Always", "IfNotPresent", "Never"]
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
+        },
+        "eventPublisher": {
+          "type": "object",
+          "description": "Event publisher configuration",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Deploy the Kafka-backed event publisher (disable for API-only environments)",
+              "default": true
+            }
+          }
         },
         "certs": {
           "type": "object",
@@ -755,6 +966,12 @@
               "type": "string",
               "description": "Vault role name for JWT authentication during lifecycle operations"
             },
+            "transitMountPath": {
+              "type": "string",
+              "description": "Transit engine mount path within ordinary tenant and system namespaces; must differ from kvMountPath",
+              "default": "transit",
+              "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$"
+            },
             "lifecycleMountPath": {
               "type": "string",
               "description": "Auth method mount path in the Vault parent namespace for lifecycle JWT authentication",
@@ -831,6 +1048,27 @@
           "description": "Helm-injected global values (passed automatically to subcharts)"
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "variant": {"const": "openshift"},
+              "mcp": {
+                "properties": {"enabled": {"const": true}},
+                "required": ["enabled"]
+              }
+            },
+            "required": ["variant", "mcp"]
+          },
+          "then": {
+            "properties": {
+              "mcp": {
+                "properties": {"externalPort": {"const": 443}}
+              }
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "aap": {
@@ -1011,19 +1249,15 @@
               "type": "string",
               "description": "Git branch for config-as-code project"
             },
-            "importAgentsEnabled": {
-              "type": "boolean",
-              "description": "Enable ConfigMap-based bare metal agent import. Sets OSAC_IMPORT_AGENTS_ENABLED=true in the config-as-code-ig Secret and gates the import-agents-inventory ConfigMap.",
-              "default": false
-            },
-            "importBcmAgentsEnabled": {
-              "type": "boolean",
-              "description": "Enable BCM inventory backend. Sets OSAC_IMPORT_BCM_AGENTS_ENABLED=true in the config-as-code-ig Secret and gates the bcm-certs Secret.",
-              "default": false
-            },
             "eeImagePull": {
               "type": "string",
               "description": "Execution environment image pull specification for config-as-code"
+            },
+            "addonOperatorMaxConcurrentJobs": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 50,
+              "description": "Maximum number of add-on operator jobs allowed to run concurrently"
             },
             "manifest": {
               "type": "object",
@@ -1040,79 +1274,6 @@
                 }
               },
               "additionalProperties": false
-            }
-          },
-          "additionalProperties": false
-        },
-        "importAgents": {
-          "type": "object",
-          "description": "Server inventory for bare metal agent import. Enable via aap.configAsCode.importAgentsEnabled.",
-          "properties": {
-            "servers": {
-              "type": "array",
-              "description": "Server inventory for bare metal agent import. Each entry provisions a BareMetalHost CR.",
-              "items": {
-                "type": "object",
-                "required": [
-                  "name",
-                  "bmc_url",
-                  "bmc_username",
-                  "bmc_password",
-                  "boot_mac",
-                  "netris_server_name",
-                  "resource_class"
-                ],
-                "properties": {
-                  "name": {
-                    "type": "string",
-                    "description": "Server hostname, used as the BareMetalHost CR name"
-                  },
-                  "bmc_url": {
-                    "type": "string",
-                    "description": "Redfish BMC address for virtual media boot"
-                  },
-                  "bmc_username": {
-                    "type": "string",
-                    "description": "BMC username. The playbook creates a Kubernetes Secret named {name}-bmc-secret with these credentials."
-                  },
-                  "bmc_password": {
-                    "type": "string",
-                    "description": "BMC password. The playbook creates a Kubernetes Secret named {name}-bmc-secret with these credentials."
-                  },
-                  "boot_mac": {
-                    "type": "string",
-                    "description": "Boot NIC MAC address"
-                  },
-                  "netris_server_name": {
-                    "type": "string",
-                    "description": "Netris server name label for the Agent"
-                  },
-                  "resource_class": {
-                    "type": "string",
-                    "description": "Hardware type label for the Agent"
-                  },
-                  "disable_bmc_cert_verification": {
-                    "type": "boolean",
-                    "description": "Per-server override for BMC TLS certificate verification"
-                  }
-                },
-                "additionalProperties": false
-              }
-            }
-          },
-          "additionalProperties": false
-        },
-        "importBcmAgents": {
-          "type": "object",
-          "description": "BCM mTLS client credentials. Enable via aap.configAsCode.importBcmAgentsEnabled.",
-          "properties": {
-            "cert": {
-              "type": "string",
-              "description": "PEM-encoded client certificate for BCM mTLS authentication"
-            },
-            "key": {
-              "type": "string",
-              "description": "PEM-encoded client private key for BCM mTLS authentication"
             }
           },
           "additionalProperties": false
@@ -1141,11 +1302,12 @@
                   "properties": {
                     "NETWORK_CLASS": {
                       "type": "string",
-                      "description": "Supported values: netris, agentless_net. Legacy backends (esi, nico) are removed from the standard schema; direct AAP configuration via expertOverrides.aap accepts any free-form string.",
+                      "description": "Supported values: netris, agentless_net, ci (CUDN CaaS only). Legacy backends (esi, nico) are removed from the standard schema.",
                       "enum": [
                         "",
                         "netris",
-                        "agentless_net"
+                        "agentless_net",
+                        "ci"
                       ]
                     },
                     "NETWORK_STEPS_COLLECTION": {
@@ -1240,48 +1402,17 @@
                       "type": "string",
                       "description": "Name of the parking V-Net where idle CaaS agents sit before cluster assignment (effective default: idle-agents-network)"
                     },
-                    "IMPORT_AGENTS_NAMESPACE": {
-                      "type": "string",
-                      "description": "Namespace for BareMetalHost, Agent, and InfraEnv CRs (effective default: hardware-inventory)"
-                    },
-                    "IMPORT_AGENTS_INFRAENV_NAME": {
-                      "type": "string",
-                      "description": "InfraEnv CR name for agent discovery (effective default: infraenv)"
-                    },
-                    "IMPORT_AGENTS_PULL_SECRET_NAME": {
-                      "type": "string",
-                      "description": "Pull secret name for InfraEnv discovery ISO (effective default: pull-secret)"
-                    },
-                    "IMPORT_AGENTS_DISABLE_BMC_CERT_VERIFICATION": {
-                      "type": "string",
-                      "description": "Default BMC TLS certificate verification skip (effective default: true)"
-                    },
-                    "BCM_API_URL": {
-                      "type": "string",
-                      "pattern": "^$|^https?://[^/\\s:]+[^\\s]*$",
-                      "description": "BCM head node API endpoint (e.g., https://bcm-head:8081)"
-                    },
-                    "BCM_VALIDATE_CERTS": {
-                      "type": "string",
-                      "enum": [
-                        "",
-                        "true",
-                        "false"
-                      ],
-                      "description": "Verify BCM TLS certificates (effective default: true)"
-                    },
-                    "BCM_DISABLE_BMC_CERT_VERIFICATION": {
-                      "type": "string",
-                      "enum": [
-                        "",
-                        "true",
-                        "false"
-                      ],
-                      "description": "Skip BMC TLS certificate verification during BCM system discovery (effective default: false)"
-                    },
                     "NETRIS_CONTROLLER_URL": {
                       "type": "string",
                       "description": "Netris controller API endpoint URL"
+                    },
+                    "NETRIS_VALIDATE_CERTS": {
+                      "type": "string",
+                      "enum": [
+                        "true",
+                        "false"
+                      ],
+                      "description": "Verify Netris HTTPS certificates; defaults to enabled"
                     },
                     "NETRIS_SITE_ID": {
                       "type": "string",
@@ -1527,6 +1658,21 @@
               "type": "string",
               "description": "OIDC client ID for the UI",
               "default": "osac-ui"
+            },
+            "oidcIssuerURL": {
+              "type": "string",
+              "description": "OIDC issuer URL for gRPC reflection authentication. Must match service.auth.issuerUrl."
+            },
+            "serviceAccount": {
+              "type": "object",
+              "description": "Service account credentials for backend OIDC authentication",
+              "properties": {
+                "credentialsSecret": {
+                  "type": "string",
+                  "description": "Name of the Secret containing the osac-ui-backend Keycloak client credentials"
+                }
+              },
+              "additionalProperties": false
             },
             "certs": {
               "type": "object",
@@ -1792,6 +1938,33 @@
                   },
                   "additionalProperties": false
                 },
+                "tls": {
+                  "type": "object",
+                  "description": "TLS configuration for fulfillment connection (subchart default)",
+                  "properties": {
+                    "insecureSkipVerify": {
+                      "type": "boolean",
+                      "description": "Skip TLS certificate verification for the fulfillment endpoint",
+                      "default": false
+                    },
+                    "caBundle": {
+                      "type": "object",
+                      "description": "ConfigMap key containing the tenant fulfillment CA bundle",
+                      "properties": {
+                        "configMap": {
+                          "type": "string",
+                          "default": "ca-bundle"
+                        },
+                        "key": {
+                          "type": "string",
+                          "default": "bundle.pem"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
                 "allowStub": {
                   "type": "boolean",
                   "description": "Allow the CSI controller to use the in-memory volume stub when no fulfillment configuration is supplied",
@@ -1804,10 +1977,6 @@
                 "issuerUrl": {
                   "type": "string",
                   "description": "Direct fulfillment issuer URL override (subchart default)"
-                },
-                "tls": {
-                  "type": "object",
-                  "description": "TLS configuration for fulfillment connection (subchart default)"
                 }
               },
               "additionalProperties": false
@@ -2210,12 +2379,70 @@
                 "type": "string",
                 "description": "OCI release image pullspec"
               },
+              "diskImage": {
+                "type": "object",
+                "description": "Seed a shared Linux registry DiskImage before this ClusterVersion. Required for default versions; existing named records are retained without updates.",
+                "required": [
+                  "name",
+                  "sourceRef"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Name of the shared DiskImage to create and reference",
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                  },
+                  "sourceRef": {
+                    "type": "string",
+                    "description": "OCI disk image artifact URL (oci://registry/repository:tag or @digest), not the OpenShift release image",
+                    "pattern": "^oci://\\S+$"
+                  },
+                  "architecture": {
+                    "type": "array",
+                    "description": "CPU architectures supported by the disk image",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "default": [
+                      "ARCHITECTURE_AMD64"
+                    ],
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "ARCHITECTURE_AMD64",
+                        "ARCHITECTURE_ARM64",
+                        "ARCHITECTURE_S390X"
+                      ]
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
               "default": {
                 "type": "boolean",
-                "description": "Mark as the default cluster version",
+                "description": "Mark as the default cluster version; requires a diskImage",
                 "default": false
               }
             },
+            "allOf": [
+              {
+                "if": {
+                  "required": [
+                    "default"
+                  ],
+                  "properties": {
+                    "default": {
+                      "const": true
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "diskImage"
+                  ]
+                }
+              }
+            ],
             "additionalProperties": false
           }
         }
@@ -2305,11 +2532,6 @@
                     "type": "string",
                     "description": "IPv4 CIDR for this rule (e.g. 0.0.0.0/0)",
                     "pattern": "^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/(3[0-2]|[12]?[0-9])$"
-                  },
-                  "ipv6Cidr": {
-                    "type": "string",
-                    "description": "Optional IPv6 CIDR for this rule. The create-network-class hook forwards it when set. Netris fabric is IPv4-only; CUDN/k8s_only may use IPv6.",
-                    "pattern": "^$|^[0-9a-fA-F:]+/(12[0-8]|1[01][0-9]|[1-9]?[0-9])$"
                   },
                   "portFrom": {
                     "type": "integer",
@@ -2471,6 +2693,13 @@
     }
   },
   "$defs": {
+    "positiveDuration": {
+      "type": "string",
+      "description": "Positive Go time.Duration (e.g. 500ms, 15m, 1h30m). A zero or negative threshold is not useful for stall detection.",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[1-9][0-9]*(?:\\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)(?:[0-9]+(?:\\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))*$"
+    },
     "globalNetworking": {
       "type": "object",
       "description": "High-level networking profile shared by the umbrella, operator, and AAP charts. Select fabricManager and/or k8sManager; Helm derives AAP backends and NetworkClass defaults.",
@@ -2478,7 +2707,7 @@
       "properties": {
         "fabricManager": {
           "type": "string",
-          "description": "Fabric manager profile. Supported: empty string, netris, or agentless_net. Reserved names cudn_net and vlan fail during Helm rendering.",
+          "description": "Fabric manager profile. Supported: empty string, netris, agentless_net (stub), or cudn_net for CaaS with ci.steps. vlan is reserved and fails Helm rendering.",
           "enum": [
             "",
             "netris",
@@ -2620,6 +2849,24 @@
           "description": "Netris controller API URL (HTTPS only).",
           "pattern": "^$|^https://[^/\\s:]+(:[0-9]+)?(/[^\\s]*)?$"
         },
+        "validateCerts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Verify Netris HTTPS certificates. Disable only for trusted non-production endpoints with self-signed certificates."
+        },
+        "caBundle": {
+          "type": "object",
+          "description": "Optional customer-created ConfigMap containing the Netris CA chain under the fixed bundle.pem key.",
+          "properties": {
+            "configMap": {
+              "type": "string",
+              "description": "Name of the customer-created ConfigMap in the AAP namespace. It must contain bundle.pem and is mounted read-only into Netris execution pods.",
+              "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+              "maxLength": 253
+            }
+          },
+          "additionalProperties": false
+        },
         "credentials": {
           "type": "object",
           "properties": {
@@ -2726,11 +2973,6 @@
                     "description": "IPv4 CIDR for this rule.",
                     "pattern": "^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/(3[0-2]|[12]?[0-9])$"
                   },
-                  "ipv6Cidr": {
-                    "type": "string",
-                    "description": "Optional IPv6 CIDR for this rule. Netris fabric is IPv4-only; CUDN/k8s_only may use IPv6.",
-                    "pattern": "^$|^[0-9a-fA-F:]+/(12[0-8]|1[01][0-9]|[1-9]?[0-9])$"
-                  },
                   "portFrom": {
                     "type": "integer",
                     "description": "Starting port (TCP/UDP only).",
@@ -2810,6 +3052,11 @@
           "type": "string",
           "pattern": "^$|^https://[^/\\s:]+(:[0-9]+)?(/[^\\s]*)?$",
           "description": "Netris controller API URL. Must match between AAP instance groups."
+        },
+        "NETRIS_VALIDATE_CERTS": {
+          "type": "string",
+          "enum": ["true", "false"],
+          "description": "Verify Netris HTTPS certificates; defaults to enabled."
         },
         "NETRIS_USERNAME": {
           "type": "string",

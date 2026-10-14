@@ -14,9 +14,11 @@ language governing permissions and limitations under the License.
 package baremetalinstance
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -121,7 +123,7 @@ var _ = Describe("mutateBMI", func() {
 						Id: catalogItemID,
 					}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: templateID}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -147,7 +149,7 @@ var _ = Describe("mutateBMI", func() {
 					}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
 					RunStrategy:  new(privatev1.BareMetalInstanceRunStrategy_BARE_METAL_INSTANCE_RUN_STRATEGY_ALWAYS),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -173,7 +175,7 @@ var _ = Describe("mutateBMI", func() {
 					}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
 					RunStrategy:  new(privatev1.BareMetalInstanceRunStrategy_BARE_METAL_INSTANCE_RUN_STRATEGY_HALTED),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -196,7 +198,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -220,7 +222,7 @@ var _ = Describe("mutateBMI", func() {
 					CatalogItem:    privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:       privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
 					RestartTrigger: 42,
-					InstanceType:   privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType:   privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -243,7 +245,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -267,7 +269,7 @@ var _ = Describe("mutateBMI", func() {
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
 					SshPublicKey: new("ssh-ed25519 AAAA... test@example.com"),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 			userDataSecretName: "bmi-test-user-data",
@@ -297,7 +299,7 @@ var _ = Describe("mutateBMI", func() {
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
 					SshPublicKey: new(sshPublicKey),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -325,7 +327,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -351,7 +353,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:        privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:           privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType:       privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType:       privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 					TemplateParameters: map[string]*anypb.Any{"os_version": osParam},
 				}.Build(),
 			}.Build(),
@@ -383,7 +385,7 @@ var _ = Describe("mutateBMI", func() {
 					Template:           privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
 					SshPublicKey:       new("ssh-ed25519 AAAA... test@example.com"),
 					TemplateParameters: map[string]*anypb.Any{"os_version": osParam},
-					InstanceType:       privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType:       privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 			userDataSecretName: "bmi-test-user-data",
@@ -417,7 +419,7 @@ var _ = Describe("mutateBMI", func() {
 					Template:           privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
 					SshPublicKey:       new("ssh-ed25519 AAAA... real@example.com"),
 					TemplateParameters: map[string]*anypb.Any{"sshPublicKey": userSshParam},
-					InstanceType:       privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType:       privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -479,7 +481,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 					DiskImage:    privatev1.DiskImageReference_builder{Id: "disk-image-1"}.Build(),
 				}.Build(),
 			}.Build(),
@@ -513,7 +515,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 					DiskImage:    privatev1.DiskImageReference_builder{Id: "missing-disk-image"}.Build(),
 				}.Build(),
 			}.Build(),
@@ -553,7 +555,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 					DiskImage:    privatev1.DiskImageReference_builder{Id: "disk-image-1"}.Build(),
 				}.Build(),
 			}.Build(),
@@ -578,7 +580,7 @@ var _ = Describe("mutateBMI", func() {
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
 					SshPublicKey: new("ssh-ed25519 AAAA... test@example.com"),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -621,7 +623,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:        privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:           privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType:       privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType:       privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 					TemplateParameters: map[string]*anypb.Any{"imageURL": userImageParam},
 					DiskImage:          privatev1.DiskImageReference_builder{Id: "disk-image-1"}.Build(),
 				}.Build(),
@@ -669,7 +671,7 @@ var _ = Describe("mutateBMI", func() {
 					Template:           privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
 					TemplateParameters: map[string]*anypb.Any{"imageSourceType": userSourceTypeParam},
 					DiskImage:          privatev1.DiskImageReference_builder{Id: "disk-image-1"}.Build(),
-					InstanceType:       privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType:       privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -712,7 +714,7 @@ var _ = Describe("mutateBMI", func() {
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
 					SshPublicKey: new("ssh-ed25519 AAAA... test@example.com"),
 					DiskImage:    privatev1.DiskImageReference_builder{Id: "disk-image-1"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 			userDataSecretName: "bmi-test-user-data",
@@ -741,7 +743,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 					NetworkAttachments: []*privatev1.BareMetalNetworkAttachment{
 						privatev1.BareMetalNetworkAttachment_builder{
 							Subnet: privatev1.SubnetLocalReference_builder{
@@ -773,7 +775,7 @@ var _ = Describe("mutateBMI", func() {
 		Expect(obj.Spec.NetworkAttachments[0].Primary).To(BeTrue())
 	})
 
-	It("should copy multiple network attachments preserving order", func() {
+	It("should normalize omitted primary to true on sole network attachment", func() {
 
 		t := &task{
 			r: &function{
@@ -785,25 +787,13 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 					NetworkAttachments: []*privatev1.BareMetalNetworkAttachment{
 						privatev1.BareMetalNetworkAttachment_builder{
 							Subnet: privatev1.SubnetLocalReference_builder{
 								Id: "subnet-data",
 							}.Build(),
 							Interface: new("data-0"),
-							Primary:   new(true),
-						}.Build(),
-						privatev1.BareMetalNetworkAttachment_builder{
-							Subnet: privatev1.SubnetLocalReference_builder{
-								Id: "subnet-storage",
-							}.Build(),
-							SecurityGroups: []*privatev1.SecurityGroupLocalReference{
-								privatev1.SecurityGroupLocalReference_builder{
-									Id: "sg-storage",
-								}.Build(),
-							},
-							Interface: new("data-1"),
 						}.Build(),
 					},
 				}.Build(),
@@ -813,14 +803,10 @@ var _ = Describe("mutateBMI", func() {
 		var obj bmfov1alpha1.BareMetalInstance
 		err := t.mutateBMI(ctx, &obj)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(obj.Spec.NetworkAttachments).To(HaveLen(2))
+		Expect(obj.Spec.NetworkAttachments).To(HaveLen(1))
 		Expect(obj.Spec.NetworkAttachments[0].SubnetRef).To(Equal("subnet-data"))
 		Expect(obj.Spec.NetworkAttachments[0].Interface).To(Equal("data-0"))
 		Expect(obj.Spec.NetworkAttachments[0].Primary).To(BeTrue())
-		Expect(obj.Spec.NetworkAttachments[1].SubnetRef).To(Equal("subnet-storage"))
-		Expect(obj.Spec.NetworkAttachments[1].SecurityGroupRefs).To(Equal([]string{"sg-storage"}))
-		Expect(obj.Spec.NetworkAttachments[1].Interface).To(Equal("data-1"))
-		Expect(obj.Spec.NetworkAttachments[1].Primary).To(BeFalse())
 	})
 
 	It("should leave NetworkAttachments empty when proto has none", func() {
@@ -835,7 +821,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -858,7 +844,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 					NetworkAttachments: []*privatev1.BareMetalNetworkAttachment{
 						privatev1.BareMetalNetworkAttachment_builder{
 							Subnet: privatev1.SubnetLocalReference_builder{
@@ -877,7 +863,7 @@ var _ = Describe("mutateBMI", func() {
 		Expect(obj.Spec.NetworkAttachments[0].SubnetRef).To(Equal("subnet-1"))
 		Expect(obj.Spec.NetworkAttachments[0].SecurityGroupRefs).To(BeEmpty())
 		Expect(obj.Spec.NetworkAttachments[0].Interface).To(BeEmpty())
-		Expect(obj.Spec.NetworkAttachments[0].Primary).To(BeFalse())
+		Expect(obj.Spec.NetworkAttachments[0].Primary).To(BeTrue())
 	})
 
 	It("should not include imageSourceType when disk_image is set and no user override is provided", func() {
@@ -906,7 +892,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:  &privatev1.BareMetalInstanceCatalogItemReference{Id: "catalog-1"},
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 					DiskImage:    privatev1.DiskImageReference_builder{Id: "disk-image-1"}.Build(),
 				}.Build(),
 			}.Build(),
@@ -949,12 +935,13 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "gpu-large"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "gpu-large", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
 
 		var obj bmfov1alpha1.BareMetalInstance
+		obj.Spec.Selector.HostSelector = map[string]string{"stale": "old-value"}
 		err := t.mutateBMI(ctx, &obj)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(obj.Spec.Selector.HostSelector).To(HaveLen(2))
@@ -981,7 +968,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "empty-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "empty-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -1007,7 +994,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "missing-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "missing-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -1043,7 +1030,7 @@ var _ = Describe("mutateBMI", func() {
 				Spec: privatev1.BareMetalInstanceSpec_builder{
 					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "basic-type"}.Build(),
+					InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "basic-type", Shared: true}.Build(),
 				}.Build(),
 			}.Build(),
 		}
@@ -1054,21 +1041,11 @@ var _ = Describe("mutateBMI", func() {
 		Expect(err.Error()).To(ContainSubstring("has no host_label_selector"))
 	})
 
-	It("should fall back to the template host_type when instance_type is absent", func() {
-		templatesClient := &fakeBareMetalInstanceTemplatesClient{
-			getResponse: privatev1.BareMetalInstanceTemplatesGetResponse_builder{
-				Object: privatev1.BareMetalInstanceTemplate_builder{
-					Id:       "osac.templates.default",
-					HostType: "gpu_host",
-				}.Build(),
-			}.Build(),
-		}
-
+	It("returns an error when the materialized instance has no instance_type", func() {
 		t := &task{
 			r: &function{
-				logger:                           logger,
-				bareMetalInstanceTypesClient:     defaultFakeBareMetalInstanceTypesClient(),
-				bareMetalInstanceTemplatesClient: templatesClient,
+				logger:                       logger,
+				bareMetalInstanceTypesClient: defaultFakeBareMetalInstanceTypesClient(),
 			},
 			bareMetalInstance: privatev1.BareMetalInstance_builder{
 				Id: "bmi-test",
@@ -1081,46 +1058,14 @@ var _ = Describe("mutateBMI", func() {
 
 		var obj bmfov1alpha1.BareMetalInstance
 		err := t.mutateBMI(ctx, &obj)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(obj.Spec.Selector.HostSelector).To(HaveLen(1))
-		Expect(obj.Spec.Selector.HostSelector["hostType"]).To(Equal("gpu_host"))
-	})
-
-	It("should not error when instance_type is absent and the template has no host_type", func() {
-		templatesClient := &fakeBareMetalInstanceTemplatesClient{
-			getResponse: privatev1.BareMetalInstanceTemplatesGetResponse_builder{
-				Object: privatev1.BareMetalInstanceTemplate_builder{
-					Id: "osac.templates.default",
-				}.Build(),
-			}.Build(),
-		}
-
-		t := &task{
-			r: &function{
-				logger:                           logger,
-				bareMetalInstanceTypesClient:     defaultFakeBareMetalInstanceTypesClient(),
-				bareMetalInstanceTemplatesClient: templatesClient,
-			},
-			bareMetalInstance: privatev1.BareMetalInstance_builder{
-				Id: "bmi-test",
-				Spec: privatev1.BareMetalInstanceSpec_builder{
-					CatalogItem: privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
-					Template:    privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-				}.Build(),
-			}.Build(),
-		}
-
-		var obj bmfov1alpha1.BareMetalInstance
-		err := t.mutateBMI(ctx, &obj)
-		Expect(err).ToNot(HaveOccurred())
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("instance_type"))
 	})
 })
 
 var _ = Describe("update", func() {
 	It("should preserve operator-managed spec fields when patching an existing CR", func() {
 		ctx := context.Background()
-		ctrl := gomock.NewController(GinkgoT())
-		DeferCleanup(ctrl.Finish)
 
 		const (
 			bmiID        = "bmi-test-id"
@@ -1135,11 +1080,21 @@ var _ = Describe("update", func() {
 				Labels: map[string]string{
 					labels.BareMetalInstanceUuid: bmiID,
 				},
+				Annotations: map[string]string{"osac.openshift.io/owner-reference": "stored-owner-private"},
 			},
 			Spec: bmfov1alpha1.BareMetalInstanceSpec{
 				TemplateID:     "osac.templates.default",
 				ExternalHostID: "host-42",
 				HostClass:      "openstack",
+				RestartTrigger: 1,
+				NetworkAttachments: []bmfov1alpha1.BareMetalNetworkAttachment{{
+					SubnetRef: "stored-subnet-private", SecurityGroupRefs: []string{"stored-security-group-private"}, Primary: true,
+				}},
+			},
+			Status: bmfov1alpha1.BareMetalInstanceStatus{
+				NetworkAttachmentStatuses: []bmfov1alpha1.BareMetalNetworkAttachmentStatus{{
+					Interface: "data-0", SubnetRef: "stored-subnet-private", IPAddress: "192.0.2.10", Primary: true,
+				}},
 			},
 		}
 
@@ -1149,18 +1104,21 @@ var _ = Describe("update", func() {
 			WithObjects(existingCR).
 			Build()
 
-		hubCache := controllers.NewMockHubCache(ctrl)
-		hubCache.EXPECT().
-			Get(gomock.Any(), hubID).
-			Return(&controllers.HubEntry{
-				Namespace: hubNamespace,
-				Client:    fakeClient,
-			}, nil)
-
+		var logOutput bytes.Buffer
 		t := &task{
 			r: &function{
-				logger:                       logger,
-				hubCache:                     hubCache,
+				logger: slog.New(slog.NewTextHandler(&logOutput, nil)),
+				networkingHubReader: &fakeBareMetalNetworkingHubReader{
+					resolution: controllers.NetworkingHubResolution{
+						NetworkingHub: controllers.NetworkingHub{
+							ID:        hubID,
+							Namespace: hubNamespace,
+							Client:    fakeClient,
+						},
+						HubID: hubID,
+						State: privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY,
+					},
+				},
 				bareMetalInstanceTypesClient: defaultFakeBareMetalInstanceTypesClient(),
 			},
 			bareMetalInstance: privatev1.BareMetalInstance_builder{
@@ -1170,9 +1128,16 @@ var _ = Describe("update", func() {
 					Tenant:     "test-tenant",
 				}.Build(),
 				Spec: privatev1.BareMetalInstanceSpec_builder{
-					CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
-					Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-					InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+					CatalogItem:    privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
+					Template:       privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
+					InstanceType:   privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
+					RestartTrigger: 42,
+					NetworkAttachments: []*privatev1.BareMetalNetworkAttachment{
+						privatev1.BareMetalNetworkAttachment_builder{
+							Subnet:         &privatev1.SubnetLocalReference{Name: "requested-subnet"},
+							SecurityGroups: []*privatev1.SecurityGroupLocalReference{{Name: "requested-security-group"}},
+						}.Build(),
+					},
 				}.Build(),
 				Status: privatev1.BareMetalInstanceStatus_builder{
 					Hub:   hubID,
@@ -1194,6 +1159,14 @@ var _ = Describe("update", func() {
 			"ExternalHostID must be preserved — it is managed by the bare-metal-fulfillment-operator")
 		Expect(updatedCR.Spec.HostClass).To(Equal("openstack"),
 			"HostClass must be preserved — it is managed by the bare-metal-fulfillment-operator")
+		Expect(updatedCR.Spec.RestartTrigger).To(Equal(int64(42)))
+		Expect(updatedCR.Spec.NetworkAttachments).To(Equal(existingCR.Spec.NetworkAttachments))
+		Expect(updatedCR.Annotations).To(HaveKeyWithValue("osac.openshift.io/owner-reference", "stored-owner-private"))
+		Expect(t.bareMetalInstance.GetStatus().GetNetworkAttachmentStatuses()).To(HaveLen(1))
+		Expect(t.bareMetalInstance.GetStatus().GetNetworkAttachmentStatuses()[0].GetIpAddress()).To(Equal("192.0.2.10"))
+		Expect(logOutput.String()).To(ContainSubstring("preserving stored network attachments"))
+		Expect(logOutput.String()).NotTo(ContainSubstring("stored-subnet-private"))
+		Expect(logOutput.String()).NotTo(ContainSubstring("stored-security-group-private"))
 	})
 })
 
@@ -2815,7 +2788,7 @@ var _ = Describe("Kubernetes validation error handling", func() {
 			Spec: privatev1.BareMetalInstanceSpec_builder{
 				CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "catalog-1"}.Build(),
 				Template:     privatev1.BareMetalInstanceTemplateReference_builder{Id: "osac.templates.default"}.Build(),
-				InstanceType: privatev1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+				InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 			}.Build(),
 			Status: privatev1.BareMetalInstanceStatus_builder{
 				Hub: hubID,
@@ -2853,7 +2826,7 @@ func defaultFakeBareMetalInstanceTypesClient() *fakeBareMetalInstanceTypesClient
 				Spec: privatev1.BareMetalInstanceTypeSpec_builder{
 					HostLabelSelector: privatev1.BareMetalLabelSelector_builder{
 						MatchLabels: map[string]string{
-							"hostType": "compute",
+							"resourceClass": "compute",
 						},
 					}.Build(),
 				}.Build(),
@@ -2870,16 +2843,5 @@ type fakeBareMetalInstanceTypesClient struct {
 }
 
 func (c *fakeBareMetalInstanceTypesClient) Get(ctx context.Context, req *privatev1.BareMetalInstanceTypesGetRequest, opts ...grpc.CallOption) (*privatev1.BareMetalInstanceTypesGetResponse, error) {
-	return c.getResponse, c.getError
-}
-
-// fakeBareMetalInstanceTemplatesClient is a test double for the BareMetalInstanceTemplatesClient.
-type fakeBareMetalInstanceTemplatesClient struct {
-	privatev1.BareMetalInstanceTemplatesClient
-	getResponse *privatev1.BareMetalInstanceTemplatesGetResponse
-	getError    error
-}
-
-func (c *fakeBareMetalInstanceTemplatesClient) Get(ctx context.Context, req *privatev1.BareMetalInstanceTemplatesGetRequest, opts ...grpc.CallOption) (*privatev1.BareMetalInstanceTemplatesGetResponse, error) {
 	return c.getResponse, c.getError
 }

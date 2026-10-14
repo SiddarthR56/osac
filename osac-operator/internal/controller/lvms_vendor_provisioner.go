@@ -43,7 +43,6 @@ const (
 	logicalVolumeResourceUIDContextKey = "osac.topolvm-logicalvolume-uid"
 	logicalVolumeOwnerAnnotation       = "osac.openshift.io/owner-reference"
 	logicalVolumeSourceUIDAnnotation   = "osac.openshift.io/volume-uid"
-	lvmsDeviceClass                    = "vg1"
 
 	logicalVolumeCleanupTimeout = 10 * time.Second
 )
@@ -95,13 +94,10 @@ func (p *LvmsVendorProvisioner) CreateVolume(ctx context.Context, req VendorCrea
 	if req.Protocol != v1alpha1.VolumeProtocolBlock {
 		return VendorCreateVolumeResponse{}, fmt.Errorf("LVMS provisioner supports only block volumes; protocol %q is not implemented", req.Protocol)
 	}
-	// The OSAC LVMS path currently guarantees only ReadWriteOnce semantics.
-	// Reject other access modes before creating a LogicalVolume rather than
-	// advertising capabilities that the node-local backend may not provide.
-	if req.AccessMode != v1alpha1.VolumeAccessModeReadWriteOnce {
+	if req.AccessMode != v1alpha1.VolumeAccessModeReadWriteOnce && req.AccessMode != v1alpha1.VolumeAccessModeReadWriteOncePod {
 		return VendorCreateVolumeResponse{}, grpcstatus.Errorf(codes.InvalidArgument,
-			"LVMS provisioner supports only %q access mode; got %q",
-			v1alpha1.VolumeAccessModeReadWriteOnce, req.AccessMode)
+			"LVMS provisioner supports only %q and %q access modes; got %q",
+			v1alpha1.VolumeAccessModeReadWriteOnce, v1alpha1.VolumeAccessModeReadWriteOncePod, req.AccessMode)
 	}
 	if req.Name == "" {
 		return VendorCreateVolumeResponse{}, fmt.Errorf("volume name is required")
@@ -127,32 +123,8 @@ func (p *LvmsVendorProvisioner) CreateVolume(ctx context.Context, req VendorCrea
 	volume.SetGroupVersionKind(logicalVolumeGVK)
 	if generatedName == "" {
 		volume = buildLogicalVolume(req, nodeName)
-		generatedName = volume.GetName()
 		if err := p.writer.Create(ctx, volume); err != nil {
-			if !apierrors.IsAlreadyExists(err) {
-				return VendorCreateVolumeResponse{}, fmt.Errorf("create LogicalVolume: %w", err)
-			}
-
-			// Another reconcile may have created the deterministic resource first.
-			// Adopt it only when its immutable ownership metadata identifies this
-			// OSAC Volume; never treat an arbitrary pre-existing object as ours.
-			volume = &unstructured.Unstructured{}
-			volume.SetGroupVersionKind(logicalVolumeGVK)
-			volume.SetName(generatedName)
-			if getErr := p.reader.Get(ctx, client.ObjectKey{Name: generatedName}, volume); getErr != nil {
-				return VendorCreateVolumeResponse{}, fmt.Errorf("get existing LogicalVolume %q after create conflict: %w", generatedName, getErr)
-			}
-			if ownershipErr := validateLogicalVolumeOwnership(volume, req); ownershipErr != nil {
-				return VendorCreateVolumeResponse{}, ownershipErr
-			}
-			if !volume.GetDeletionTimestamp().IsZero() {
-				// Drop the deleting object's identity so a later reconcile can
-				// create a fresh LogicalVolume after Kubernetes removes this one.
-				return VendorCreateVolumeResponse{
-					Protocol: string(v1alpha1.VolumeProtocolBlock),
-					Pending:  true,
-				}, nil
-			}
+			return VendorCreateVolumeResponse{}, fmt.Errorf("create LogicalVolume: %w", err)
 		}
 		generatedName = volume.GetName()
 		if generatedName == "" {
@@ -180,7 +152,8 @@ func (p *LvmsVendorProvisioner) CreateVolume(ctx context.Context, req VendorCrea
 		}
 		if !volume.GetDeletionTimestamp().IsZero() {
 			// Do not resume from a resource that is being deleted; clearing the
-			// context lets the next reconcile create a replacement after deletion.
+			// context lets the next reconcile create a fresh generated replacement
+			// without waiting for the terminating resource to disappear.
 			return VendorCreateVolumeResponse{
 				Protocol: string(v1alpha1.VolumeProtocolBlock),
 				Pending:  true,
@@ -262,17 +235,17 @@ func buildLogicalVolume(req VendorCreateVolumeRequest, nodeName string) *unstruc
 	}
 	labels[osacTenantKey] = req.Tenant
 
+	// An omitted deviceClass selects TopoLVM's configured default.
 	volume := &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": logicalVolumeGroup + "/" + logicalVolumeVersion,
 		"kind":       logicalVolumeKind,
 		"metadata": map[string]interface{}{
-			"name": logicalVolumeResourceName(req),
+			"generateName": "pvc-",
 		},
 		"spec": map[string]interface{}{
-			"name":        volumeName,
-			"nodeName":    nodeName,
-			"deviceClass": lvmsDeviceClass,
-			"size":        fmt.Sprintf("%dGi", req.SizeGiB),
+			"name":     volumeName,
+			"nodeName": nodeName,
+			"size":     fmt.Sprintf("%dGi", req.SizeGiB),
 		},
 	}}
 	volume.SetGroupVersionKind(logicalVolumeGVK)
@@ -283,10 +256,6 @@ func buildLogicalVolume(req VendorCreateVolumeRequest, nodeName string) *unstruc
 		logicalVolumeSourceUIDAnnotation: req.UID,
 	})
 	return volume
-}
-
-func logicalVolumeResourceName(req VendorCreateVolumeRequest) string {
-	return "pvc-" + req.UID
 }
 
 func validateLogicalVolumeOwnership(volume *unstructured.Unstructured, req VendorCreateVolumeRequest) error {

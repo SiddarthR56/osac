@@ -16,6 +16,7 @@ package controllers
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -27,6 +28,7 @@ import (
 
 type fakeNetworkClassesClient struct {
 	objects      []*privatev1.NetworkClass
+	listErr      error
 	listRequests []*privatev1.NetworkClassesListRequest
 	updates      []*privatev1.NetworkClassesUpdateRequest
 	listCalls    int
@@ -41,6 +43,9 @@ func (f *fakeNetworkClassesClient) List(
 ) (*privatev1.NetworkClassesListResponse, error) {
 	f.listCalls++
 	f.listRequests = append(f.listRequests, proto.Clone(request).(*privatev1.NetworkClassesListRequest))
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return privatev1.NetworkClassesListResponse_builder{
 		Items: f.objects,
 		Size:  int32(len(f.objects)),
@@ -100,6 +105,17 @@ func (f *fakeNetworkingHubCache) Get(_ context.Context, id string) (*HubEntry, e
 		return nil, err
 	}
 	return f.entries[id], nil
+}
+
+type fixedNetworkClassHubResolver struct {
+	resolution NetworkingHubResolution
+	err        error
+	calls      int
+}
+
+func (f *fixedNetworkClassHubResolver) Resolve(context.Context) (NetworkingHubResolution, error) {
+	f.calls++
+	return f.resolution, f.err
 }
 
 var _ = Describe("NetworkingHubResolver", func() {
@@ -292,6 +308,48 @@ var _ = Describe("NetworkingHubResolver", func() {
 		Expect(networkClasses.updates).To(BeEmpty())
 	})
 
+	It("classifies NetworkClass lookup failures as retryable unavailable errors", func() {
+		listErr := errors.New("database connection reset")
+		networkClasses := &fakeNetworkClassesClient{listErr: listErr}
+		cache := &fakeNetworkingHubCache{}
+		reader, err := NewNetworkingHubReader().
+			SetNetworkClassesClient(networkClasses).
+			SetHubCache(cache).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		_, err = reader.Resolve(ctx)
+
+		Expect(errors.Is(err, ErrCanonicalHubUnavailable)).To(BeTrue())
+		Expect(errors.Is(err, listErr)).To(BeTrue())
+		var pendingErr, failedErr error
+		handled, retry := HandleResourceNetworkingHubResolutionError(
+			err,
+			func(err error) { pendingErr = err },
+			func(err error) { failedErr = err },
+		)
+		Expect(handled).To(BeTrue())
+		Expect(retry).To(BeTrue())
+		Expect(pendingErr).To(Equal(ErrCanonicalHubUnavailable))
+		Expect(failedErr).ToNot(HaveOccurred())
+	})
+
+	It("classifies Hub discovery failures as retryable unavailable errors", func() {
+		networkClass := testNetworkClass("nc-a", "", privatev1.NetworkClassState_NETWORK_CLASS_STATE_PENDING, "")
+		networkClasses := &fakeNetworkClassesClient{objects: []*privatev1.NetworkClass{networkClass}}
+		listErr := errors.New("Hub service unavailable")
+		hubs := &fakeHubsListClient{listErr: listErr}
+		cache := &fakeNetworkingHubCache{}
+		resolver := mustBuildNetworkingHubResolver(networkClasses, hubs, cache)
+
+		result, err := resolver.Resolve(ctx)
+
+		Expect(errors.Is(err, ErrCanonicalHubUnavailable)).To(BeTrue())
+		Expect(errors.Is(err, listErr)).To(BeTrue())
+		Expect(result.State).To(Equal(privatev1.NetworkClassState_NETWORK_CLASS_STATE_PENDING))
+		Expect(networkClasses.updates).To(BeEmpty())
+	})
+
 	It("reports no NetworkClass when the provider singleton is absent", func() {
 		networkClasses := &fakeNetworkClassesClient{}
 		hubs := &fakeHubsListClient{items: []*privatev1.Hub{testHub("hub-a")}}
@@ -345,6 +403,31 @@ var _ = Describe("NetworkingHubReader", func() {
 		Expect(cache.calls).To(Equal([]string{"hub-a"}))
 	})
 
+	It("observes a changed persisted NetworkClass Hub on the next resolution", func() {
+		networkClass := testNetworkClass("nc-a", "hub-a", privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY, "")
+		networkClasses := &fakeNetworkClassesClient{objects: []*privatev1.NetworkClass{networkClass}}
+		cache := &fakeNetworkingHubCache{entries: map[string]*HubEntry{
+			"hub-a": {Namespace: "networking-a", Client: nil},
+			"hub-b": {Namespace: "networking-b", Client: nil},
+		}}
+
+		reader := mustBuildNetworkingHubReader(networkClasses, cache)
+
+		first, err := reader.Resolve(context.Background())
+		Expect(err).ToNot(HaveOccurred())
+		Expect(first.ID).To(Equal("hub-a"))
+
+		networkClass.GetStatus().SetHub("hub-b")
+		second, err := reader.Resolve(context.Background())
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(second.ID).To(Equal("hub-b"))
+		Expect(second.Namespace).To(Equal("networking-b"))
+		Expect(networkClasses.listRequests).To(HaveLen(2))
+		Expect(networkClasses.updates).To(BeEmpty())
+		Expect(cache.calls).To(Equal([]string{"hub-a", "hub-b"}))
+	})
+
 	It("does not discover or mutate a NetworkClass whose canonical Hub is not ready", func() {
 		networkClass := testNetworkClass("nc-a", "", privatev1.NetworkClassState_NETWORK_CLASS_STATE_PENDING, "")
 		networkClasses := &fakeNetworkClassesClient{objects: []*privatev1.NetworkClass{networkClass}}
@@ -357,6 +440,197 @@ var _ = Describe("NetworkingHubReader", func() {
 		Expect(errors.Is(err, ErrCanonicalHubNotReady)).To(BeTrue())
 		Expect(networkClasses.updates).To(BeEmpty())
 		Expect(cache.calls).To(BeEmpty())
+	})
+})
+
+var _ = Describe("ResolveResourceNetworkingHub", func() {
+	It("uses the canonical Hub when the resource has no assignment", func() {
+		resolver := &fixedNetworkClassHubResolver{resolution: NetworkingHubResolution{
+			NetworkingHub: NetworkingHub{ID: "hub-a", Namespace: "networking"},
+			HubID:         "hub-a",
+			State:         privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY,
+		}}
+
+		result, err := ResolveResourceNetworkingHub(context.Background(), resolver, "")
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.HubID).To(Equal("hub-a"))
+		Expect(result.ID).To(Equal("hub-a"))
+		Expect(result.Namespace).To(Equal("networking"))
+		Expect(resolver.calls).To(Equal(1))
+	})
+
+	It("retains an assignment that matches the canonical Hub", func() {
+		resolver := &fixedNetworkClassHubResolver{resolution: NetworkingHubResolution{
+			NetworkingHub: NetworkingHub{ID: "hub-a", Namespace: "networking"},
+			HubID:         "hub-a",
+			State:         privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY,
+		}}
+
+		result, err := ResolveResourceNetworkingHub(context.Background(), resolver, "hub-a")
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.ID).To(Equal("hub-a"))
+		Expect(result.Namespace).To(Equal("networking"))
+		Expect(resolver.calls).To(Equal(1))
+	})
+
+	It("returns a deterministic conflict when the assignment differs from the canonical Hub", func() {
+		resolver := &fixedNetworkClassHubResolver{resolution: NetworkingHubResolution{
+			NetworkingHub: NetworkingHub{ID: "hub-a", Namespace: "networking"},
+			HubID:         "hub-a",
+			State:         privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY,
+		}}
+
+		result, err := ResolveResourceNetworkingHub(context.Background(), resolver, "hub-b")
+
+		Expect(errors.Is(err, ErrResourceHubConflict)).To(BeTrue())
+		Expect(err.Error()).To(Equal(`resource Hub assignment conflicts with canonical networking Hub: assigned "hub-b", canonical "hub-a"`))
+		Expect(result.HubID).To(Equal("hub-a"))
+		Expect(result.State).To(Equal(privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY))
+		Expect(result.Message).To(BeEmpty())
+	})
+
+	It("preserves a pending resolver result when the canonical Hub is unavailable", func() {
+		resolverErr := fmt.Errorf("canonical Hub: %w", ErrCanonicalHubUnavailable)
+		resolver := &fixedNetworkClassHubResolver{
+			resolution: NetworkingHubResolution{
+				HubID:   "hub-a",
+				State:   privatev1.NetworkClassState_NETWORK_CLASS_STATE_PENDING,
+				Message: "canonical networking hub \"hub-a\" is unavailable",
+			},
+			err: resolverErr,
+		}
+
+		result, err := ResolveResourceNetworkingHub(context.Background(), resolver, "hub-b")
+
+		Expect(errors.Is(err, ErrCanonicalHubUnavailable)).To(BeTrue())
+		Expect(err).To(MatchError(resolverErr))
+		Expect(result.State).To(Equal(privatev1.NetworkClassState_NETWORK_CLASS_STATE_PENDING))
+		Expect(result.Message).To(Equal("canonical networking hub \"hub-a\" is unavailable"))
+	})
+
+	It("preserves a non-ready resolver result when no error is returned", func() {
+		resolver := &fixedNetworkClassHubResolver{resolution: NetworkingHubResolution{
+			HubID:   "hub-a",
+			State:   privatev1.NetworkClassState_NETWORK_CLASS_STATE_PENDING,
+			Message: "canonical Hub is still initializing",
+		}}
+
+		result, err := ResolveResourceNetworkingHub(context.Background(), resolver, "")
+
+		Expect(errors.Is(err, ErrCanonicalHubNotReady)).To(BeTrue())
+		Expect(result).To(Equal(resolver.resolution))
+	})
+
+	It("rejects a ready result with an incomplete or inconsistent Hub identity", func() {
+		for _, resolution := range []NetworkingHubResolution{
+			{
+				HubID: "hub-a",
+				State: privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY,
+			},
+			{
+				NetworkingHub: NetworkingHub{ID: "hub-b"},
+				HubID:         "hub-a",
+				State:         privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY,
+			},
+		} {
+			resolver := &fixedNetworkClassHubResolver{resolution: resolution}
+
+			result, err := ResolveResourceNetworkingHub(context.Background(), resolver, "")
+
+			Expect(errors.Is(err, ErrCanonicalHubNotReady)).To(BeTrue())
+			Expect(result).To(Equal(resolution))
+		}
+	})
+
+	It("resolves the canonical Hub on every call", func() {
+		resolver := &fixedNetworkClassHubResolver{resolution: NetworkingHubResolution{
+			NetworkingHub: NetworkingHub{ID: "hub-a", Namespace: "networking"},
+			HubID:         "hub-a",
+			State:         privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY,
+		}}
+
+		_, firstErr := ResolveResourceNetworkingHub(context.Background(), resolver, "")
+		_, secondErr := ResolveResourceNetworkingHub(context.Background(), resolver, "hub-a")
+
+		Expect(firstErr).ToNot(HaveOccurred())
+		Expect(secondErr).ToNot(HaveOccurred())
+		Expect(resolver.calls).To(Equal(2))
+	})
+})
+
+var _ = Describe("HandleResourceNetworkingHubResolutionError", func() {
+	It("maps conflicting and permanently missing Hub assignments to resource failure", func() {
+		for _, resolutionErr := range []error{ErrResourceHubConflict, ErrCanonicalHubNotFound} {
+			var pendingErr, failedErr error
+
+			handled, retry := HandleResourceNetworkingHubResolutionError(
+				resolutionErr,
+				func(err error) { pendingErr = err },
+				func(err error) { failedErr = err },
+			)
+
+			Expect(handled).To(BeTrue())
+			Expect(retry).To(BeFalse())
+			Expect(pendingErr).ToNot(HaveOccurred())
+			Expect(errors.Is(failedErr, resolutionErr)).To(BeTrue())
+		}
+	})
+
+	It("maps unresolved or unavailable canonical state to resource pending", func() {
+		for _, resolutionErr := range []error{
+			ErrCanonicalHubNotReady,
+			ErrCanonicalHubUnavailable,
+			ErrNoNetworkClass,
+			ErrMultipleNetworkClasses,
+			ErrNoNetworkingHubs,
+			ErrMultipleNetworkingHubs,
+		} {
+			var pendingErr, failedErr error
+
+			handled, retry := HandleResourceNetworkingHubResolutionError(
+				resolutionErr,
+				func(err error) { pendingErr = err },
+				func(err error) { failedErr = err },
+			)
+
+			Expect(handled).To(BeTrue())
+			Expect(retry).To(BeTrue())
+			Expect(errors.Is(pendingErr, resolutionErr)).To(BeTrue())
+			Expect(failedErr).ToNot(HaveOccurred())
+		}
+	})
+
+	It("keeps internal Hub resolution details out of resource status messages", func() {
+		resolutionErr := fmt.Errorf("%w: kubeconfig secret id=%s", ErrCanonicalHubUnavailable, "sensitive-secret-id")
+		var pendingErr error
+
+		handled, retry := HandleResourceNetworkingHubResolutionError(
+			resolutionErr,
+			func(err error) { pendingErr = err },
+			func(error) {},
+		)
+
+		Expect(handled).To(BeTrue())
+		Expect(retry).To(BeTrue())
+		Expect(pendingErr).To(Equal(ErrCanonicalHubUnavailable))
+		Expect(pendingErr.Error()).ToNot(ContainSubstring("sensitive-secret-id"))
+	})
+
+	It("leaves unrelated errors for the controller retry path", func() {
+		resolutionErr := errors.New("database request failed")
+		called := false
+
+		handled, retry := HandleResourceNetworkingHubResolutionError(
+			resolutionErr,
+			func(error) { called = true },
+			func(error) { called = true },
+		)
+
+		Expect(handled).To(BeFalse())
+		Expect(retry).To(BeFalse())
+		Expect(called).To(BeFalse())
 	})
 })
 

@@ -16,6 +16,7 @@ package it
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -86,19 +87,20 @@ type ToolBuilder struct {
 // Tool is an instance of the integration test tool that sets up the test environment. Don't create instances of this
 // directly, use the NewTool function instead.
 type Tool struct {
-	logger        *slog.Logger
-	projectDir    string
-	tmpDir        string
-	clusterName   string
-	kubeClient    crclient.Client
-	kubeClientSet *kubernetes.Clientset
-	caPool        *trust.CertPool
-	kcFile        string
-	internalView  *ToolView
-	externalView  *ToolView
-	secret        string
-	jqTool        *jq.Tool
-	cliBinaryPath string
+	logger          *slog.Logger
+	projectDir      string
+	tmpDir          string
+	clusterName     string
+	kubeClient      crclient.Client
+	kubeClientSet   *kubernetes.Clientset
+	caPool          *trust.CertPool
+	kcFile          string
+	internalView    *ToolView
+	externalView    *ToolView
+	secret          string
+	jqTool          *jq.Tool
+	cliBinaryPath   string
+	userTokenSource auth.TokenSource
 }
 
 // ToolView contains the gRPC connections and HTTP clients that can be used to connect to the cluster. This is a
@@ -279,6 +281,11 @@ func (t *Tool) Setup(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if endpoint := os.Getenv("IT_MCP_DEPLOYED_URL"); endpoint != "" {
+		if err := t.waitForMCPReady(ctx, endpoint); err != nil {
+			return err
+		}
+	}
 
 	// Ensure Keycloak trusts the cluster CA so that the OIDC broker can complete
 	// back-channel token exchanges with intra-cluster realm endpoints over TLS.
@@ -366,6 +373,69 @@ func (t *Tool) checkAddress(ctx context.Context, addr string) error {
 				"'/etc/hosts' file: %[2]w",
 			host, err,
 		)
+	}
+	return nil
+}
+
+// waitForMCPReady checks the deployed TLS route before the suite creates test
+// users and resource fixtures. A missing TLSRoute can otherwise go unnoticed
+// until the MCP spec runs after the expensive BeforeSuite setup.
+func (t *Tool) waitForMCPReady(ctx context.Context, rawURL string) error {
+	endpoint := strings.TrimSuffix(rawURL, "/")
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
+		parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("IT_MCP_DEPLOYED_URL must be an HTTPS root URL")
+	}
+	t.logger.DebugContext(ctx, "Checking MCP endpoint", "url", endpoint)
+	transport := &http.Transport{TLSClientConfig: &tls.Config{
+		RootCAs: t.caPool.Pool(), MinVersion: tls.VersionTLS12,
+	}}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var lastErr error
+	for {
+		lastErr = probeMCPMetadata(probeCtx, client, endpoint)
+		if lastErr == nil {
+			return nil
+		}
+		select {
+		case <-probeCtx.Done():
+			return fmt.Errorf("MCP endpoint %s is not ready: %w; check its deployment, route, and TLS certificate in the selected cluster", endpoint, lastErr)
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func probeMCPMetadata(ctx context.Context, client *http.Client, endpoint string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/.well-known/oauth-protected-resource", nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("OAuth metadata returned HTTP %d", response.StatusCode)
+	}
+	var metadata struct {
+		Resource string `json:"resource"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&metadata); err != nil {
+		return fmt.Errorf("invalid OAuth metadata: %w", err)
+	}
+	if metadata.Resource != endpoint+"/" {
+		return fmt.Errorf("OAuth metadata resource %q does not match %q", metadata.Resource, endpoint+"/")
 	}
 	return nil
 }
@@ -524,6 +594,7 @@ func (t *Tool) createClients(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	t.userTokenSource = userTokenSource
 
 	// Create gRPC clients:
 	t.internalView = &ToolView{}
@@ -599,6 +670,28 @@ func (t *Tool) createTenants(ctx context.Context) error {
 		}.Build())
 		status, ok := grpcstatus.FromError(err)
 		if ok && status.Code() == grpccodes.AlreadyExists {
+			existing, getErr := tenantsClient.Get(ctx, privatev1.TenantsGetRequest_builder{
+				Id: tenant,
+			}.Build())
+			if getErr != nil {
+				return fmt.Errorf("failed to get existing tenant %q: %w", tenant, getErr)
+			}
+			tenantStatus := existing.GetObject().GetStatus()
+			switch tenantStatus.GetState() {
+			case privatev1.TenantState_TENANT_STATE_SYNCED:
+			case privatev1.TenantState_TENANT_STATE_FAILED:
+				return fmt.Errorf("existing tenant %q is FAILED: %s", tenant, tenantStatus.GetMessage())
+			case privatev1.TenantState_TENANT_STATE_PENDING, privatev1.TenantState_TENANT_STATE_UNSPECIFIED:
+				_, signalErr := tenantsClient.Signal(ctx, privatev1.TenantsSignalRequest_builder{
+					Id: tenant,
+				}.Build())
+				if signalErr != nil {
+					return fmt.Errorf("failed to signal existing tenant %q: %w", tenant, signalErr)
+				}
+			default:
+				return fmt.Errorf("existing tenant %q has unexpected state %v: %s",
+					tenant, tenantStatus.GetState(), tenantStatus.GetMessage())
+			}
 			continue
 		}
 		if err != nil {
@@ -633,13 +726,22 @@ func (t *Tool) waitForTenantsSynced(ctx context.Context) error {
 			if getErr != nil {
 				return fmt.Errorf("failed to get tenant %q: %w", tenantName, getErr)
 			}
-			if resp.GetObject().GetStatus().GetState() != privatev1.TenantState_TENANT_STATE_SYNCED {
-				return fmt.Errorf("tenant %q not yet synced", tenantName)
+			tenantStatus := resp.GetObject().GetStatus()
+			state := tenantStatus.GetState()
+			switch state {
+			case privatev1.TenantState_TENANT_STATE_SYNCED:
+				return nil
+			case privatev1.TenantState_TENANT_STATE_FAILED:
+				return backoff.Permanent(fmt.Errorf("tenant %q is FAILED: %s", tenantName, tenantStatus.GetMessage()))
+			case privatev1.TenantState_TENANT_STATE_PENDING, privatev1.TenantState_TENANT_STATE_UNSPECIFIED:
+				return fmt.Errorf("tenant %q is %v: %s", tenantName, state, tenantStatus.GetMessage())
+			default:
+				return backoff.Permanent(fmt.Errorf("tenant %q has unexpected state %v: %s",
+					tenantName, state, tenantStatus.GetMessage()))
 			}
-			return nil
 		}, backoff.WithContext(bo, ctx))
 		if err != nil {
-			return fmt.Errorf("timed out waiting for tenant %q to reach SYNCED: %w", tenant, err)
+			return fmt.Errorf("failed waiting for tenant %q to reach SYNCED: %w", tenant, err)
 		}
 		t.logger.DebugContext(ctx, "Tenant synced", slog.String("tenant", tenant))
 	}
@@ -1291,6 +1393,16 @@ func (t *Tool) KeycloakAdminRequestForRealm(ctx context.Context, realm, method, 
 	return
 }
 
+// MakeUserConnection creates a gRPC connection authenticated as the specified user.
+// This is useful for creating connections for test users created during test execution.
+func (t *Tool) MakeUserConnection(ctx context.Context, username, password string) (*grpc.ClientConn, error) {
+	tokenSource, err := t.makeKeycloakTokenSource(ctx, username, password)
+	if err != nil {
+		return nil, err
+	}
+	return t.makeGrpcConn(externalServiceAddr, tokenSource)
+}
+
 // makeGrpcConn creates a gRPC connection that automatically adds the token to the request.
 func (t *Tool) makeGrpcConn(addr string, tokenSource auth.TokenSource) (result *grpc.ClientConn, err error) {
 	userAgent := fmt.Sprintf("%s/%s", userAgent, version.Get())
@@ -1752,6 +1864,16 @@ func (v *ToolView) Close() error {
 // ProjectDir returns the project directory.
 func (t *Tool) ProjectDir() string {
 	return t.projectDir
+}
+
+// UserTokenSource returns the regular user's token source for another HTTP listener.
+func (t *Tool) UserTokenSource() auth.TokenSource {
+	return t.userTokenSource
+}
+
+// CaPool returns the CA pool used by the integration clients.
+func (t *Tool) CaPool() *trust.CertPool {
+	return t.caPool
 }
 
 // Names of the command line tools:

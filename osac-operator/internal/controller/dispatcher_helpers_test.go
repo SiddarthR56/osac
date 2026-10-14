@@ -52,6 +52,7 @@ var _ = Describe("resolveDispatchPlan", func() {
 		fakeDiscoveryClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 			newFabricManagerConfigMap("fm-netris", "osac", "netris"),
 			newK8sManagerConfigMap("km-cudn", "osac", "cudn_net", "ipv4"),
+			newK8sManagerConfigMap("km-k8s-only", "osac", "k8s_only", "ipv4"),
 		).Build()
 	})
 
@@ -172,10 +173,26 @@ var _ = Describe("resolveImplementationStrategy", func() {
 		fakeDiscoveryClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 			newFabricManagerConfigMap("fm-netris", "osac", "netris"),
 			newK8sManagerConfigMap("km-cudn", "osac", "cudn_net", "ipv4"),
+			newK8sManagerConfigMap("km-k8s-only", "osac", "k8s_only", "ipv4"),
 		).Build()
 	})
 
-	It("returns the resolved k8s manager's name for a K8sFallback kind with no fabricManager set", func() {
+	It("returns the resolved k8s-only manager's name for a fallback kind with no fabricManager set", func() {
+		disc, err := networkmanager.NewDiscovery(fakeDiscoveryClient, "osac")
+		Expect(err).NotTo(HaveOccurred())
+		k8sManagerName := dispatcher.K8sOnlyManagerName
+		resolver := dispatcher.NewResolver(dispatcheradapter.NewNetworkClassAdapter(newListingNetworkClassClient(
+			[]*privatev1.NetworkClass{{Id: "nc-k8s-fallback", K8SManager: &k8sManagerName}},
+			&[]*privatev1.NetworkClass{},
+		)), disc)
+
+		// VirtualNetwork's fallback is restricted to the explicit k8s_only profile.
+		strategy, err := resolveImplementationStrategy(ctx, resolver, "VirtualNetwork", "nc-k8s-fallback")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strategy).To(Equal(dispatcher.K8sOnlyManagerName))
+	})
+
+	It("rejects an arbitrary k8s manager for a fabric-owned resource", func() {
 		disc, err := networkmanager.NewDiscovery(fakeDiscoveryClient, "osac")
 		Expect(err).NotTo(HaveOccurred())
 		k8sManagerName := "cudn_net"
@@ -184,13 +201,30 @@ var _ = Describe("resolveImplementationStrategy", func() {
 			&[]*privatev1.NetworkClass{},
 		)), disc)
 
-		// VirtualNetwork's dispatch config is Fabric-role-only with K8sFallback: true, so a
-		// NetworkClass with only a k8sManager set resolves the fabric role's target to the k8s
-		// manager (see dispatch.go's Dispatch), and this should NOT fall back to legacyStrategy.
-		strategy, err := resolveImplementationStrategy(ctx, resolver, "VirtualNetwork", "nc-k8s-fallback", "legacy-strategy")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(strategy).To(Equal("cudn_net"))
+		_, err = resolveImplementationStrategy(ctx, resolver, "SecurityGroup", "nc-k8s-fallback")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("required network manager is unavailable"))
 	})
+
+	DescribeTable("resolves k8s-only kinds to the composite k8s manager",
+		func(kind string) {
+			disc, err := networkmanager.NewDiscovery(fakeDiscoveryClient, "osac")
+			Expect(err).NotTo(HaveOccurred())
+			k8sManagerName := "k8s_only"
+			resolver := dispatcher.NewResolver(dispatcheradapter.NewNetworkClassAdapter(newListingNetworkClassClient(
+				[]*privatev1.NetworkClass{{Id: "nc-k8s-only", K8SManager: &k8sManagerName}},
+				&[]*privatev1.NetworkClass{},
+			)), disc)
+
+			strategy, err := resolveImplementationStrategy(ctx, resolver, kind, "nc-k8s-only")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strategy).To(Equal("k8s_only"))
+		},
+		Entry("SecurityGroup", "SecurityGroup"),
+		Entry("ExternalIP", "ExternalIP"),
+		Entry("ExternalIPPool", "ExternalIPPool"),
+		Entry("ExternalIPAttachment", "ExternalIPAttachment"),
+	)
 
 	It("returns the resolved fabric manager's name when the NetworkClass has a fabricManager set", func() {
 		disc, err := networkmanager.NewDiscovery(fakeDiscoveryClient, "osac")
@@ -199,15 +233,15 @@ var _ = Describe("resolveImplementationStrategy", func() {
 			[]*privatev1.NetworkClass{{Id: "nc-fabric", FabricManager: ptr.To("netris")}}, &[]*privatev1.NetworkClass{},
 		)), disc)
 
-		strategy, err := resolveImplementationStrategy(ctx, resolver, "VirtualNetwork", "nc-fabric", "legacy-strategy")
+		strategy, err := resolveImplementationStrategy(ctx, resolver, "VirtualNetwork", "nc-fabric")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strategy).To(Equal("netris"))
 	})
 
-	It("returns legacyStrategy when the dispatcher path is not active", func() {
-		strategy, err := resolveImplementationStrategy(ctx, nil, "VirtualNetwork", "nc-any", "legacy-strategy")
+	It("returns an empty strategy when the dispatcher path is not active", func() {
+		strategy, err := resolveImplementationStrategy(ctx, nil, "VirtualNetwork", "nc-any")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(strategy).To(Equal("legacy-strategy"))
+		Expect(strategy).To(BeEmpty())
 	})
 })
 
@@ -338,6 +372,41 @@ var _ = Describe("dispatchTargetProvider", func() {
 		Expect(resource.Annotations[osacImplementationStrategyAnnotation]).To(Equal("original-value"))
 	})
 
+	It("overrides strategy and forwards inherited vars when triggering provision with extra vars", func() {
+		var seenAnnotation string
+		var seenExtraVars map[string]any
+		mock := &mockSubnetProvider{
+			triggerProvisionWithExtraVarsFunc: func(_ context.Context, r client.Object, extraVars map[string]any) (*provisioning.ProvisionResult, error) {
+				seenAnnotation = r.GetAnnotations()[osacImplementationStrategyAnnotation]
+				seenExtraVars = extraVars
+				return &provisioning.ProvisionResult{JobID: "job-1"}, nil
+			},
+		}
+		provider := newDispatchTargetProvider(mock, "cudn_net")
+		inherited := map[string]any{"l2_vni": 14}
+
+		result, err := provider.TriggerProvisionWithExtraVars(ctx, resource, inherited)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.JobID).To(Equal("job-1"))
+		Expect(seenAnnotation).To(Equal("cudn_net"))
+		Expect(seenExtraVars).To(Equal(inherited))
+		Expect(resource.Annotations[osacImplementationStrategyAnnotation]).To(Equal("original-value"))
+	})
+
+	It("returns capability errors when the base provider lacks optional output methods", func() {
+		base := struct {
+			provisioning.ProvisioningProvider
+		}{ProvisioningProvider: &mockSubnetProvider{}}
+		provider := newDispatchTargetProvider(base, "cudn_net")
+
+		_, triggerErr := provider.TriggerProvisionWithExtraVars(ctx, resource, map[string]any{"l2_vni": 14})
+		_, statusErr := provider.GetProvisionStatusWithExtraVars(ctx, resource, "job-1")
+
+		Expect(triggerErr).To(MatchError(ContainSubstring("does not support inherited extra vars")))
+		Expect(statusErr).To(MatchError(ContainSubstring("does not expose provisioning outputs")))
+	})
+
 	It("overrides the implementation-strategy annotation on the resource seen by TriggerDeprovision, without mutating the caller's original", func() {
 		var seenAnnotation string
 		mock := &mockSubnetProvider{
@@ -384,6 +453,26 @@ var _ = Describe("dispatchTargetProvider", func() {
 		_, err := provider.GetProvisionStatus(ctx, resource, "job-1")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(seenResource).To(BeIdenticalTo(resource))
+	})
+
+	It("delegates provisioning output status with the exact same resource passed in", func() {
+		var seenResource client.Object
+		mock := &mockSubnetProvider{
+			getProvisionStatusWithExtraVarsFunc: func(_ context.Context, r client.Object, jobID string) (provisioning.ProvisionStatusWithExtraVars, error) {
+				seenResource = r
+				return provisioning.ProvisionStatusWithExtraVars{
+					ProvisionStatus: provisioning.ProvisionStatus{JobID: jobID, State: osacv1alpha1.JobStateSucceeded},
+					ExtraVars:       map[string]any{"l2_vni": 14},
+				}, nil
+			},
+		}
+		provider := newDispatchTargetProvider(mock, "netris")
+
+		status, err := provider.GetProvisionStatusWithExtraVars(ctx, resource, "job-1")
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(seenResource).To(BeIdenticalTo(resource))
+		Expect(status.ExtraVars).To(HaveKeyWithValue("l2_vni", 14))
 	})
 
 	It("delegates GetDeprovisionStatus with the exact same resource passed in, unmodified", func() {

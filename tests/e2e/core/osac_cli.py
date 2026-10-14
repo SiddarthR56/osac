@@ -80,6 +80,7 @@ class OsacCLI:
         run_strategy: str = "Always",
         user_data_secret_ref: str | None = None,
         instance_type: str | None = None,
+        ssh_key: str | None = None,
     ) -> str:
         args: list[str] = [
             "create",
@@ -168,6 +169,8 @@ class OsacCLI:
 
         if user_data_secret_ref is not None:
             args.extend(["--user-data", user_data_secret_ref])
+        if ssh_key is not None:
+            args.extend(["--ssh-key", ssh_key])
 
         return self._parse_uuid(self._run(*args))
 
@@ -229,6 +232,7 @@ class OsacCLI:
         pull_secret: str | None = None,
         ssh_public_key_file: str | None = None,
         version: str | None = None,
+        node_sets: dict[str, dict[str, Any]] | list[str] | None = None,
         template_parameters: dict[str, str] | None = None,
         template_parameter_files: dict[str, str] | None = None,
     ) -> str:
@@ -241,6 +245,18 @@ class OsacCLI:
             args.extend(["--ssh-public-key-file", ssh_public_key_file])
         if version is not None:
             args.extend(["--version", version])
+        if node_sets is not None:
+            if isinstance(node_sets, dict):
+                for key, val in node_sets.items():
+                    args.extend(
+                        [
+                            "--node-set",
+                            f"name={key},size={val['size']},baremetal-instance-type={val['baremetal_instance_type']['name']}",
+                        ]
+                    )
+            elif isinstance(node_sets, list):
+                for item in node_sets:
+                    args.extend(["--node-set", item])
         if template_parameters is not None:
             for key, value in template_parameters.items():
                 args.extend(["-p", f"{key}={value}"])
@@ -250,11 +266,16 @@ class OsacCLI:
 
         return self._parse_uuid(self._run(*args))
 
-    def create_secret(self, *, name: str, from_files: dict[str, str]) -> None:
+    def create_secret(self, *, name: str, from_files: dict[str, str], secret_type: str | None = None) -> None:
         args: list[str] = ["create", "secret", "--name", name]
+        if secret_type is not None:
+            args.extend(["--type", secret_type])
         for key, path in from_files.items():
             args.extend(["--from-file", f"{key}={path}"])
         self._run(*args)
+
+    def delete_secret(self, *, name: str) -> None:
+        self._run("delete", "secret", name)
 
     def get(self, resource: str, *, output: str | None = None) -> str:
         args: list[str] = ["get", resource]
@@ -295,6 +316,7 @@ class OsacCLI:
         *,
         name: str,
         catalog_item: str,
+        instance_type: str | None = None,
         ssh_key: str | None = None,
         disk_image: str | None = None,
         user_data: str | None = None,
@@ -302,6 +324,8 @@ class OsacCLI:
         external_ip_attachment: bool = False,
     ) -> tuple[str, list[str]]:
         args: list[str] = ["create", "baremetalinstance", "--name", name, "--catalog-item", catalog_item]
+        if instance_type is not None:
+            args.extend(["--set", f"instance_type.name={instance_type}", "--set", "instance_type.shared=true"])
         if ssh_key is not None:
             args.extend(["--ssh-key", ssh_key])
         if disk_image is not None:

@@ -26,6 +26,8 @@ import type { Timestamp } from "../../../google/protobuf/timestamp_pb";
 import { file_google_protobuf_timestamp } from "../../../google/protobuf/timestamp_pb";
 import type { AddOnOperatorReference } from "./add_on_operator_type_pb";
 import { file_osac_private_v1_add_on_operator_type } from "./add_on_operator_type_pb";
+import type { BareMetalInstanceTypeReference } from "./baremetal_instance_type_type_pb";
+import { file_osac_private_v1_baremetal_instance_type_type } from "./baremetal_instance_type_type_pb";
 import type { ClusterCatalogItemReference } from "./cluster_catalog_item_type_pb";
 import { file_osac_private_v1_cluster_catalog_item_type } from "./cluster_catalog_item_type_pb";
 import type { ClusterNetwork, ClusterNetworkAttachment } from "./cluster_common_type_pb";
@@ -38,10 +40,6 @@ import type { ConditionStatus } from "./condition_status_type_pb";
 import { file_osac_private_v1_condition_status_type } from "./condition_status_type_pb";
 import type { Metadata } from "./metadata_type_pb";
 import { file_osac_private_v1_metadata_type } from "./metadata_type_pb";
-import type { BareMetalInstanceTypeLocalReference } from "./baremetal_instance_type_type_pb";
-import { file_osac_private_v1_baremetal_instance_type_type } from "./baremetal_instance_type_type_pb";
-import type { HostTypeReference } from "./host_type_type_pb";
-import { file_osac_private_v1_host_type_type } from "./host_type_type_pb";
 import type { SecretLocalReference } from "./secret_type_pb";
 import { file_osac_private_v1_secret_type } from "./secret_type_pb";
 import type { Message } from "@bufbuild/protobuf";
@@ -50,7 +48,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file osac/private/v1/cluster_type.proto.
  */
 export const file_osac_private_v1_cluster_type: GenFile = /*@__PURE__*/
-  fileDesc("CiJvc2FjL3ByaXZhdGUvdjEvY2x1c3Rlcl90eXBlLnByb3RvEg9vc2FjLnByaXZhdGUudjEingEKB0NsdXN0ZXISCgoCaWQYASABKAkSKwoIbWV0YWRhdGEYAiABKAsyGS5vc2FjLnByaXZhdGUudjEuTWV0YWRhdGESKgoEc3BlYxgDIAEoCzIcLm9zYWMucHJpdmF0ZS52MS5DbHVzdGVyU3BlYxIuCgZzdGF0dXMYBCABKAsyHi5vc2FjLnByaXZhdGUudjEuQ2x1c3RlclN0YXR1cyKyBwoLQ2x1c3RlclNwZWMSOwoIdGVtcGxhdGUYASABKAsyKS5vc2FjLnByaXZhdGUudjEuQ2x1c3RlclRlbXBsYXRlUmVmZXJlbmNlElEKE3RlbXBsYXRlX3BhcmFtZXRlcnMYAiADKAsyNC5vc2FjLnByaXZhdGUudjEuQ2x1c3RlclNwZWMuVGVtcGxhdGVQYXJhbWV0ZXJzRW50cnkSPQoJbm9kZV9zZXRzGAMgAygLMioub3NhYy5wcml2YXRlLnYxLkNsdXN0ZXJTcGVjLk5vZGVTZXRzRW50cnkSGwoOc3NoX3B1YmxpY19rZXkYBSABKAlIAIgBARI5Cgd2ZXJzaW9uGAYgASgLMigub3NhYy5wcml2YXRlLnYxLkNsdXN0ZXJWZXJzaW9uUmVmZXJlbmNlEjUKB25ldHdvcmsYByABKAsyHy5vc2FjLnByaXZhdGUudjEuQ2x1c3Rlck5ldHdvcmtIAYgBARJCCgxjYXRhbG9nX2l0ZW0YCCABKAsyLC5vc2FjLnByaXZhdGUudjEuQ2x1c3RlckNhdGFsb2dJdGVtUmVmZXJlbmNlEkoKEm5ldHdvcmtfYXR0YWNobWVudBgJIAEoCzIpLm9zYWMucHJpdmF0ZS52MS5DbHVzdGVyTmV0d29ya0F0dGFjaG1lbnRCA+BBBRItChthdXRvX2V4dGVybmFsX2lwX2F0dGFjaG1lbnQYCiABKAhCA+BBBUgCiAEBEkEKEnB1bGxfc2VjcmV0X3NlY3JldBgLIAEoCzIlLm9zYWMucHJpdmF0ZS52MS5TZWNyZXRMb2NhbFJlZmVyZW5jZRJOChBhZGRfb25fb3BlcmF0b3JzGAwgAygLMicub3NhYy5wcml2YXRlLnYxLkFkZE9uT3BlcmF0b3JSZWZlcmVuY2VCC+BBBbpIBZIBAhAgGk8KF1RlbXBsYXRlUGFyYW1ldGVyc0VudHJ5EgsKA2tleRgBIAEoCRIjCgV2YWx1ZRgCIAEoCzIULmdvb2dsZS5wcm90b2J1Zi5Bbnk6AjgBGlAKDU5vZGVTZXRzRW50cnkSCwoDa2V5GAEgASgJEi4KBXZhbHVlGAIgASgLMh8ub3NhYy5wcml2YXRlLnYxLkNsdXN0ZXJOb2RlU2V0OgI4AUIRCg9fc3NoX3B1YmxpY19rZXlCCgoIX25ldHdvcmtCHgocX2F1dG9fZXh0ZXJuYWxfaXBfYXR0YWNobWVudEoECAQQBVILcHVsbF9zZWNyZXQizgQKDUNsdXN0ZXJTdGF0dXMSLAoFc3RhdGUYASABKA4yHS5vc2FjLnByaXZhdGUudjEuQ2x1c3RlclN0YXRlEjUKCmNvbmRpdGlvbnMYAiADKAsyIS5vc2FjLnByaXZhdGUudjEuQ2x1c3RlckNvbmRpdGlvbhIPCgdhcGlfdXJsGAMgASgJEhMKC2NvbnNvbGVfdXJsGAQgASgJEj8KCW5vZGVfc2V0cxgFIAMoCzIsLm9zYWMucHJpdmF0ZS52MS5DbHVzdGVyU3RhdHVzLk5vZGVTZXRzRW50cnkSFAoMYXBpX2VuZHBvaW50GAYgASgJEhgKEGluZ3Jlc3NfZW5kcG9pbnQYByABKAkSPgoVc3RhdGVfdHJhbnNpdGlvbl90aW1lGAggASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcEgAiAEBEkAKEWt1YmVjb25maWdfc2VjcmV0GAkgASgLMiUub3NhYy5wcml2YXRlLnYxLlNlY3JldExvY2FsUmVmZXJlbmNlEj4KD3Bhc3N3b3JkX3NlY3JldBgKIAEoCzIlLm9zYWMucHJpdmF0ZS52MS5TZWNyZXRMb2NhbFJlZmVyZW5jZRITCgNodWIYCyABKAlCBoq1GAIIARpQCg1Ob2RlU2V0c0VudHJ5EgsKA2tleRgBIAEoCRIuCgV2YWx1ZRgCIAEoCzIfLm9zYWMucHJpdmF0ZS52MS5DbHVzdGVyTm9kZVNldDoCOAFCGAoWX3N0YXRlX3RyYW5zaXRpb25fdGltZSL1AQoQQ2x1c3RlckNvbmRpdGlvbhIzCgR0eXBlGAEgASgOMiUub3NhYy5wcml2YXRlLnYxLkNsdXN0ZXJDb25kaXRpb25UeXBlEjAKBnN0YXR1cxgCIAEoDjIgLm9zYWMucHJpdmF0ZS52MS5Db25kaXRpb25TdGF0dXMSOAoUbGFzdF90cmFuc2l0aW9uX3RpbWUYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhMKBnJlYXNvbhgEIAEoCUgAiAEBEhQKB21lc3NhZ2UYBSABKAlIAYgBAUIJCgdfcmVhc29uQgoKCF9tZXNzYWdlIukBCg5DbHVzdGVyTm9kZVNldBI5Cglob3N0X3R5cGUYASABKAsyIi5vc2FjLnByaXZhdGUudjEuSG9zdFR5cGVSZWZlcmVuY2VCAhgBEhoKBHNpemUYAiABKAVCB7pIBBoCIABIAIgBARIgChBmYWJyaWNfaW50ZXJmYWNlGAMgASgJQgaKtRgCCAESVQoXYmFyZW1ldGFsX2luc3RhbmNlX3R5cGUYBCABKAsyNC5vc2FjLnByaXZhdGUudjEuQmFyZU1ldGFsSW5zdGFuY2VUeXBlTG9jYWxSZWZlcmVuY2VCBwoFX3NpemUiMQoVQ2x1c3RlckxvY2FsUmVmZXJlbmNlEgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkqvAEKDENsdXN0ZXJTdGF0ZRIdChlDTFVTVEVSX1NUQVRFX1VOU1BFQ0lGSUVEEAASHQoZQ0xVU1RFUl9TVEFURV9QUk9HUkVTU0lORxABEhcKE0NMVVNURVJfU1RBVEVfUkVBRFkQAhIYChRDTFVTVEVSX1NUQVRFX0ZBSUxFRBADEhoKFkNMVVNURVJfU1RBVEVfREVMRVRJTkcQBBIfChtDTFVTVEVSX1NUQVRFX0RFTEVURV9GQUlMRUQQBSrQAQoUQ2x1c3RlckNvbmRpdGlvblR5cGUSJgoiQ0xVU1RFUl9DT05ESVRJT05fVFlQRV9VTlNQRUNJRklFRBAAEiYKIkNMVVNURVJfQ09ORElUSU9OX1RZUEVfUFJPR1JFU1NJTkcQARIgChxDTFVTVEVSX0NPTkRJVElPTl9UWVBFX1JFQURZEAISIQodQ0xVU1RFUl9DT05ESVRJT05fVFlQRV9GQUlMRUQQAxIjCh9DTFVTVEVSX0NPTkRJVElPTl9UWVBFX0RFR1JBREVEEARCFIq1GBASDm9zYWMucHVibGljLnYxYgZwcm90bzM", [file_buf_validate_validate, file_cleanapi_cleanapi, file_google_api_field_behavior, file_google_protobuf_any, file_google_protobuf_timestamp, file_osac_private_v1_add_on_operator_type, file_osac_private_v1_cluster_catalog_item_type, file_osac_private_v1_cluster_common_type, file_osac_private_v1_cluster_template_type, file_osac_private_v1_cluster_version_type, file_osac_private_v1_condition_status_type, file_osac_private_v1_metadata_type, file_osac_private_v1_baremetal_instance_type_type, file_osac_private_v1_host_type_type, file_osac_private_v1_secret_type]);
+  fileDesc("CiJvc2FjL3ByaXZhdGUvdjEvY2x1c3Rlcl90eXBlLnByb3RvEg9vc2FjLnByaXZhdGUudjEingEKB0NsdXN0ZXISCgoCaWQYASABKAkSKwoIbWV0YWRhdGEYAiABKAsyGS5vc2FjLnByaXZhdGUudjEuTWV0YWRhdGESKgoEc3BlYxgDIAEoCzIcLm9zYWMucHJpdmF0ZS52MS5DbHVzdGVyU3BlYxIuCgZzdGF0dXMYBCABKAsyHi5vc2FjLnByaXZhdGUudjEuQ2x1c3RlclN0YXR1cyLoBwoLQ2x1c3RlclNwZWMSOwoIdGVtcGxhdGUYASABKAsyKS5vc2FjLnByaXZhdGUudjEuQ2x1c3RlclRlbXBsYXRlUmVmZXJlbmNlElEKE3RlbXBsYXRlX3BhcmFtZXRlcnMYAiADKAsyNC5vc2FjLnByaXZhdGUudjEuQ2x1c3RlclNwZWMuVGVtcGxhdGVQYXJhbWV0ZXJzRW50cnkScwoJbm9kZV9zZXRzGAMgAygLMioub3NhYy5wcml2YXRlLnYxLkNsdXN0ZXJTcGVjLk5vZGVTZXRzRW50cnlCNLpIMZoBLiIscioQARg/MiReW2EtejAtOV0oW2EtejAtOS1dezAsNjF9W2EtejAtOV0pPyQSGwoOc3NoX3B1YmxpY19rZXkYBSABKAlIAIgBARI5Cgd2ZXJzaW9uGAYgASgLMigub3NhYy5wcml2YXRlLnYxLkNsdXN0ZXJWZXJzaW9uUmVmZXJlbmNlEjUKB25ldHdvcmsYByABKAsyHy5vc2FjLnByaXZhdGUudjEuQ2x1c3Rlck5ldHdvcmtIAYgBARJCCgxjYXRhbG9nX2l0ZW0YCCABKAsyLC5vc2FjLnByaXZhdGUudjEuQ2x1c3RlckNhdGFsb2dJdGVtUmVmZXJlbmNlEkoKEm5ldHdvcmtfYXR0YWNobWVudBgJIAEoCzIpLm9zYWMucHJpdmF0ZS52MS5DbHVzdGVyTmV0d29ya0F0dGFjaG1lbnRCA+BBBRItChthdXRvX2V4dGVybmFsX2lwX2F0dGFjaG1lbnQYCiABKAhCA+BBBUgCiAEBEkEKEnB1bGxfc2VjcmV0X3NlY3JldBgLIAEoCzIlLm9zYWMucHJpdmF0ZS52MS5TZWNyZXRMb2NhbFJlZmVyZW5jZRJOChBhZGRfb25fb3BlcmF0b3JzGAwgAygLMicub3NhYy5wcml2YXRlLnYxLkFkZE9uT3BlcmF0b3JSZWZlcmVuY2VCC+BBBbpIBZIBAhAgGk8KF1RlbXBsYXRlUGFyYW1ldGVyc0VudHJ5EgsKA2tleRgBIAEoCRIjCgV2YWx1ZRgCIAEoCzIULmdvb2dsZS5wcm90b2J1Zi5Bbnk6AjgBGlAKDU5vZGVTZXRzRW50cnkSCwoDa2V5GAEgASgJEi4KBXZhbHVlGAIgASgLMh8ub3NhYy5wcml2YXRlLnYxLkNsdXN0ZXJOb2RlU2V0OgI4AUIRCg9fc3NoX3B1YmxpY19rZXlCCgoIX25ldHdvcmtCHgocX2F1dG9fZXh0ZXJuYWxfaXBfYXR0YWNobWVudEoECAQQBVILcHVsbF9zZWNyZXQibwoTQWRkT25PcGVyYXRvclN0YXR1cxIMCgRuYW1lGAEgASgJEjkKBXN0YXRlGAIgASgOMioub3NhYy5wcml2YXRlLnYxLkFkZE9uT3BlcmF0b3JJbnN0YWxsU3RhdGUSDwoHbWVzc2FnZRgDIAEoCSLEBQoNQ2x1c3RlclN0YXR1cxIsCgVzdGF0ZRgBIAEoDjIdLm9zYWMucHJpdmF0ZS52MS5DbHVzdGVyU3RhdGUSNQoKY29uZGl0aW9ucxgCIAMoCzIhLm9zYWMucHJpdmF0ZS52MS5DbHVzdGVyQ29uZGl0aW9uEg8KB2FwaV91cmwYAyABKAkSEwoLY29uc29sZV91cmwYBCABKAkSdQoJbm9kZV9zZXRzGAUgAygLMiwub3NhYy5wcml2YXRlLnYxLkNsdXN0ZXJTdGF0dXMuTm9kZVNldHNFbnRyeUI0ukgxmgEuIixyKhABGD8yJF5bYS16MC05XShbYS16MC05LV17MCw2MX1bYS16MC05XSk/JBIUCgxhcGlfZW5kcG9pbnQYBiABKAkSGAoQaW5ncmVzc19lbmRwb2ludBgHIAEoCRI+ChVzdGF0ZV90cmFuc2l0aW9uX3RpbWUYCCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wSACIAQESQAoRa3ViZWNvbmZpZ19zZWNyZXQYCSABKAsyJS5vc2FjLnByaXZhdGUudjEuU2VjcmV0TG9jYWxSZWZlcmVuY2USPgoPcGFzc3dvcmRfc2VjcmV0GAogASgLMiUub3NhYy5wcml2YXRlLnYxLlNlY3JldExvY2FsUmVmZXJlbmNlEhMKA2h1YhgLIAEoCUIGirUYAggBEj4KEGFkZF9vbl9vcGVyYXRvcnMYDCADKAsyJC5vc2FjLnByaXZhdGUudjEuQWRkT25PcGVyYXRvclN0YXR1cxpQCg1Ob2RlU2V0c0VudHJ5EgsKA2tleRgBIAEoCRIuCgV2YWx1ZRgCIAEoCzIfLm9zYWMucHJpdmF0ZS52MS5DbHVzdGVyTm9kZVNldDoCOAFCGAoWX3N0YXRlX3RyYW5zaXRpb25fdGltZSL1AQoQQ2x1c3RlckNvbmRpdGlvbhIzCgR0eXBlGAEgASgOMiUub3NhYy5wcml2YXRlLnYxLkNsdXN0ZXJDb25kaXRpb25UeXBlEjAKBnN0YXR1cxgCIAEoDjIgLm9zYWMucHJpdmF0ZS52MS5Db25kaXRpb25TdGF0dXMSOAoUbGFzdF90cmFuc2l0aW9uX3RpbWUYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhMKBnJlYXNvbhgEIAEoCUgAiAEBEhQKB21lc3NhZ2UYBSABKAlIAYgBAUIJCgdfcmVhc29uQgoKCF9tZXNzYWdlIr8BCg5DbHVzdGVyTm9kZVNldBIaCgRzaXplGAIgASgFQge6SAQaAiAASACIAQESIAoQZmFicmljX2ludGVyZmFjZRgDIAEoCUIGirUYAggBElUKF2JhcmVtZXRhbF9pbnN0YW5jZV90eXBlGAQgASgLMi8ub3NhYy5wcml2YXRlLnYxLkJhcmVNZXRhbEluc3RhbmNlVHlwZVJlZmVyZW5jZUID4EEFQgcKBV9zaXplSgQIARACUglob3N0X3R5cGUiMQoVQ2x1c3RlckxvY2FsUmVmZXJlbmNlEgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkq+gEKGUFkZE9uT3BlcmF0b3JJbnN0YWxsU3RhdGUSLQopQUREX09OX09QRVJBVE9SX0lOU1RBTExfU1RBVEVfVU5TUEVDSUZJRUQQABIpCiVBRERfT05fT1BFUkFUT1JfSU5TVEFMTF9TVEFURV9QRU5ESU5HEAESLAooQUREX09OX09QRVJBVE9SX0lOU1RBTExfU1RBVEVfSU5TVEFMTElORxACEisKJ0FERF9PTl9PUEVSQVRPUl9JTlNUQUxMX1NUQVRFX0lOU1RBTExFRBADEigKJEFERF9PTl9PUEVSQVRPUl9JTlNUQUxMX1NUQVRFX0ZBSUxFRBAEKrwBCgxDbHVzdGVyU3RhdGUSHQoZQ0xVU1RFUl9TVEFURV9VTlNQRUNJRklFRBAAEh0KGUNMVVNURVJfU1RBVEVfUFJPR1JFU1NJTkcQARIXChNDTFVTVEVSX1NUQVRFX1JFQURZEAISGAoUQ0xVU1RFUl9TVEFURV9GQUlMRUQQAxIaChZDTFVTVEVSX1NUQVRFX0RFTEVUSU5HEAQSHwobQ0xVU1RFUl9TVEFURV9ERUxFVEVfRkFJTEVEEAUqvwIKFENsdXN0ZXJDb25kaXRpb25UeXBlEiYKIkNMVVNURVJfQ09ORElUSU9OX1RZUEVfVU5TUEVDSUZJRUQQABImCiJDTFVTVEVSX0NPTkRJVElPTl9UWVBFX1BST0dSRVNTSU5HEAESIAocQ0xVU1RFUl9DT05ESVRJT05fVFlQRV9SRUFEWRACEiEKHUNMVVNURVJfQ09ORElUSU9OX1RZUEVfRkFJTEVEEAMSIwofQ0xVU1RFUl9DT05ESVRJT05fVFlQRV9ERUdSQURFRBAEEjUKMUNMVVNURVJfQ09ORElUSU9OX1RZUEVfV09SS0VSX1BST1ZJU0lPTklOR19GQUlMRUQQBRI2CjJDTFVTVEVSX0NPTkRJVElPTl9UWVBFX1dPUktFUl9QUk9WSVNJT05JTkdfQkxPQ0tFRBAGQhSKtRgQEg5vc2FjLnB1YmxpYy52MWIGcHJvdG8z", [file_buf_validate_validate, file_cleanapi_cleanapi, file_google_api_field_behavior, file_google_protobuf_any, file_google_protobuf_timestamp, file_osac_private_v1_add_on_operator_type, file_osac_private_v1_baremetal_instance_type_type, file_osac_private_v1_cluster_catalog_item_type, file_osac_private_v1_cluster_common_type, file_osac_private_v1_cluster_template_type, file_osac_private_v1_cluster_version_type, file_osac_private_v1_condition_status_type, file_osac_private_v1_metadata_type, file_osac_private_v1_secret_type]);
 
 /**
  * Contains the details of the cluster.
@@ -154,13 +152,13 @@ export type ClusterSpec = Message<"osac.private.v1.ClusterSpec"> & {
   /**
    * Desired node sets of the cluster.
    *
-   * This will be automatically set by the system when the cluster is initially created, according to the template
-   * selected by the user, and can be later modified to change the size.
+   * At creation, supply at least one node set with a positive size and a BareMetalInstanceType reference,
+   * or select a catalog item whose node-set policy supplies the map. Templates do not select hardware.
+   * Users may later change the size of an existing node set.
    *
    * The key of the map is the unique identifier of the node set for this cluster.
    *
-   * For example, a cluster created with two different node sets, one for nodes without GPUs and another for nodes with
-   * GPUs could be represented like this:
+   * For example, a cluster with CPU and GPU node sets could be represented like this:
    *
    * ```json
    * {
@@ -168,11 +166,11 @@ export type ClusterSpec = Message<"osac.private.v1.ClusterSpec"> & {
    *   "spec": {
    *     "node_sets": {
    *       "compute": {
-   *         "host_type": "acme_1tb",
+   *         "baremetal_instance_type": {"name": "acme-1tb"},
    *         "size": 3
    *       },
    *       "gpu": {
-   *         "host_type": "acme_1tb_h100",
+   *         "baremetal_instance_type": {"name": "acme-1tb-h100"},
    *         "size": 3
    *       }
    *     }
@@ -181,11 +179,11 @@ export type ClusterSpec = Message<"osac.private.v1.ClusterSpec"> & {
    *     "state": "CLUSTER_STATE_READY",
    *     "node_sets": {
    *       "compute": {
-   *         "host_type": "acme_1tb",
+   *         "baremetal_instance_type": {"name": "acme-1tb"},
    *         "size": 3
    *       },
    *       "gpu": {
-   *         "host_type": "acme_1tb_h100",
+   *         "baremetal_instance_type": {"name": "acme-1tb-h100"},
    *         "size": 3
    *       }
    *     }
@@ -193,7 +191,7 @@ export type ClusterSpec = Message<"osac.private.v1.ClusterSpec"> & {
    * }
    * ```
    *
-   * The user will not be allowed to change the `host_type` field.
+   * The user cannot change `baremetal_instance_type` on an existing node set.
    *
    * The user will be allowed to add new node sets.
    *
@@ -300,6 +298,37 @@ export type ClusterSpec = Message<"osac.private.v1.ClusterSpec"> & {
  */
 export const ClusterSpecSchema: GenMessage<ClusterSpec> = /*@__PURE__*/
   messageDesc(file_osac_private_v1_cluster_type, 1);
+
+/**
+ * The per-operator status contains the installation state of one add-on operator.
+ *
+ * @generated from message osac.private.v1.AddOnOperatorStatus
+ */
+export type AddOnOperatorStatus = Message<"osac.private.v1.AddOnOperatorStatus"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * @generated from field: osac.private.v1.AddOnOperatorInstallState state = 2;
+   */
+  state: AddOnOperatorInstallState;
+
+  /**
+   * Empty on success; bounded error summary on failure.
+   *
+   * @generated from field: string message = 3;
+   */
+  message: string;
+};
+
+/**
+ * Describes the message osac.private.v1.AddOnOperatorStatus.
+ * Use `create(AddOnOperatorStatusSchema)` to create a new message.
+ */
+export const AddOnOperatorStatusSchema: GenMessage<AddOnOperatorStatus> = /*@__PURE__*/
+  messageDesc(file_osac_private_v1_cluster_type, 2);
 
 /**
  * The status contains the details of the cluster provided by the system.
@@ -445,6 +474,14 @@ export type ClusterStatus = Message<"osac.private.v1.ClusterStatus"> & {
    * @generated from field: string hub = 11;
    */
   hub: string;
+
+  /**
+   * Per-operator installation state, synced from the ClusterOrder's
+   * AddOnOperatorJobs via the feedback controller.
+   *
+   * @generated from field: repeated osac.private.v1.AddOnOperatorStatus add_on_operators = 12;
+   */
+  addOnOperators: AddOnOperatorStatus[];
 };
 
 /**
@@ -452,7 +489,7 @@ export type ClusterStatus = Message<"osac.private.v1.ClusterStatus"> & {
  * Use `create(ClusterStatusSchema)` to create a new message.
  */
 export const ClusterStatusSchema: GenMessage<ClusterStatus> = /*@__PURE__*/
-  messageDesc(file_osac_private_v1_cluster_type, 2);
+  messageDesc(file_osac_private_v1_cluster_type, 3);
 
 /**
  * Contains the details of a condition that describes the status of a cluster.
@@ -505,25 +542,14 @@ export type ClusterCondition = Message<"osac.private.v1.ClusterCondition"> & {
  * Use `create(ClusterConditionSchema)` to create a new message.
  */
 export const ClusterConditionSchema: GenMessage<ClusterCondition> = /*@__PURE__*/
-  messageDesc(file_osac_private_v1_cluster_type, 3);
+  messageDesc(file_osac_private_v1_cluster_type, 4);
 
 /**
- * Defines a set of nodes that are part of the cluster, all of them of the same type of host.
+ * Defines a set of cluster nodes sharing the same bare metal instance type.
  *
  * @generated from message osac.private.v1.ClusterNodeSet
  */
 export type ClusterNodeSet = Message<"osac.private.v1.ClusterNodeSet"> & {
-  /**
-   * Identifier of the type of hosts that are part of the set.
-   *
-   * Deprecated: use baremetal_instance_type instead. Retained so the operator can fall back
-   * to host_type when a BareMetalInstanceType has not yet been assigned.
-   *
-   * @generated from field: osac.private.v1.HostTypeReference host_type = 1 [deprecated = true];
-   * @deprecated
-   */
-  hostType?: HostTypeReference | undefined;
-
   /**
    * Number of nodes of the set.
    *
@@ -532,28 +558,24 @@ export type ClusterNodeSet = Message<"osac.private.v1.ClusterNodeSet"> & {
   size?: number | undefined;
 
   /**
-   * Name of the network port used for tenant fabric traffic.
+   * Name of the network port on the BareMetalInstanceType used for tenant fabric traffic.
    *
    * System-populated during cluster creation by selecting the first network port with
-   * role "fabric" from the BareMetalInstanceType's hardware_spec.network_ports list.
-   * Not user-settable. Empty when the cluster has no network_attachment.
+   * role "fabric" from the BareMetalInstanceType's network ports. Not user-settable.
+   * Empty when the cluster has no network_attachment.
    *
    * @generated from field: string fabric_interface = 3;
    */
   fabricInterface: string;
 
   /**
-   * Reference to the BareMetalInstanceType that defines the hardware for nodes in this set.
+   * BareMetalInstanceType (hardware profile) for the nodes in this set.
    *
-   * The details of the instance type can be obtained using the `List` and `Get` methods of the
-   * `BareMetalInstanceTypes` service.
+   * Immutable after creation.
    *
-   * Set by the system when the cluster is initially created, according to the template selected
-   * by the user. The user will not have permission to change this field.
-   *
-   * @generated from field: osac.private.v1.BareMetalInstanceTypeLocalReference baremetal_instance_type = 4;
+   * @generated from field: osac.private.v1.BareMetalInstanceTypeReference baremetal_instance_type = 4;
    */
-  baremetalInstanceType?: BareMetalInstanceTypeLocalReference | undefined;
+  baremetalInstanceType?: BareMetalInstanceTypeReference | undefined;
 };
 
 /**
@@ -561,7 +583,7 @@ export type ClusterNodeSet = Message<"osac.private.v1.ClusterNodeSet"> & {
  * Use `create(ClusterNodeSetSchema)` to create a new message.
  */
 export const ClusterNodeSetSchema: GenMessage<ClusterNodeSet> = /*@__PURE__*/
-  messageDesc(file_osac_private_v1_cluster_type, 4);
+  messageDesc(file_osac_private_v1_cluster_type, 5);
 
 /**
  * Local reference to a Cluster resource.
@@ -585,7 +607,45 @@ export type ClusterLocalReference = Message<"osac.private.v1.ClusterLocalReferen
  * Use `create(ClusterLocalReferenceSchema)` to create a new message.
  */
 export const ClusterLocalReferenceSchema: GenMessage<ClusterLocalReference> = /*@__PURE__*/
-  messageDesc(file_osac_private_v1_cluster_type, 5);
+  messageDesc(file_osac_private_v1_cluster_type, 6);
+
+/**
+ * States used to describe add-on operator installation.
+ *
+ * @generated from enum osac.private.v1.AddOnOperatorInstallState
+ */
+export enum AddOnOperatorInstallState {
+  /**
+   * @generated from enum value: ADD_ON_OPERATOR_INSTALL_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: ADD_ON_OPERATOR_INSTALL_STATE_PENDING = 1;
+   */
+  PENDING = 1,
+
+  /**
+   * @generated from enum value: ADD_ON_OPERATOR_INSTALL_STATE_INSTALLING = 2;
+   */
+  INSTALLING = 2,
+
+  /**
+   * @generated from enum value: ADD_ON_OPERATOR_INSTALL_STATE_INSTALLED = 3;
+   */
+  INSTALLED = 3,
+
+  /**
+   * @generated from enum value: ADD_ON_OPERATOR_INSTALL_STATE_FAILED = 4;
+   */
+  FAILED = 4,
+}
+
+/**
+ * Describes the enum osac.private.v1.AddOnOperatorInstallState.
+ */
+export const AddOnOperatorInstallStateSchema: GenEnum<AddOnOperatorInstallState> = /*@__PURE__*/
+  enumDesc(file_osac_private_v1_cluster_type, 0);
 
 /**
  * Represents the overall state of a cluster.
@@ -645,7 +705,7 @@ export enum ClusterState {
  * Describes the enum osac.private.v1.ClusterState.
  */
 export const ClusterStateSchema: GenEnum<ClusterState> = /*@__PURE__*/
-  enumDesc(file_osac_private_v1_cluster_type, 0);
+  enumDesc(file_osac_private_v1_cluster_type, 1);
 
 /**
  * Types of conditions used to describe the status of cluster.
@@ -695,11 +755,21 @@ export enum ClusterConditionType {
    * @generated from enum value: CLUSTER_CONDITION_TYPE_DEGRADED = 4;
    */
   DEGRADED = 4,
+
+  /**
+   * @generated from enum value: CLUSTER_CONDITION_TYPE_WORKER_PROVISIONING_FAILED = 5;
+   */
+  WORKER_PROVISIONING_FAILED = 5,
+
+  /**
+   * @generated from enum value: CLUSTER_CONDITION_TYPE_WORKER_PROVISIONING_BLOCKED = 6;
+   */
+  WORKER_PROVISIONING_BLOCKED = 6,
 }
 
 /**
  * Describes the enum osac.private.v1.ClusterConditionType.
  */
 export const ClusterConditionTypeSchema: GenEnum<ClusterConditionType> = /*@__PURE__*/
-  enumDesc(file_osac_private_v1_cluster_type, 1);
+  enumDesc(file_osac_private_v1_cluster_type, 2);
 

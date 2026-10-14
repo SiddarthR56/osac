@@ -12,13 +12,10 @@ import {
 } from '@patternfly/react-core';
 import { useFormikContext } from 'formik';
 
-import { type HostType } from '@osac/types';
-import { cel } from '@osac/ui-components/api/cel';
 import {
   CLUSTER_VERSION_ACTIVE_LIST_FILTER,
   useClusterVersions,
 } from '@osac/ui-components/api/v1/cluster-versions';
-import { useHostTypes } from '@osac/ui-components/api/v1/host-types';
 import { useProjects } from '@osac/ui-components/api/v1/project';
 import { CatalogItem } from '@osac/ui-components/components/catalog/catalogItemDisplay';
 import {
@@ -31,9 +28,9 @@ import { ClusterWizardValues } from './fields';
 import { findVersionByName, versionDisplayName } from './versionUtils';
 import { useTranslation } from '../../../../../hooks/useTranslation';
 import { formatReviewScalar } from '../../catalogOverlay';
+import { NetworkAttachmentReviewFields } from '../NetworkAttachmentReviewFields';
 
 const formatNodeSetsForReview = (
-  hostTypes: HostType[],
   nodeSetRows: ClusterWizardValues['spec']['nodeSetRows'],
 ): string => {
   if (nodeSetRows.length === 0) {
@@ -41,9 +38,7 @@ const formatNodeSetsForReview = (
   }
   return nodeSetRows
     .map((row) => {
-      const hostType = hostTypes.find((h) => h.id === row.hostType);
-
-      return `${hostType?.title || hostType?.metadata?.name || row.hostType}: ${row.size}`;
+      return `${row.hostType}: ${row.size}`;
     })
     .join(', ');
 };
@@ -56,16 +51,6 @@ export const ClusterReviewStep = ({ catalogItem }: Props) => {
   const { t } = useTranslation();
   const { values } = useFormikContext<ClusterWizardValues>();
 
-  const {
-    data = [],
-    isLoading,
-    error,
-  } = useHostTypes({
-    filter: cel<HostType>((filter) =>
-      filter.field('id').isIn(values.spec.nodeSetRows.map(({ hostType }) => hostType)),
-    ),
-  });
-
   const { data: versions = [] } = useClusterVersions({
     filter: CLUSTER_VERSION_ACTIVE_LIST_FILTER,
   });
@@ -76,15 +61,14 @@ export const ClusterReviewStep = ({ catalogItem }: Props) => {
     error: projectsError,
   } = useProjects({ filter: fullProjectPathToQueryFilter(values.metadata.project) });
 
-  const isCustomNetwork =
-    !values.spec.useDefaultNetwork && Boolean(values.spec.networkAttachment.subnet.id.trim());
+  const isCustomNetwork = !values.spec.useDefaultNetwork;
 
   const versionDisplay = versionDisplayName(
     findVersionByName(versions, values.spec.versionName),
     values.spec.versionName,
   );
 
-  if (isLoading || projectsLoading) {
+  if (projectsLoading) {
     return (
       <Bullseye>
         <Spinner />
@@ -94,13 +78,6 @@ export const ClusterReviewStep = ({ catalogItem }: Props) => {
 
   return (
     <Stack hasGutter>
-      {!!error && (
-        <StackItem>
-          <Alert variant="warning" isInline title={t('Failed to fetch host types')}>
-            {getErrorMessage(error)}
-          </Alert>
-        </StackItem>
-      )}
       {!!projectsError && (
         <StackItem>
           <Alert variant="warning" isInline title={t('Failed to fetch project')}>
@@ -155,7 +132,7 @@ export const ClusterReviewStep = ({ catalogItem }: Props) => {
           <DescriptionListGroup>
             <DescriptionListTerm>{t('Node sets')}</DescriptionListTerm>
             <DescriptionListDescription>
-              {formatNodeSetsForReview(data, values.spec.nodeSetRows)}
+              {formatNodeSetsForReview(values.spec.nodeSetRows)}
             </DescriptionListDescription>
           </DescriptionListGroup>
         </DescriptionList>
@@ -174,36 +151,11 @@ export const ClusterReviewStep = ({ catalogItem }: Props) => {
           </DescriptionListGroup>
 
           {isCustomNetwork && (
-            <>
-              <DescriptionListGroup>
-                <DescriptionListTerm>{t('Virtual network')}</DescriptionListTerm>
-                <DescriptionListDescription>
-                  {formatReviewScalar(
-                    values.spec.networkAttachment.virtualNetwork.name ||
-                      values.spec.networkAttachment.virtualNetwork.id,
-                  )}
-                </DescriptionListDescription>
-              </DescriptionListGroup>
-              <DescriptionListGroup>
-                <DescriptionListTerm>{t('Subnet')}</DescriptionListTerm>
-                <DescriptionListDescription>
-                  {formatReviewScalar(
-                    values.spec.networkAttachment.subnet.name ||
-                      values.spec.networkAttachment.subnet.id,
-                  )}
-                </DescriptionListDescription>
-              </DescriptionListGroup>
-              <DescriptionListGroup>
-                <DescriptionListTerm>{t('Security groups')}</DescriptionListTerm>
-                <DescriptionListDescription>
-                  {values.spec.networkAttachment.securityGroups.length > 0
-                    ? values.spec.networkAttachment.securityGroups
-                        .map((sg) => sg.name || sg.id)
-                        .join(', ')
-                    : '—'}
-                </DescriptionListDescription>
-              </DescriptionListGroup>
-            </>
+            <NetworkAttachmentReviewFields
+              virtualNetwork={values.spec.networkAttachment.virtualNetwork}
+              subnet={values.spec.networkAttachment.subnet}
+              securityGroups={values.spec.networkAttachment.securityGroups}
+            />
           )}
 
           <DescriptionListGroup>

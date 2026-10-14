@@ -17,8 +17,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
-	"time"
 
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
@@ -35,10 +33,10 @@ var (
 	ErrCanonicalHubNotFound    = errors.New("canonical networking hub not found")
 	ErrCanonicalHubNotReady    = errors.New("canonical networking hub is not ready")
 	ErrCanonicalHubUnavailable = errors.New("canonical networking hub unavailable")
+	ErrResourceHubConflict     = errors.New("resource Hub assignment conflicts with canonical networking Hub")
 )
 
 const (
-	canonicalHubNegativeCacheTTL    = time.Second
 	activeResourceFilter            = "!has(this.metadata.deletion_timestamp)"
 	activeResourceLimit             = 2
 	canonicalHubNoCandidatesMessage = "expected exactly one active networking hub, found none"
@@ -86,6 +84,72 @@ type NetworkingHubResolution struct {
 	Message string
 }
 
+// ResolveResourceNetworkingHub returns the canonical Hub when the resource is unassigned or
+// already assigned to it. A conflicting assignment is returned as a deterministic error.
+func ResolveResourceNetworkingHub(
+	ctx context.Context,
+	resolver NetworkingHubReader,
+	assignedHubID string,
+) (NetworkingHubResolution, error) {
+	resolution, err := resolver.Resolve(ctx)
+	if err != nil {
+		return resolution, err
+	}
+	if resolution.State != privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY ||
+		resolution.HubID == "" || resolution.ID == "" || resolution.HubID != resolution.ID {
+		return resolution, ErrCanonicalHubNotReady
+	}
+	if assignedHubID != "" && assignedHubID != resolution.HubID {
+		return resolution, fmt.Errorf("%w: assigned %q, canonical %q", ErrResourceHubConflict, assignedHubID, resolution.HubID)
+	}
+	return resolution, nil
+}
+
+// HandleResourceNetworkingHubResolutionError applies resource status for errors returned by the canonical Hub reader.
+func HandleResourceNetworkingHubResolutionError(
+	err error,
+	setPending func(error),
+	setFailed func(error),
+
+) (handled, retry bool) {
+	handled, retry, statusErr := classifyResourceNetworkingHubResolutionError(err)
+	if !handled {
+		return false, false
+	}
+	if retry {
+		setPending(statusErr)
+		return true, true
+	}
+	setFailed(statusErr)
+	return true, false
+}
+
+// classifyResourceNetworkingHubResolutionError returns the safe status error and retry behavior for
+// a canonical Hub resolution error. Wrapped resolver errors may contain Hub or kubeconfig details
+// that should not be persisted in tenant-readable resource status.
+func classifyResourceNetworkingHubResolutionError(err error) (handled, retry bool, statusErr error) {
+	switch {
+	case errors.Is(err, ErrResourceHubConflict):
+		return true, false, ErrResourceHubConflict
+	case errors.Is(err, ErrCanonicalHubNotFound):
+		return true, false, ErrCanonicalHubNotFound
+	case errors.Is(err, ErrCanonicalHubNotReady):
+		return true, true, ErrCanonicalHubNotReady
+	case errors.Is(err, ErrCanonicalHubUnavailable):
+		return true, true, ErrCanonicalHubUnavailable
+	case errors.Is(err, ErrNoNetworkClass):
+		return true, true, ErrNoNetworkClass
+	case errors.Is(err, ErrMultipleNetworkClasses):
+		return true, true, ErrMultipleNetworkClasses
+	case errors.Is(err, ErrNoNetworkingHubs):
+		return true, true, ErrNoNetworkingHubs
+	case errors.Is(err, ErrMultipleNetworkingHubs):
+		return true, true, ErrMultipleNetworkingHubs
+	default:
+		return false, false, nil
+	}
+}
+
 // NetworkingHubResolverBuilder contains the dependencies needed to construct a canonical Hub resolver.
 type NetworkingHubResolverBuilder struct {
 	networkClassesClient networkClassesClient
@@ -103,11 +167,7 @@ type networkingHubResolver struct {
 	networkClassesClient networkClassesClient
 	hubsClient           hubsListClient
 	hubCache             HubCache
-	mu                   sync.Mutex
 	resolveGroup         singleflight.Group
-	cachedHub            *NetworkingHub
-	cachedError          error
-	errorExpiresAt       time.Time
 	readOnly             bool
 }
 
@@ -188,41 +248,12 @@ func (r *networkingHubResolver) Resolve(ctx context.Context) (NetworkingHubResol
 	// The NetworkClass reconciler must re-evaluate the active Hub set on every
 	// reconciliation. Hub create/delete events trigger that reconciliation, so
 	// caching its discovery result would allow a stale canonical assignment to
-	// survive a topology change. Read-only resource consumers can cache the
-	// already-persisted canonical reference because they never discover or
-	// select a Hub.
-	if r.readOnly {
-		if result, ok := r.cachedResolution(ctx); ok {
-			return NetworkingHubResolution{
-				NetworkingHub: result,
-				HubID:         result.ID,
-				State:         privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY,
-			}, nil
-		}
-		if err, ok := r.cachedFailure(); ok {
-			return NetworkingHubResolution{}, err
-		}
-	}
+	// survive a topology change. Resource consumers also re-read the persisted
+	// canonical reference on each reconciliation so they can detect a changed
+	// assignment. The Hub cache still avoids rebuilding Kubernetes clients.
 
 	value, err, _ := r.resolveGroup.Do("canonical-networking-hub", func() (any, error) {
-		if r.readOnly {
-			if result, ok := r.cachedResolution(ctx); ok {
-				return NetworkingHubResolution{
-					NetworkingHub: result,
-					HubID:         result.ID,
-					State:         privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY,
-				}, nil
-			}
-			if err, ok := r.cachedFailure(); ok {
-				return NetworkingHubResolution{}, err
-			}
-		}
-
-		result, err := r.resolve(ctx)
-		if r.readOnly {
-			r.cacheResult(result.NetworkingHub, err)
-		}
-		return result, err
+		return r.resolve(ctx)
 	})
 	if err != nil {
 		if result, ok := value.(NetworkingHubResolution); ok {
@@ -231,58 +262,6 @@ func (r *networkingHubResolver) Resolve(ctx context.Context) (NetworkingHubResol
 		return NetworkingHubResolution{}, err
 	}
 	return value.(NetworkingHubResolution), nil
-}
-
-func (r *networkingHubResolver) cachedResolution(ctx context.Context) (NetworkingHub, bool) {
-	r.mu.Lock()
-	var cached NetworkingHub
-	if r.cachedHub != nil {
-		cached = *r.cachedHub
-	}
-	r.mu.Unlock()
-	if cached.ID == "" {
-		return NetworkingHub{}, false
-	}
-
-	entry, err := r.hubCache.Get(ctx, cached.ID)
-	if err == nil && entry != nil {
-		return NetworkingHub{ID: cached.ID, Namespace: entry.Namespace, Client: entry.Client}, true
-	}
-
-	r.mu.Lock()
-	if r.cachedHub != nil && r.cachedHub.ID == cached.ID {
-		r.cachedHub = nil
-	}
-	r.mu.Unlock()
-	return NetworkingHub{}, false
-}
-
-func (r *networkingHubResolver) cachedFailure() (error, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.cachedError == nil {
-		return nil, false
-	}
-	if time.Now().Before(r.errorExpiresAt) {
-		return r.cachedError, true
-	}
-	r.cachedError = nil
-	r.errorExpiresAt = time.Time{}
-	return nil, false
-}
-
-func (r *networkingHubResolver) cacheResult(result NetworkingHub, err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err == nil {
-		r.cachedHub = &result
-		r.cachedError = nil
-		r.errorExpiresAt = time.Time{}
-		return
-	}
-	r.cachedHub = nil
-	r.cachedError = err
-	r.errorExpiresAt = time.Now().Add(canonicalHubNegativeCacheTTL)
 }
 
 func (r *networkingHubResolver) resolve(ctx context.Context) (NetworkingHubResolution, error) {
@@ -320,10 +299,10 @@ func (r *networkingHubResolver) findNetworkClass(ctx context.Context) (*privatev
 		Limit:  &limit,
 	}.Build())
 	if err != nil {
-		return nil, fmt.Errorf("failed to list network classes: %w", err)
+		return nil, fmt.Errorf("%w: failed to list network classes: %w", ErrCanonicalHubUnavailable, err)
 	}
 	if response == nil {
-		return nil, errors.New("network classes list returned an empty response")
+		return nil, fmt.Errorf("%w: network classes list returned an empty response", ErrCanonicalHubUnavailable)
 	}
 
 	return findOnlyActive(
@@ -345,10 +324,10 @@ func (r *networkingHubResolver) findOnlyHub(ctx context.Context) (*privatev1.Hub
 		Limit:  &limit,
 	}.Build())
 	if err != nil {
-		return nil, fmt.Errorf("failed to list networking hubs: %w", err)
+		return nil, fmt.Errorf("%w: failed to list networking hubs: %w", ErrCanonicalHubUnavailable, err)
 	}
 	if response == nil {
-		return nil, errors.New("networking hubs list returned an empty response")
+		return nil, fmt.Errorf("%w: networking hubs list returned an empty response", ErrCanonicalHubUnavailable)
 	}
 
 	hub, err := findOnlyActive(
@@ -440,6 +419,8 @@ func (r *networkingHubResolver) canonicalHubFailure(
 
 func canonicalHubErrorMessage(err error) string {
 	switch {
+	case errors.Is(err, ErrCanonicalHubUnavailable):
+		return "canonical networking hub is temporarily unavailable"
 	case errors.Is(err, ErrNoNetworkingHubs):
 		return canonicalHubNoCandidatesMessage
 	case errors.Is(err, ErrMultipleNetworkingHubs):

@@ -7,8 +7,9 @@ global:
     fabricManager: agentless_net
     k8sManager: ""
     networkClass:
-      title: AgentlessNet networking stub
+      title: AgentlessNet VirtualNetwork and Subnet baseline
       description: >-
-        AgentlessNet is registered for unified networking. Available resource
-        operations return NotImplemented. Physical attachment, DHCP discovery,
-        and ExternalIPAttachment are outside this stub.
+        Implements UID-keyed VirtualNetwork namespaces, /31 transit links,
+        Cumulus Subnet VLANs and gateways, and per-VirtualNetwork DHCP.
+        SecurityGroups, NAT, workload attachment, BGP, and external access
+        remain unsupported.

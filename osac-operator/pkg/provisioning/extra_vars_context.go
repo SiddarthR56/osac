@@ -30,6 +30,8 @@ const (
 	storageTierDefinitionsKey
 	storageBackendConnectionsKey
 	networkAttachmentMACsKey
+	subnetParentVirtualNetworkKey
+	addOnOperatorNameKey
 )
 
 // TierDefinition is the flat, AAP-schema-shaped representation of a storage tier
@@ -60,6 +62,30 @@ type BackendConnection struct {
 	Password string
 }
 
+// SubnetParentVirtualNetwork carries the parent identity the Subnet controller
+// resolved in the Subnet's namespace. AAP uses this snapshot to associate
+// provider state with the Kubernetes VirtualNetwork UID without requiring the
+// isolated execution environment to authenticate to the Kubernetes API.
+type SubnetParentVirtualNetwork struct {
+	FulfillmentID string
+	KubernetesUID string
+	TenantID      string
+	Phase         string
+}
+
+// WithSubnetParentVirtualNetwork returns a context carrying the resolved
+// parent VirtualNetwork identity for a Subnet provisioning job.
+func WithSubnetParentVirtualNetwork(ctx context.Context, parent SubnetParentVirtualNetwork) context.Context {
+	return context.WithValue(ctx, subnetParentVirtualNetworkKey, parent)
+}
+
+// SubnetParentVirtualNetworkFromContext retrieves the resolved parent
+// VirtualNetwork identity, or its zero value when it is not set.
+func SubnetParentVirtualNetworkFromContext(ctx context.Context) SubnetParentVirtualNetwork {
+	parent, _ := ctx.Value(subnetParentVirtualNetworkKey).(SubnetParentVirtualNetwork)
+	return parent
+}
+
 // WithTenantStorageClasses returns a context carrying the tenant's resolved
 // storage classes. The AAP provider reads this when building extra_vars.
 func WithTenantStorageClasses(ctx context.Context, scs []v1alpha1.ResolvedStorageClass) context.Context {
@@ -84,6 +110,19 @@ func WithAdminKubeconfig(ctx context.Context, kubeconfig string) context.Context
 func AdminKubeconfigFromContext(ctx context.Context) string {
 	kc, _ := ctx.Value(adminKubeconfigKey).(string)
 	return kc
+}
+
+// WithAddOnOperatorName returns a context carrying the operator role name for
+// an add-on installation AAP job.
+func WithAddOnOperatorName(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, addOnOperatorNameKey, name)
+}
+
+// AddOnOperatorNameFromContext retrieves the operator role name for an
+// add-on installation AAP job, or an empty string if it is not set.
+func AddOnOperatorNameFromContext(ctx context.Context) string {
+	name, _ := ctx.Value(addOnOperatorNameKey).(string)
+	return name
 }
 
 // WithStorageTierDefinitions returns a context carrying the resolved storage tier

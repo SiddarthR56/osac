@@ -21,6 +21,7 @@ import (
 )
 
 // VirtualNetworkSpec defines the desired state of VirtualNetwork
+// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec is immutable after creation"
 type VirtualNetworkSpec struct {
 	// Region is the cloud region where this VirtualNetwork will be provisioned
 	// +kubebuilder:validation:Required
@@ -91,7 +92,6 @@ type VirtualNetworkStatus struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Type=string
 	BackendNetworkID string `json:"backendNetworkId,omitempty"`
-
 	// Conditions holds an array of metav1.Condition that describe the state of the VirtualNetwork
 	// +kubebuilder:validation:Optional
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`

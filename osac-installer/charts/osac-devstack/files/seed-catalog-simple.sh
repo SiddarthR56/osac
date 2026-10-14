@@ -2,23 +2,26 @@
 # Seed the minimal dev-full catalog through the private REST API.
 #
 # The hook runs inside the cluster, but the private API uses TLS. A local
-# port-forward lets curl authenticate with the short-lived admin token without
-# requiring grpcurl in the hook image.
+# port-forward lets curl authenticate with the short-lived Keycloak
+# service-account token without requiring grpcurl in the hook image.
 set -euo pipefail
 
 NS="${1:-${NS:-osac}}"
 INTERNAL_SVC="${INTERNAL_SVC:-fulfillment-internal-api}"
 INTERNAL_PORT="${INTERNAL_PORT:-8001}"
 LOCAL_PORT="${LOCAL_PORT:-8001}"
+CA_FILE="${CA_FILE:-/etc/ca-bundle/bundle.pem}"
 
 log() { echo "[+] $*"; }
+
+source /scripts/fulfillment-auth.sh
+AUTH_TOKEN="$(get_fulfillment_access_token)"
 
 # The REST gateway encodes gRPC AlreadyExists as status code 6 in its JSON body.
 is_already_exists() {
   grep -Eq '"code"[[:space:]]*:[[:space:]]*6([[:space:]]*[,}])' "${response_file}"
 }
 
-admin_token=$(kubectl -n "${NS}" create token admin)
 response_file=$(mktemp)
 
 # cleanup removes the response file and stops the port-forward.
@@ -32,16 +35,27 @@ trap cleanup EXIT
 kubectl -n "${NS}" port-forward "svc/${INTERNAL_SVC}" "${LOCAL_PORT}:${INTERNAL_PORT}" >/dev/null 2>&1 &
 pf_pid=$!
 
-API="https://localhost:${LOCAL_PORT}/api/private/v1"
-for _ in $(seq 1 15); do
-  if curl -sk --connect-timeout 1 -o /dev/null "${API}/disk_images"; then
+INTERNAL_HOST="${INTERNAL_SVC}.${NS}.svc.cluster.local"
+API="https://${INTERNAL_HOST}:${LOCAL_PORT}/api/private/v1"
+CURL=(curl --cacert "${CA_FILE}" --resolve "${INTERNAL_HOST}:${LOCAL_PORT}:127.0.0.1" --noproxy "${INTERNAL_HOST}")
+api_ready=false
+for _ in $(seq 1 60); do
+  if ! kill -0 "${pf_pid}" 2>/dev/null; then
+    echo 'Catalog seed port-forward failed' >&2
+    exit 1
+  fi
+  if "${CURL[@]}" --silent --show-error --fail \
+    --connect-timeout 1 --max-time 5 \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -o /dev/null "${API}/disk_images"; then
+    api_ready=true
     break
   fi
-  sleep 1
+  sleep 5
 done
 
-if ! kill -0 "${pf_pid}" 2>/dev/null; then
-  echo 'Catalog seed port-forward failed' >&2
+if [[ "${api_ready}" != true ]]; then
+  echo 'Timed out waiting for a healthy fulfillment API' >&2
   exit 1
 fi
 
@@ -52,8 +66,9 @@ post() {
   local payload="$3"
   local status
 
-  if ! status=$(curl -skS --max-time 30 -o "${response_file}" -w '%{http_code}' \
-    -H "Authorization: Bearer ${admin_token}" \
+  if ! status=$("${CURL[@]}" --silent --show-error \
+    --connect-timeout 3 --max-time 30 -o "${response_file}" -w '%{http_code}' \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
     -H 'Content-Type: application/json' \
     -X POST "${API}/${path}" -d "${payload}"); then
     echo "Failed to create ${description}: request to ${path} did not complete" >&2

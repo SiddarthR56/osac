@@ -112,6 +112,104 @@ kafka.clusterNamespace.
 Wait-for-fulfillment init container.
 Uses .Values.cliImage for the container image.
 */}}
+{{- define "osac.fulfillmentCurlTLS" -}}
+--cacert /etc/ca-bundle/bundle.pem
+{{- end -}}
+
+{{- define "osac.fulfillmentAuthCredential" -}}
+{{- $root := index . 0 -}}
+{{- $param := index . 1 -}}
+{{- $credential := dict -}}
+{{- range ($root.Values.service.auth.controllerCredentials | default list) -}}
+  {{- $secret := .secret | default dict -}}
+  {{- range ($secret.items | default list) -}}
+    {{- if eq (.param | default "") $param -}}
+      {{- $_ := set $credential "name" ($secret.name | default "") -}}
+      {{- $_ := set $credential "key" (.key | default "") -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- $secretName := required (printf "service.auth.controllerCredentials must include a secret-backed %s parameter" $param) ($credential.name | default "") -}}
+{{- $secretKey := required (printf "service.auth.controllerCredentials must include a secret key for the %s parameter" $param) ($credential.key | default "") -}}
+{{- toJson (dict "name" $secretName "key" $secretKey) -}}
+{{- end -}}
+
+{{- define "osac.fulfillmentAuthEnv" -}}
+{{- $clientID := include "osac.fulfillmentAuthCredential" (list . "client-id") | fromJson -}}
+- name: FULFILLMENT_ISSUER_URL
+  value: {{ tpl .Values.service.auth.issuerUrl . | quote }}
+- name: FULFILLMENT_CLIENT_ID
+  valueFrom:
+    secretKeyRef:
+      name: {{ $clientID.name | quote }}
+      key: {{ $clientID.key | quote }}
+- name: FULFILLMENT_CLIENT_SECRET_FILE
+  value: /var/run/secrets/fulfillment-client-secret/client-secret
+{{- end -}}
+
+{{- define "osac.fulfillmentAuthVolumeMount" -}}
+- name: fulfillment-client-secret
+  mountPath: /var/run/secrets/fulfillment-client-secret
+  readOnly: true
+{{- end -}}
+
+{{- define "osac.fulfillmentAuthVolume" -}}
+{{- $clientSecret := include "osac.fulfillmentAuthCredential" (list . "client-secret") | fromJson -}}
+- name: fulfillment-client-secret
+  secret:
+    secretName: {{ $clientSecret.name | quote }}
+    defaultMode: 0440
+    items:
+    - key: {{ $clientSecret.key | quote }}
+      path: client-secret
+{{- end -}}
+
+{{- define "osac.fulfillmentAccessTokenFunction" -}}
+get_fulfillment_access_token() {
+  local issuer_url="${FULFILLMENT_ISSUER_URL:-}"
+  local client_id="${FULFILLMENT_CLIENT_ID:-}"
+  local client_secret_file="${FULFILLMENT_CLIENT_SECRET_FILE:-}"
+  if [[ "${issuer_url}" != https://* || -z "${client_id}" || -z "${client_secret_file}" || ! -s "${client_secret_file}" ]]; then
+    echo "ERROR: Fulfillment service-account credentials are unavailable." >&2
+    return 1
+  fi
+
+  local token_url="${issuer_url%/}/protocol/openid-connect/token"
+  local response
+  if ! response=$(curl --silent --show-error --fail {{ include "osac.fulfillmentCurlTLS" . }} \
+    --connect-timeout 5 --max-time 30 \
+    --request POST \
+    --data-urlencode 'grant_type=client_credentials' \
+    --data-urlencode "client_id=${client_id}" \
+    --data-urlencode "client_secret@${client_secret_file}" \
+    "${token_url}"); then
+    echo "ERROR: Fulfillment token request failed." >&2
+    return 1
+  fi
+
+  local access_token
+  if ! access_token=$(printf '%s' "${response}" | python3 -c '
+import json
+import sys
+
+try:
+    token = json.load(sys.stdin).get("access_token")
+except (json.JSONDecodeError, AttributeError):
+    sys.exit(1)
+
+if not isinstance(token, str) or not token:
+    sys.exit(1)
+
+sys.stdout.write(token)
+'); then
+    echo "ERROR: Fulfillment token response was invalid." >&2
+    return 1
+  fi
+
+  printf '%s\n' "${access_token}"
+}
+{{- end -}}
+
 {{- define "osac.waitForFulfillment" -}}
 {{- $url := "https://fulfillment-rest-gateway:8000/healthz" -}}
 - name: wait-for-fulfillment
@@ -125,7 +223,7 @@ Uses .Values.cliImage for the container image.
       echo "Waiting for fulfillment REST gateway..."
       for i in $(seq 1 60); do
         echo "Attempt ${i}: checking {{ $url }}"
-        if curl -skf --connect-timeout 5 --max-time 30 {{ $url }}; then
+        if curl -sf {{ include "osac.fulfillmentCurlTLS" . }} --connect-timeout 5 --max-time 30 {{ $url }}; then
           echo ""
           echo "Fulfillment service is ready."
           exit 0
@@ -140,6 +238,9 @@ Uses .Values.cliImage for the container image.
   volumeMounts:
   - name: tmp
     mountPath: /tmp
+  - name: ca-bundle
+    mountPath: /etc/ca-bundle
+    readOnly: true
   resources:
     requests:
       cpu: 50m
@@ -163,8 +264,13 @@ its two instance-group manifests.
 {{- define "osac.netrisConfig" -}}
 {{- $netris := .netris | default dict -}}
 {{- $creds := $netris.credentials | default dict -}}
+{{- $validateCerts := true -}}
+{{- if hasKey $netris "validateCerts" -}}
+{{- $validateCerts = $netris.validateCerts -}}
+{{- end -}}
 {{- $derived := dict
   "NETRIS_CONTROLLER_URL" ($netris.controllerUrl | default "")
+  "NETRIS_VALIDATE_CERTS" ($validateCerts | toString)
   "NETRIS_USERNAME" ($creds.username | default "")
   "NETRIS_SITE_ID" ($netris.siteId | default "" | toString)
   "NETRIS_TENANT_ID" ($netris.tenantId | default "" | toString)
@@ -193,6 +299,7 @@ facade vs low-level surface mismatches).
 {{- $netrisEnabled := eq $networking.fabricManager "netris" -}}
 {{- $agentlessEnabled := or (eq $networking.k8sManager "k8s_only") (eq $networking.fabricManager "agentless_net") -}}
 {{- $agentlessStubEnabled := eq $networking.fabricManager "agentless_net" -}}
+{{- $cudnEnabled := eq $networking.fabricManager "cudn_net" -}}
 {{- $netExpertAap := $expert.aap | default false -}}
 {{- $netExpertNetworkClass := $expert.networkClass | default false -}}
 {{- $netExpertNetworkManagers := $expert.networkManagers | default false -}}
@@ -206,6 +313,7 @@ facade vs low-level surface mismatches).
 {{- if $netrisEnabled -}}
 {{- $creds := $netris.credentials | default dict -}}
 {{- $derived := include "osac.netrisConfig" (dict "netris" $netris "cluster" true) | fromYaml -}}
+{{/* Match the AAP chart: facade values win unless expertOverrides.aap is enabled. */}}
 {{- $cfCfg = merge $derived $cfCfg -}}
 {{- $nfDerived := include "osac.netrisConfig" (dict "netris" $netris "cluster" false) | fromYaml -}}
 {{- $nfCfg = merge $nfDerived $nfCfg -}}
@@ -220,6 +328,7 @@ facade vs low-level surface mismatches).
 {{- end }}
 {{- $netrisConfigFields := list
   "NETRIS_CONTROLLER_URL"
+  "NETRIS_VALIDATE_CERTS"
   "NETRIS_USERNAME"
   "NETRIS_SITE_ID"
   "NETRIS_TENANT_ID"
@@ -254,9 +363,31 @@ facade vs low-level surface mismatches).
 {{- $networkManagersEnabled := $nm.enabled | default false -}}
 {{- $fabricManagers := $nm.fabricManagers | default dict -}}
 {{- $k8sManagers := $nm.k8sManagers | default dict -}}
-{{- if and (not $netExpertNetworkManagers) (or $netrisEnabled $agentlessEnabled) (not $networkManagersEnabled) }}
+{{- if and (not $netExpertNetworkManagers) (or $netrisEnabled $agentlessEnabled $cudnEnabled) (not $networkManagersEnabled) }}
   {{- fail "global.networking requires operator.networkManagers.enabled=true" }}
 {{- end }}
+{{- if $cudnEnabled -}}
+  {{- if not (and .Values.global.services.caas.enabled .Values.global.services.bmaas.enabled) -}}
+    {{- fail "fabricManager=cudn_net requires CaaS and BMaaS services" -}}
+  {{- end -}}
+  {{- if or (ne $fabricManager "cudn_net") (ne $k8sManager "") (not $networkClass.enabled) (not $networkClass.isDefault) -}}
+    {{- fail "fabricManager=cudn_net requires an enabled default CUDN-only NetworkClass" -}}
+  {{- end -}}
+  {{- $cudnMgr := index $fabricManagers "cudn_net" | default dict -}}
+  {{- if not ($cudnMgr.enabled | default false) -}}
+    {{- fail "fabricManager=cudn_net requires registered operator.networkManagers.fabricManagers.cudn_net.enabled=true" -}}
+  {{- end -}}
+  {{- if .Values.operator.enabled -}}
+    {{- if not (and $netExpertAap .Values.aap.aap.instance.enabled .Values.aap.bootstrap.enabled $cf.enabled $nf.enabled) -}}
+      {{- fail "fabricManager=cudn_net requires expert ci.steps AAP with both instance groups" -}}
+    {{- end -}}
+    {{- if or (ne (index $cfCfg "NETWORK_CLASS" | default "") "ci") (ne (index $cfCfg "NETWORK_STEPS_COLLECTION" | default "") "ci.steps") -}}
+      {{- fail "fabricManager=cudn_net requires NETWORK_CLASS=ci and NETWORK_STEPS_COLLECTION=ci.steps" -}}
+    {{- end -}}
+  {{- else -}}
+    {{- fail "fabricManager=cudn_net requires an enabled operator" -}}
+  {{- end -}}
+{{- end -}}
 {{- $netClass := index $cfCfg "NETWORK_CLASS" | default "" | toString -}}
 {{- $netSteps := index $cfCfg "NETWORK_STEPS_COLLECTION" | default "" | toString -}}
 {{- if eq $netClass "netris" -}}

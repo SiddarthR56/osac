@@ -9,14 +9,16 @@ import {
   type BareMetalInstanceWizardValues,
   applyBmCatalogDefaults,
   createEmptyBareMetalInstanceValues,
+  createEmptyNetworkAttachmentRow,
 } from './fields';
 import { buildBareMetalInstanceStepSchema } from './schemas';
+import { emptyResourceSelectValue } from '../../../../Form/resourceSelectValue';
 
 const authenticationError =
   'Provide either an SSH public key or user data containing access credentials.';
 
 const validateReview = async (values: BareMetalInstanceWizardValues) => {
-  const schema = buildBareMetalInstanceStepSchema(null, 'review', tIdentity);
+  const schema = buildBareMetalInstanceStepSchema('review', tIdentity);
   if (!schema) {
     throw new Error('Review schema is required for Bare Metal');
   }
@@ -29,6 +31,42 @@ const validateReview = async (values: BareMetalInstanceWizardValues) => {
       throw error;
     }
     return error.message;
+  }
+};
+
+const validateStep = async (
+  stepId: Parameters<typeof buildBareMetalInstanceStepSchema>[0],
+  values: BareMetalInstanceWizardValues,
+) => {
+  const schema = buildBareMetalInstanceStepSchema(stepId, tIdentity);
+  if (!schema) {
+    return {};
+  }
+
+  try {
+    await schema.validate(values, { abortEarly: false });
+    return {};
+  } catch (error) {
+    if (!(error instanceof ValidationError)) {
+      throw error;
+    }
+    const errors: Record<string, unknown> = {};
+    for (const inner of error.inner.length > 0 ? error.inner : [error]) {
+      if (!inner.path) {
+        continue;
+      }
+      const parts = inner.path.split('.');
+      let current: Record<string, unknown> = errors;
+      for (let index = 0; index < parts.length - 1; index += 1) {
+        const key = parts[index];
+        if (!current[key] || typeof current[key] !== 'object') {
+          current[key] = {};
+        }
+        current = current[key] as Record<string, unknown>;
+      }
+      current[parts[parts.length - 1]] = inner.message;
+    }
+    return errors;
   }
 };
 
@@ -52,6 +90,41 @@ describe('Bare Metal review validation', () => {
     ],
   ])('accepts %s', async (_label, sshKey, userData) => {
     await expect(validateReview(valuesWithAuth(sshKey, userData))).resolves.toBeUndefined();
+  });
+
+  it('accepts a Secret reference as the user-data authentication source', async () => {
+    const values = createEmptyBareMetalInstanceValues();
+    values.spec.userDataSource = 'secret';
+    values.spec.userDataSecret = { name: 'user-data-secret' };
+
+    await expect(validateReview(values)).resolves.toBeUndefined();
+  });
+
+  it('validates inline user data with the shared 64 KB limit', async () => {
+    const values = createEmptyBareMetalInstanceValues();
+    values.spec.diskImage = { id: 'disk-image', name: '' };
+    values.spec.userData = 'a'.repeat(65537);
+
+    await expect(validateStep('configuration', values)).resolves.toEqual({
+      spec: { userData: 'User data must not exceed 64 KB.' },
+    });
+
+    values.spec.userData = 'a'.repeat(65536);
+    await expect(validateStep('configuration', values)).resolves.toEqual({});
+
+    values.spec.userDataSource = 'secret';
+    values.spec.userDataSecret = { name: 'user-data-secret' };
+    values.spec.userData = 'a'.repeat(65537);
+    await expect(validateStep('configuration', values)).resolves.toEqual({});
+  });
+
+  it('does not use inactive inline user data for Secret authentication', async () => {
+    const values = createEmptyBareMetalInstanceValues();
+    values.spec.userDataSource = 'secret';
+    values.spec.userData = 'stale inline data';
+    values.spec.userDataSecret = { name: '' };
+
+    await expect(validateReview(values)).resolves.toBe(authenticationError);
   });
 
   it('rejects neither authentication method', async () => {
@@ -96,5 +169,87 @@ describe('Bare Metal review validation', () => {
     );
 
     await expect(validateReview(appliedValues)).resolves.toBeUndefined();
+  });
+});
+
+const validateNetworking = async (values: BareMetalInstanceWizardValues) => {
+  const schema = buildBareMetalInstanceStepSchema('networking', tIdentity);
+  if (!schema) {
+    throw new Error('Networking schema is required');
+  }
+
+  try {
+    await schema.validate(values, { abortEarly: false });
+    return {};
+  } catch (error) {
+    if (!(error instanceof ValidationError)) {
+      throw error;
+    }
+    const errors: Record<string, unknown> = {};
+    for (const inner of error.inner.length > 0 ? error.inner : [error]) {
+      if (!inner.path) {
+        continue;
+      }
+      const parts = inner.path.split('.');
+      let current: Record<string, unknown> = errors;
+      for (let index = 0; index < parts.length - 1; index += 1) {
+        const key = parts[index];
+        if (!current[key] || typeof current[key] !== 'object') {
+          current[key] = {};
+        }
+        current = current[key] as Record<string, unknown>;
+      }
+      current[parts[parts.length - 1]] = inner.message;
+    }
+    return errors;
+  }
+};
+
+describe('Bare Metal networking validation', () => {
+  it('does not require attachments when useDefaults is true', async () => {
+    const values = createEmptyBareMetalInstanceValues();
+    values.spec.networking.useDefaults = true;
+
+    const errors = await validateNetworking(values);
+    expect(errors).toEqual({});
+  });
+
+  it('requires virtual network and subnet when useDefaults is false', async () => {
+    const values = createEmptyBareMetalInstanceValues();
+    values.spec.networking.useDefaults = false;
+    values.spec.networking.attachments = [
+      {
+        ...createEmptyNetworkAttachmentRow(),
+        virtualNetwork: emptyResourceSelectValue(),
+        subnet: emptyResourceSelectValue(),
+      },
+    ];
+
+    const errors = await validateNetworking(values);
+    expect(errors).toEqual({
+      spec: {
+        networking: {
+          'attachments[0]': {
+            virtualNetwork: { id: 'Virtual network is required' },
+            subnet: { id: 'Subnet is required' },
+          },
+        },
+      },
+    });
+  });
+
+  it('accepts valid custom networking when useDefaults is false', async () => {
+    const values = createEmptyBareMetalInstanceValues();
+    values.spec.networking.useDefaults = false;
+    values.spec.networking.attachments = [
+      {
+        ...createEmptyNetworkAttachmentRow(),
+        virtualNetwork: { id: 'vn-1', name: 'vn-1' },
+        subnet: { id: 'subnet-1', name: 'subnet-1' },
+      },
+    ];
+
+    const errors = await validateNetworking(values);
+    expect(errors).toEqual({});
   });
 });

@@ -57,20 +57,34 @@ const getAdminNav = (t: TFunction): NavRow[] => [
   },
   {
     kind: 'section',
+    id: 'nav-admin-storage',
+    label: t('Storage'),
+    children: [
+      {
+        kind: 'link',
+        id: 'storage-backends',
+        label: t('Storage Backends'),
+        path: '/admin/infrastructure/storage/backends',
+      },
+      {
+        kind: 'link',
+        id: 'storage-tiers',
+        label: t('Storage Tiers'),
+        path: '/admin/infrastructure/storage/tiers',
+      },
+    ],
+  },
+  {
+    kind: 'section',
     id: 'nav-infrastructure',
     label: t('Infrastructure'),
     children: [
       {
         kind: 'link',
-        id: 'storage',
-        label: t('Storage'),
-        path: '/admin/infrastructure/storage',
-      },
-      {
-        kind: 'link',
         id: 'instance-types',
         label: t('Instance types'),
         path: '/admin/infrastructure/instance-types',
+        service: ServiceTier.VMAAS,
       },
       {
         kind: 'link',
@@ -83,6 +97,7 @@ const getAdminNav = (t: TFunction): NavRow[] => [
         id: 'baremetal-instance-types',
         label: t('Bare metal instance types'),
         path: '/admin/infrastructure/baremetal-instance-types',
+        service: ServiceTier.BMAAS,
       },
       {
         kind: 'link',
@@ -98,6 +113,7 @@ const getAdminNav = (t: TFunction): NavRow[] => [
 
 const getTenantAdminNav = (t: TFunction): NavRow[] => [
   ...getBaseNav(t),
+  getStorageNav(t),
   ...getIdpLinks(t),
   getNetworkNav(t),
   getSecretsNav(t),
@@ -151,6 +167,13 @@ const getProjectsNav = (t: TFunction): NavRow => ({
   id: 'projects',
   label: t('Projects'),
   path: '/projects',
+});
+
+const getStorageNav = (t: TFunction): NavRow => ({
+  kind: 'section',
+  id: 'nav-tenant-storage',
+  label: t('Storage'),
+  children: [{ kind: 'link', id: 'volumes', label: t('Volumes'), path: '/storage/volumes' }],
 });
 
 const getNetworkNav = (t: TFunction): NavRow => ({

@@ -333,8 +333,8 @@ func (c *runnerContext) run(cmd *cobra.Command, argv []string) error { //nolint:
 		return fmt.Errorf("failed to create vault secret store: %w", err)
 	}
 
-	// Create the Kafka client:
-	c.logger.InfoContext(ctx, "Creating Kafka client")
+	// Create the Kafka configuration:
+	c.logger.InfoContext(ctx, "Creating Kafka configuration")
 	kafkaTool, err := kafka.NewTool().
 		SetLogger(c.logger).
 		SetFlags(c.flags).
@@ -343,13 +343,8 @@ func (c *runnerContext) run(cmd *cobra.Command, argv []string) error { //nolint:
 	if err != nil {
 		return err
 	}
-	kafkaClient, err := kafkaTool.Client()
-	if err != nil {
-		return err
-	}
-	shutdown.AddFunction("kafka", 0, func(context.Context) error {
-		return kafkaClient.Close()
-	})
+	kafkaConfig := kafkaTool.Config()
+	kafkaBrokers := kafkaTool.Brokers()
 
 	// Wait till the database is available:
 	dbTool, err := database.NewTool().
@@ -791,17 +786,46 @@ func (c *runnerContext) run(cmd *cobra.Command, argv []string) error { //nolint:
 		publicv1.RegisterConsoleSessionsServer(grpcServer, consoleServer)
 	}
 
+	// Create the self subject access reviews servers:
+	c.logger.InfoContext(ctx, "Creating self subject access reviews server")
+	selfSubjectAccessReviewsServer, err := servers.NewSelfSubjectAccessReviewsServer().
+		SetLogger(c.logger).
+		SetEvaluator(evaluator).
+		SetTenancyLogic(tenancyLogic).
+		Build()
+	if err != nil {
+		return fmt.Errorf("failed to create self subject access reviews server: %w", err)
+	}
+	// filterable-resource-exempt: create-only permission check API, no List RPC or CEL filter field
+	publicv1.RegisterSelfSubjectAccessReviewsServer(grpcServer, selfSubjectAccessReviewsServer)
+
+	c.logger.InfoContext(ctx, "Creating private self subject access reviews server")
+	privateSelfSubjectAccessReviewsServer, err := servers.NewPrivateSelfSubjectAccessReviewsServer().
+		SetLogger(c.logger).
+		SetEvaluator(evaluator).
+		SetTenancyLogic(tenancyLogic).
+		Build()
+	if err != nil {
+		return fmt.Errorf("failed to create private self subject access reviews server: %w", err)
+	}
+	// filterable-resource-exempt: create-only permission check API, no List RPC or CEL filter field
+	privatev1.RegisterSelfSubjectAccessReviewsServer(grpcServer, privateSelfSubjectAccessReviewsServer)
+
 	// Create the events server:
 	c.logger.InfoContext(ctx, "Creating events server")
 	eventsServer, err := servers.NewEventsServer().
 		SetLogger(c.logger).
-		SetKafkaClient(kafkaClient).
+		SetKafkaConfig(kafkaConfig).
+		SetKafkaBrokers(kafkaBrokers...).
 		SetKafkaTopicPrefix(c.args.kafkaTopicPrefix).
 		SetTenancyLogic(tenancyLogic).
 		Build()
 	if err != nil {
 		return fmt.Errorf("failed to create events server: %w", err)
 	}
+	shutdown.AddFunction("events", 0, func(context.Context) error {
+		return eventsServer.Close()
+	})
 	// filterable-resource-exempt: streaming Watch RPC, no List RPC or CEL filter field
 	publicv1.RegisterEventsServer(grpcServer, eventsServer)
 
@@ -809,12 +833,16 @@ func (c *runnerContext) run(cmd *cobra.Command, argv []string) error { //nolint:
 	c.logger.InfoContext(ctx, "Creating private events server")
 	privateEventsServer, err := servers.NewPrivateEventsServer().
 		SetLogger(c.logger).
-		SetKafkaClient(kafkaClient).
+		SetKafkaConfig(kafkaConfig).
+		SetKafkaBrokers(kafkaBrokers...).
 		SetKafkaTopicPrefix(c.args.kafkaTopicPrefix).
 		Build()
 	if err != nil {
 		return fmt.Errorf("failed to create private events server: %w", err)
 	}
+	shutdown.AddFunction("private events", 0, func(context.Context) error {
+		return privateEventsServer.Close()
+	})
 	// filterable-resource-exempt: streaming Watch RPC, no List RPC or CEL filter field
 	privatev1.RegisterEventsServer(grpcServer, privateEventsServer)
 

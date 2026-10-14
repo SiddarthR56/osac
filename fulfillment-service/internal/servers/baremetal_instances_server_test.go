@@ -15,7 +15,6 @@ package servers
 
 import (
 	"fmt"
-	"github.com/osac-project/osac/fulfillment-service/internal/database/dao"
 
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -30,14 +29,7 @@ import (
 
 var _ = Describe("Bare metal instances server", func() {
 	BeforeEach(func() {
-		types, err := dao.NewGenericDAO[*privatev1.BareMetalInstanceType]().SetLogger(logger).SetTenancyLogic(tenancy).Build()
-		Expect(err).ToNot(HaveOccurred())
-		_, err = types.Create().SetObject(privatev1.BareMetalInstanceType_builder{
-			Id:       "default-type",
-			Metadata: privatev1.Metadata_builder{Name: "default-type", Tenant: testTenant}.Build(),
-			Spec:     privatev1.BareMetalInstanceTypeSpec_builder{}.Build(),
-		}.Build()).Do(ctx)
-		Expect(err).ToNot(HaveOccurred())
+		Expect(createTestBareMetalInstanceType(ctx, "default-type", bareMetalNetworkPort("data-0", "fabric"))).To(Succeed())
 	})
 	Describe("Creation", func() {
 		It("Can be built if all the required parameters are set", func() {
@@ -79,6 +71,7 @@ var _ = Describe("Bare metal instances server", func() {
 			var err error
 			createDiskImageWithLifecycle("default-bmi-disk-image",
 				privatev1.DiskImageLifecycle_DISK_IMAGE_LIFECYCLE_AVAILABLE, nil)
+			seedTenantDefaultNetworking(testTenant, "", new("netris"))
 
 			// Seed a published catalog item.
 			catalogServer, err := NewPrivateBareMetalInstanceCatalogItemsServer().
@@ -87,7 +80,7 @@ var _ = Describe("Bare metal instances server", func() {
 				SetTenancyLogic(tenancy).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
-			Expect(seedBareMetalCatalogItemTemplate(ctx, testTenant, "", "test-template")).To(Succeed())
+			Expect(seedBareMetalCatalogItemTemplate(ctx, testTenant, "", "test-template", bareMetalInstanceTypeReference("default-type"))).To(Succeed())
 			catalogResp, err := catalogServer.Create(ctx, privatev1.BareMetalInstanceCatalogItemsCreateRequest_builder{
 				Object: privatev1.BareMetalInstanceCatalogItem_builder{
 					Metadata: privatev1.Metadata_builder{
@@ -100,6 +93,9 @@ var _ = Describe("Bare metal instances server", func() {
 			}.Build())
 			Expect(err).ToNot(HaveOccurred())
 			catalogItemID = catalogResp.GetObject().GetId()
+
+			// Tenant defaults so Creates that omit network_attachments can inject them.
+			seedTenantDefaultNetworking(testTenant, "", new("netris"))
 
 			server, err = NewBareMetalInstancesServer().
 				SetLogger(logger).
@@ -125,6 +121,7 @@ var _ = Describe("Bare metal instances server", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(response.GetObject().GetId()).ToNot(BeEmpty())
 			Expect(response.GetObject().GetSpec().GetCatalogItem().GetId()).To(Equal(catalogItemID))
+			Expect(response.GetObject().GetSpec().GetInstanceType().GetId()).To(Equal("default-type"))
 		})
 
 		It("Returns a warning for a deprecated disk_image", func() {
@@ -210,7 +207,7 @@ var _ = Describe("Bare metal instances server", func() {
 					Spec: publicv1.BareMetalInstanceSpec_builder{
 						DiskImage:    publicv1.DiskImageReference_builder{Id: "default-bmi-disk-image"}.Build(),
 						CatalogItem:  publicv1.BareMetalInstanceCatalogItemReference_builder{Id: catalogItemID}.Build(),
-						InstanceType: publicv1.BareMetalInstanceTypeLocalReference_builder{Id: "default-type"}.Build(),
+						InstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "default-type", Shared: true}.Build(),
 						RunStrategy:  new(publicv1.BareMetalInstanceRunStrategy_BARE_METAL_INSTANCE_RUN_STRATEGY_ALWAYS),
 						SshPublicKey: new(testSSHPublicKey),
 					}.Build(),

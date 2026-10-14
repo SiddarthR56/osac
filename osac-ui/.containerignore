@@ -3,5 +3,4 @@
 **/tsconfig.tsbuildinfo
 .env
 .env.*
-.npmrc
 .git

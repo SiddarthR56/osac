@@ -153,6 +153,25 @@ var _ = Describe("AAPProvider", func() {
 			})
 		})
 
+		It("marks workflow launches sensitive when admin kubeconfig is present", func() {
+			provider = provisioning.NewAAPProvider(aapClient, "provision-workflow", "deprovision-workflow")
+			aapClient.getTemplateFunc = func(ctx context.Context, templateName string) (*aap.Template, error) {
+				return &aap.Template{ID: 2, Name: templateName, Type: aap.TemplateTypeWorkflow}, nil
+			}
+			kubeconfig := "apiVersion: v1\nclusters: []\n"
+			ctx = provisioning.WithAdminKubeconfig(ctx, kubeconfig)
+			aapClient.launchWorkflowTemplateFunc = func(ctx context.Context, req aap.LaunchWorkflowTemplateRequest) (*aap.LaunchWorkflowTemplateResponse, error) {
+				Expect(req.Sensitive).To(BeTrue())
+				return &aap.LaunchWorkflowTemplateResponse{JobID: 457}, nil
+			}
+
+			instance := &v1alpha1.ComputeInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-resource", Namespace: "default"},
+			}
+			_, err := provider.TriggerProvision(ctx, instance)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		Context("with tenant storage classes in context", func() {
 			BeforeEach(func() {
 				provider = provisioning.NewAAPProvider(aapClient, "provision-job", "deprovision-job")
@@ -273,6 +292,78 @@ var _ = Describe("AAPProvider", func() {
 		})
 	})
 
+	Describe("TriggerProvisionWithExtraVars", func() {
+		BeforeEach(func() {
+			provider = provisioning.NewAAPProvider(aapClient, "provision-job", "deprovision-job")
+		})
+
+		It("merges inherited outputs into the AAP request without replacing resource vars", func() {
+			var launchedExtraVars map[string]any
+			aapClient.launchJobTemplateFunc = func(_ context.Context, req aap.LaunchJobTemplateRequest) (*aap.LaunchJobTemplateResponse, error) {
+				launchedExtraVars = req.ExtraVars
+				return &aap.LaunchJobTemplateResponse{JobID: 123}, nil
+			}
+
+			resource := &v1alpha1.ComputeInstance{ObjectMeta: metav1.ObjectMeta{Name: "vm", Namespace: "tenant"}}
+			inherited := map[string]any{"l2_vni": 14, "l3_vni": 11}
+			result, err := provider.TriggerProvisionWithExtraVars(ctx, resource, inherited)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.JobID).To(Equal("123"))
+			Expect(launchedExtraVars).To(HaveKeyWithValue("l2_vni", 14))
+			Expect(launchedExtraVars).To(HaveKeyWithValue("l3_vni", 11))
+			Expect(launchedExtraVars).To(HaveKey("osac_job_vars"))
+			Expect(inherited).To(Equal(map[string]any{"l2_vni": 14, "l3_vni": 11}))
+		})
+
+		It("prefers inherited outputs when a key conflicts with generated vars", func() {
+			var launchedExtraVars map[string]any
+			aapClient.launchJobTemplateFunc = func(_ context.Context, req aap.LaunchJobTemplateRequest) (*aap.LaunchJobTemplateResponse, error) {
+				launchedExtraVars = req.ExtraVars
+				return &aap.LaunchJobTemplateResponse{JobID: 123}, nil
+			}
+
+			resource := &v1alpha1.ComputeInstance{ObjectMeta: metav1.ObjectMeta{Name: "vm", Namespace: "tenant"}}
+			inherited := map[string]any{"osac_job_vars": map[string]any{"source": "fabric"}}
+			_, err := provider.TriggerProvisionWithExtraVars(ctx, resource, inherited)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(launchedExtraVars).To(HaveKeyWithValue("osac_job_vars", inherited["osac_job_vars"]))
+			Expect(inherited).To(Equal(map[string]any{"osac_job_vars": map[string]any{"source": "fabric"}}))
+		})
+	})
+
+	Describe("TriggerProvision for add-on operators", func() {
+		It("launches the dedicated template with the operator and admin kubeconfig", func() {
+			provider = provisioning.NewAAPProvider(aapClient, "osac-install-addon-operator", "")
+			ctx = provisioning.WithAdminKubeconfig(ctx, "apiVersion: v1\nclusters: []\n")
+			ctx = provisioning.WithAddOnOperatorName(ctx, "cert-manager")
+			aapClient.getTemplateFunc = func(ctx context.Context, templateName string) (*aap.Template, error) {
+				Expect(templateName).To(Equal("osac-install-addon-operator"))
+				return &aap.Template{ID: 7, Name: templateName, Type: aap.TemplateTypeJob}, nil
+			}
+			aapClient.launchJobTemplateFunc = func(ctx context.Context, req aap.LaunchJobTemplateRequest) (*aap.LaunchJobTemplateResponse, error) {
+				Expect(req.TemplateName).To(Equal("osac-install-addon-operator"))
+				jobVars := req.ExtraVars["osac_job_vars"].(map[string]any)
+				Expect(jobVars).To(HaveKeyWithValue("addon_operator_name", "cert_manager"))
+				Expect(jobVars).To(HaveKeyWithValue("admin_kubeconfig", "apiVersion: v1\nclusters: []\n"))
+				resource := jobVars["resource"].(map[string]any)
+				Expect(resource["metadata"].(map[string]any)).To(HaveKeyWithValue("name", "test-order"))
+				return &aap.LaunchJobTemplateResponse{JobID: 707}, nil
+			}
+
+			order := &v1alpha1.ClusterOrder{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-order", Namespace: "default"},
+			}
+			result, err := provider.TriggerProvision(ctx, order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.JobID).To(Equal("707"))
+			Expect(result.InitialState).To(Equal(v1alpha1.JobStatePending))
+			Expect(result.Message).To(Equal("Provisioning job triggered"))
+		})
+
+	})
+
 	Describe("GetProvisionStatus", func() {
 		BeforeEach(func() {
 			provider = provisioning.NewAAPProvider(aapClient, "provision-job", "deprovision-job")
@@ -301,6 +392,20 @@ var _ = Describe("AAPProvider", func() {
 				Expect(status.JobID).To(Equal("789"))
 				Expect(status.State).To(Equal(v1alpha1.JobStateSucceeded))
 				Expect(status.Message).To(Equal("successful"))
+			})
+
+			It("does not treat launch extra vars as job output", func() {
+				aapClient.getJobFunc = func(_ context.Context, jobID string) (*aap.Job, error) {
+					return &aap.Job{
+						ID:        789,
+						Status:    "successful",
+						ExtraVars: "{",
+					}, nil
+				}
+
+				status, err := provider.GetProvisionStatus(ctx, &v1alpha1.ComputeInstance{}, "789")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(v1alpha1.JobStateSucceeded))
 			})
 		})
 
@@ -499,6 +604,64 @@ var _ = Describe("AAPProvider", func() {
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("failed to get job"))
 			})
+		})
+	})
+
+	Describe("GetProvisionStatusWithExtraVars", func() {
+		BeforeEach(func() {
+			provider = provisioning.NewAAPProvider(aapClient, "provision-job", "deprovision-job")
+		})
+
+		It("returns the successful job artifacts as normalized extra vars", func() {
+			aapClient.getJobFunc = func(_ context.Context, jobID string) (*aap.Job, error) {
+				Expect(jobID).To(Equal("789"))
+				return &aap.Job{ID: 789, Status: "successful", Artifacts: []byte(`{"l2_vni":14,"l3_vni":11}`)}, nil
+			}
+
+			status, err := provider.GetProvisionStatusWithExtraVars(ctx, &v1alpha1.Subnet{}, "789")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status.State).To(Equal(v1alpha1.JobStateSucceeded))
+			Expect(status.ExtraVars).To(HaveKeyWithValue("l2_vni", float64(14)))
+			Expect(status.ExtraVars).To(HaveKeyWithValue("l3_vni", float64(11)))
+
+			vnis, err := provisioning.ParseFabricVNIs(status.ExtraVars)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*vnis.L2VNI).To(Equal(int32(14)))
+			Expect(*vnis.L3VNI).To(Equal(int32(11)))
+		})
+
+		It("returns no output vars when the job has no artifacts", func() {
+			aapClient.getJobFunc = func(_ context.Context, _ string) (*aap.Job, error) {
+				return &aap.Job{Status: "successful"}, nil
+			}
+
+			status, err := provider.GetProvisionStatusWithExtraVars(ctx, &v1alpha1.Subnet{}, "789")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status.ExtraVars).To(BeNil())
+		})
+
+		It("returns an error when the AAP client cannot fetch the job", func() {
+			aapClient.getJobFunc = func(_ context.Context, _ string) (*aap.Job, error) {
+				return nil, errors.New("AAP connection error")
+			}
+
+			_, err := provider.GetProvisionStatusWithExtraVars(ctx, &v1alpha1.Subnet{}, "789")
+
+			Expect(err).To(MatchError(ContainSubstring("failed to get job")))
+		})
+
+		It("returns a job-specific error for malformed artifacts", func() {
+			aapClient.getJobFunc = func(_ context.Context, _ string) (*aap.Job, error) {
+				return &aap.Job{Status: "successful", Artifacts: []byte(`{"l2_vni":`)}, nil
+			}
+
+			status, err := provider.GetProvisionStatusWithExtraVars(ctx, &v1alpha1.Subnet{}, "789")
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("job 789"))
+			Expect(status.State).To(Equal(v1alpha1.JobStateSucceeded))
 		})
 	})
 
@@ -810,6 +973,7 @@ var _ = Describe("AAPProvider", func() {
 			aapClient.launchJobTemplateFunc = func(ctx context.Context, req aap.LaunchJobTemplateRequest) (*aap.LaunchJobTemplateResponse, error) {
 				jobVars := req.ExtraVars["osac_job_vars"].(map[string]any)
 				Expect(jobVars).To(HaveKeyWithValue("admin_kubeconfig", kubeconfig))
+				Expect(req.Sensitive).To(BeTrue())
 				return &aap.LaunchJobTemplateResponse{JobID: 100}, nil
 			}
 
@@ -825,6 +989,56 @@ var _ = Describe("AAPProvider", func() {
 				jobVars := req.ExtraVars["osac_job_vars"].(map[string]any)
 				Expect(jobVars).NotTo(HaveKey("admin_kubeconfig"))
 				return &aap.LaunchJobTemplateResponse{JobID: 101}, nil
+			}
+
+			instance := &v1alpha1.ComputeInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+			}
+			_, err := provider.TriggerProvision(ctx, instance)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("ExtraVars Subnet parent VirtualNetwork injection", func() {
+		BeforeEach(func() {
+			provider = provisioning.NewAAPProvider(aapClient, "provision-job", "deprovision-job")
+			aapClient.getTemplateFunc = func(ctx context.Context, templateName string) (*aap.Template, error) {
+				return &aap.Template{ID: 1, Name: templateName, Type: aap.TemplateTypeJob}, nil
+			}
+		})
+
+		It("should include the resolved parent identity in the Subnet job payload", func() {
+			parent := provisioning.SubnetParentVirtualNetwork{
+				FulfillmentID: "44444444-4444-4444-8444-444444444444",
+				KubernetesUID: "55555555-5555-4555-8555-555555555555",
+				TenantID:      "tenant-a",
+				Phase:         "Ready",
+			}
+			ctx = provisioning.WithSubnetParentVirtualNetwork(ctx, parent)
+
+			aapClient.launchJobTemplateFunc = func(ctx context.Context, req aap.LaunchJobTemplateRequest) (*aap.LaunchJobTemplateResponse, error) {
+				jobVars := req.ExtraVars["osac_job_vars"].(map[string]any)
+				Expect(jobVars["parent_virtual_network"]).To(Equal(map[string]any{
+					"fulfillment_id": parent.FulfillmentID,
+					"kubernetes_uid": parent.KubernetesUID,
+					"tenant_id":      parent.TenantID,
+					"phase":          parent.Phase,
+				}))
+				return &aap.LaunchJobTemplateResponse{JobID: 102}, nil
+			}
+
+			instance := &v1alpha1.ComputeInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+			}
+			_, err := provider.TriggerProvision(ctx, instance)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should omit the parent identity when it is not set in context", func() {
+			aapClient.launchJobTemplateFunc = func(ctx context.Context, req aap.LaunchJobTemplateRequest) (*aap.LaunchJobTemplateResponse, error) {
+				jobVars := req.ExtraVars["osac_job_vars"].(map[string]any)
+				Expect(jobVars).NotTo(HaveKey("parent_virtual_network"))
+				return &aap.LaunchJobTemplateResponse{JobID: 103}, nil
 			}
 
 			instance := &v1alpha1.ComputeInstance{

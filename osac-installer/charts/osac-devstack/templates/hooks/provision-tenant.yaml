@@ -18,6 +18,8 @@ spec:
         {{- include "osac-devstack.selectorLabels" . | nindent 8 }}
         job: provision-tenant
     spec:
+      securityContext:
+        fsGroup: 1001
       serviceAccountName: {{ include "osac-devstack.serviceAccountName" . }}
       restartPolicy: OnFailure
       initContainers:
@@ -58,12 +60,26 @@ spec:
           value: {{ .Values.tenant.keycloak.realm | quote }}
         - name: GRPCURL_IMAGE
           value: "docker.io/fullstorydev/grpcurl:latest"
+        - name: CA_FILE
+          value: /etc/ca-bundle/bundle.pem
+        {{- include "osac-devstack.fulfillmentAuthEnv" . | nindent 8 }}
         volumeMounts:
         - name: scripts
           mountPath: /scripts
+        - name: ca-bundle
+          mountPath: /etc/ca-bundle
+          readOnly: true
+        {{- include "osac-devstack.fulfillmentAuthVolumeMount" . | nindent 8 }}
       volumes:
       - name: scripts
         configMap:
           name: {{ include "osac-devstack.fullname" . }}-scripts
           defaultMode: 0755
+      - name: ca-bundle
+        configMap:
+          name: ca-bundle
+          items:
+          - key: bundle.pem
+            path: bundle.pem
+      {{- include "osac-devstack.fulfillmentAuthVolume" . | nindent 6 }}
 {{- end }}

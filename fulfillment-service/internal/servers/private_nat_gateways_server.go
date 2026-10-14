@@ -223,6 +223,21 @@ func (s *PrivateNATGatewaysServer) Create(ctx context.Context,
 	if err = validateTenantMatch(natTenant, externalIP, "ExternalIP", externalIPKey); err != nil {
 		return
 	}
+	canonicalHubID, err := canonicalNetworkingHubID(ctx, s.logger, s.networkClassesDao)
+	if err != nil {
+		return
+	}
+	if err = validateNetworkingHubReferences(canonicalHubID, networkingHubReference{
+		resourceType: "VirtualNetwork",
+		id:           virtualNetworkResponse.GetObject().GetId(),
+		hubID:        virtualNetworkResponse.GetObject().GetStatus().GetHub(),
+	}, networkingHubReference{
+		resourceType: "ExternalIP",
+		id:           externalIP.GetId(),
+		hubID:        externalIP.GetStatus().GetHub(),
+	}); err != nil {
+		return
+	}
 
 	if natGateway.GetStatus() == nil {
 		natGateway.SetStatus(privatev1.NATGatewayStatus_builder{
@@ -257,6 +272,14 @@ func (s *PrivateNATGatewaysServer) Update(ctx context.Context,
 	_, existingGateway, lockErr := s.lifecycle.lockNATGateway(ctx, id)
 	if lockErr != nil {
 		err = translateLifecycleError(lockErr)
+		return
+	}
+	if err = validateDefaultLabelUpdate(
+		existingGateway.GetMetadata().GetLabels(),
+		request.GetObject().GetMetadata().GetLabels(),
+		mask,
+		"NAT gateway",
+	); err != nil {
 		return
 	}
 	if updateIncludesField(mask, "spec.virtual_network", "spec.external_ip") {

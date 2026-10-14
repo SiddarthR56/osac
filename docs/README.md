@@ -11,6 +11,12 @@ together, and the design decisions that have been made.
 [Guides](guides/): Step-by-step configuration and usage guides for
 administrators, tenants, and developers.
 
+To get started with tenant and provider credentials, see
+[Managing Secrets](guides/secrets-guide.md).
+
+For Kafka broker requirements, connection settings, and a Strimzi example,
+see [Configuring an external Kafka cluster](guides/installation/kafka-configuration.md).
+
 This directory also contains concise, hand-maintained guidance for
 architecture and conventions that span component or repository boundaries
 within this mono-repo. Component `AGENTS.md` files own component-scoped agent
@@ -20,6 +26,9 @@ documentation for architecture, setup, and detailed conventions. Root
 [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONVENTIONS.md`](CONVENTIONS.md)
 provide the detailed cross-component reference. Also in this directory:
 
+- [agent-context/](agent-context/README.md) — maintained networking decisions,
+  installer/Wizard integration, feature dimensions, and review expectations,
+  routed from `AGENTS.md` for every coding agent.
 - [codex-getting-started.md](codex-getting-started.md) — onboarding OpenAI
   Codex against an OSAC checkout (install, `/import`, permissions, hook trust,
   MCP, and workflow differences).

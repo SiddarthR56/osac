@@ -18,7 +18,10 @@ package main
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -26,10 +29,19 @@ import (
 	. "github.com/onsi/ginkgo/v2" //nolint:revive,staticcheck
 	. "github.com/onsi/gomega"    //nolint:revive,staticcheck
 
+	osacv1alpha1 "github.com/osac-project/osac/osac-operator/api/v1alpha1"
 	"github.com/osac-project/osac/osac-operator/internal/controller"
+	"github.com/osac-project/osac/osac-operator/pkg/provisioning"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 )
@@ -68,6 +80,69 @@ type mockManager struct {
 func (m *mockManager) Start(ctx context.Context) error {
 	return m.startFunc(ctx)
 }
+
+var _ = Describe("discovery ignition TLS", func() {
+	BeforeEach(func() {
+		old, set := os.LookupEnv(envIgnitionTrustIngressCA)
+		Expect(os.Unsetenv(envIgnitionTrustIngressCA)).To(Succeed())
+		DeferCleanup(func() {
+			if set {
+				Expect(os.Setenv(envIgnitionTrustIngressCA, old)).To(Succeed())
+			} else {
+				Expect(os.Unsetenv(envIgnitionTrustIngressCA)).To(Succeed())
+			}
+		})
+	})
+
+	It("rejects an untrusted HTTPS endpoint", func() {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"ignition":true}`))
+		}))
+		defer srv.Close()
+
+		fetcher, err := newDiscoveryIgnitionFetcher(nil)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = fetcher.FetchIgnition(context.Background(), srv.URL)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("certificate"))
+	})
+
+	It("trusts the ingress CA from the OpenShift ConfigMap", func() {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"ignition":true}`))
+		}))
+		defer srv.Close()
+		Expect(os.Setenv(envIgnitionTrustIngressCA, "true")).To(Succeed())
+		bundle := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+		reader := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "default-ingress-cert", Namespace: "openshift-config-managed"},
+			Data:       map[string]string{"ca-bundle.crt": string(bundle)},
+		}).Build()
+
+		fetcher, err := newDiscoveryIgnitionFetcher(reader)
+		Expect(err).NotTo(HaveOccurred())
+		body, err := fetcher.FetchIgnition(context.Background(), srv.URL)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(body)).To(Equal(`{"ignition":true}`))
+	})
+
+	It("fails closed when the ingress CA ConfigMap is missing", func() {
+		Expect(os.Setenv(envIgnitionTrustIngressCA, "true")).To(Succeed())
+		_, err := newDiscoveryIgnitionFetcher(fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build())
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("fails closed when the ingress CA bundle has no valid certificate", func() {
+		Expect(os.Setenv(envIgnitionTrustIngressCA, "true")).To(Succeed())
+		reader := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "default-ingress-cert", Namespace: "openshift-config-managed"},
+			Data:       map[string]string{"ca-bundle.crt": "invalid"},
+		}).Build()
+		_, err := newDiscoveryIgnitionFetcher(reader)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("certificate"))
+	})
+})
 
 var _ = Describe("ignoreCanceled", func() {
 	It("should return nil for context.Canceled", func() {
@@ -138,7 +213,7 @@ var _ = Describe("clusterOrderStallThresholdsFromEnv", func() {
 		Expect(thresholds.PreparingInfrastructure).To(Equal(10 * time.Minute))
 		Expect(thresholds.ControlPlaneStarting).To(Equal(25 * time.Minute))
 		Expect(thresholds.WorkersJoining).To(Equal(15 * time.Minute))
-		Expect(thresholds.WorkersJoiningByHostType).To(Equal(map[string]time.Duration{
+		Expect(thresholds.WorkersJoiningByInstanceType).To(Equal(map[string]time.Duration{
 			"fast": 5 * time.Minute,
 			"slow": 40 * time.Minute,
 		}))
@@ -176,6 +251,46 @@ var _ = Describe("tenant CSI fulfillment configuration", func() {
 		endpoint, issuerURL := fulfillmentConfigFromEnv()
 		Expect(endpoint).To(Equal("fulfillment-api.example.com:443"))
 		Expect(issuerURL).To(Equal("https://keycloak.example.com/realms/osac"))
+	})
+})
+
+var _ = Describe("setupAddOnOperatorController", func() {
+	It("registers the add-on operator controller with the manager", func() {
+		scheme := runtime.NewScheme()
+		Expect(osacv1alpha1.AddToScheme(scheme)).To(Succeed())
+
+		localManager, err := ctrl.NewManager(&rest.Config{Host: "https://127.0.0.1"}, ctrl.Options{
+			Scheme:  scheme,
+			Metrics: metricsserver.Options{BindAddress: "0"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		manager, err := mcmanager.WithMultiCluster(localManager, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		variables := []string{envAAPURL, envAAPToken, envAAPTemplatePrefix, envClusterOrderNamespace}
+		originalValues := make(map[string]struct {
+			value string
+			set   bool
+		}, len(variables))
+		for _, variable := range variables {
+			value, set := os.LookupEnv(variable)
+			originalValues[variable] = struct {
+				value string
+				set   bool
+			}{value: value, set: set}
+			Expect(os.Unsetenv(variable)).To(Succeed())
+		}
+		DeferCleanup(func() {
+			for variable, originalValue := range originalValues {
+				if originalValue.set {
+					Expect(os.Setenv(variable, originalValue.value)).To(Succeed())
+					continue
+				}
+				Expect(os.Unsetenv(variable)).To(Succeed())
+			}
+		})
+
+		Expect(setupAddOnOperatorController(manager, provisioning.DefaultMaxJobHistory)).To(Succeed())
 	})
 })
 

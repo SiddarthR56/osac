@@ -83,6 +83,23 @@ type ProvisioningProvider interface {
 	Name() string
 }
 
+// ProvisioningProviderWithExtraVars can trigger provisioning with inherited automation variables.
+type ProvisioningProviderWithExtraVars interface {
+	TriggerProvisionWithExtraVars(ctx context.Context, resource client.Object, extraVars map[string]any) (*ProvisionResult, error)
+}
+
+// ProvisioningProviderWithProvisionOutputs can retrieve output variables from a provisioning job.
+type ProvisioningProviderWithProvisionOutputs interface {
+	GetProvisionStatusWithExtraVars(ctx context.Context, resource client.Object, jobID string) (ProvisionStatusWithExtraVars, error)
+}
+
+// ProvisioningJobCanceler can cancel a running provisioning job during resource deletion.
+// Providers that cannot cancel jobs may omit this interface; callers must then wait for the
+// job to reach a terminal state before continuing deletion.
+type ProvisioningJobCanceler interface {
+	CancelJob(ctx context.Context, jobID string) error
+}
+
 // ProvisionStatus represents the current state of a provisioning or deprovisioning job.
 type ProvisionStatus struct {
 	// JobID is the unique identifier for this job.
@@ -111,6 +128,12 @@ type ProvisionStatus struct {
 
 	// ErrorDetails contains detailed error information when State is JobStateFailed.
 	ErrorDetails string
+}
+
+// ProvisionStatusWithExtraVars contains the provisioning status and returned output variables.
+type ProvisionStatusWithExtraVars struct {
+	ProvisionStatus
+	ExtraVars map[string]any
 }
 
 // MessageWithDetails returns the message with error details appended, if present.

@@ -31,6 +31,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clnt "sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,9 +49,6 @@ import (
 )
 
 const objectPrefix = "bmi-"
-
-// defaultHostType is a placeholder until host type is modeled in the template proto.
-const defaultHostType = "default"
 
 const userDataSecretSuffix = "-user-data"
 
@@ -87,6 +85,7 @@ type FunctionBuilder struct {
 type function struct {
 	logger                           *slog.Logger
 	hubCache                         controllers.HubCache
+	networkingHubReader              controllers.NetworkingHubReader
 	bareMetalInstancesClient         privatev1.BareMetalInstancesClient
 	bareMetalInstanceTypesClient     privatev1.BareMetalInstanceTypesClient
 	bareMetalInstanceTemplatesClient privatev1.BareMetalInstanceTemplatesClient
@@ -154,6 +153,13 @@ func (b *FunctionBuilder) Build() (result controllers.ReconcilerFunction[*privat
 		hubCache:                         b.hubCache,
 		maskCalculator:                   masks.NewCalculator().Build(),
 	}
+	object.networkingHubReader, err = controllers.NewNetworkingHubReader().
+		SetNetworkClassesClient(privatev1.NewNetworkClassesClient(b.connection)).
+		SetHubCache(b.hubCache).
+		Build()
+	if err != nil {
+		return nil, err
+	}
 	result = object.run
 	return
 }
@@ -170,8 +176,15 @@ func (r *function) run(ctx context.Context, bareMetalInstance *privatev1.BareMet
 	} else {
 		err = t.update(ctx)
 	}
+	var hubResolutionRetryErr error
 	if err != nil {
-		return err
+		handled, retry := controllers.HandleResourceNetworkingHubResolutionError(err, t.setPending, t.setFailed)
+		if !handled {
+			return err
+		}
+		if retry {
+			hubResolutionRetryErr = err
+		}
 	}
 	updateMask := r.maskCalculator.Calculate(oldBareMetalInstance, bareMetalInstance)
 
@@ -179,8 +192,10 @@ func (r *function) run(ctx context.Context, bareMetalInstance *privatev1.BareMet
 		Object:     bareMetalInstance,
 		UpdateMask: updateMask,
 	}.Build())
-
-	return err
+	if err != nil {
+		return err
+	}
+	return hubResolutionRetryErr
 }
 
 func (t *task) update(ctx context.Context) error {
@@ -204,6 +219,7 @@ func (t *task) update(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	existingObject := object != nil
 
 	if t.bareMetalInstance.GetSpec().HasUserData() || t.bareMetalInstance.GetSpec().GetUserDataSecret() != nil {
 		t.userDataSecretName = fmt.Sprintf("%s%s", t.bareMetalInstance.GetId(), userDataSecretSuffix)
@@ -217,9 +233,20 @@ func (t *task) update(ctx context.Context) error {
 			},
 		}
 	}
+	storedNetworkAttachments := slices.Clone(object.Spec.NetworkAttachments)
 
 	result, err := controllerutil.CreateOrPatch(ctx, t.hubClient, object, func() error {
-		return t.mutateBMI(ctx, object)
+		if err := t.mutateBMI(ctx, object); err != nil {
+			return err
+		}
+		if existingObject {
+			if !equalNetworkAttachments(storedNetworkAttachments, object.Spec.NetworkAttachments) {
+				t.r.logger.WarnContext(ctx, "Private and stored network attachments differ; preserving stored network attachments on existing BareMetalInstance",
+					slog.String("namespace", object.GetNamespace()), slog.String("name", object.GetName()))
+			}
+			object.Spec.NetworkAttachments = storedNetworkAttachments
+		}
+		return nil
 	})
 	if err != nil {
 		return controllers.HandleK8sWriteError(ctx, t.r.logger, err, t.setFailed)
@@ -334,6 +361,20 @@ func (t *task) delete(ctx context.Context) (err error) {
 
 func (t *task) selectHub(ctx context.Context) error {
 	t.hubId = t.bareMetalInstance.GetStatus().GetHub()
+	if len(t.bareMetalInstance.GetSpec().GetNetworkAttachments()) > 0 {
+		if t.r.networkingHubReader == nil {
+			return controllers.ErrCanonicalHubUnavailable
+		}
+		resolution, err := controllers.ResolveResourceNetworkingHub(ctx, t.r.networkingHubReader, t.hubId)
+		if err != nil {
+			return err
+		}
+		t.hubId = resolution.HubID
+		t.hubNamespace = resolution.Namespace
+		t.hubClient = resolution.Client
+		t.r.logger.DebugContext(ctx, "Selected canonical networking hub", slog.String("id", t.hubId))
+		return nil
+	}
 	if t.hubId == "" {
 		response, err := t.r.hubsClient.List(ctx, privatev1.HubsListRequest_builder{}.Build())
 		if err != nil {
@@ -431,6 +472,18 @@ func (t *task) setFailed(err error) {
 		privatev1.BareMetalInstanceConditionType_BARE_METAL_INSTANCE_CONDITION_TYPE_CONFIGURATION_APPLIED,
 		privatev1.ConditionStatus_CONDITION_STATUS_FALSE,
 		"ValidationFailed",
+		err.Error(),
+	)
+}
+
+func (t *task) setPending(err error) {
+	if !t.bareMetalInstance.HasStatus() {
+		t.bareMetalInstance.SetStatus(&privatev1.BareMetalInstanceStatus{})
+	}
+	t.updateCondition(
+		privatev1.BareMetalInstanceConditionType_BARE_METAL_INSTANCE_CONDITION_TYPE_PROVISIONED,
+		privatev1.ConditionStatus_CONDITION_STATUS_FALSE,
+		"ResourcesUnavailable",
 		err.Error(),
 	)
 }
@@ -752,53 +805,35 @@ func (t *task) mutateBMI(ctx context.Context, object *bmfov1alpha1.BareMetalInst
 		return fmt.Errorf("BareMetalInstance must have a materialized template")
 	}
 
-	// Resolve host selection labels for the CRD's Selector.HostSelector. When an instance type is
-	// specified, map its host_label_selector. Otherwise fall back to the template's host_type
-	// (legacy path), which the backends map to the osac.openshift.io/host-type label.
-	if object.Spec.Selector.HostSelector == nil {
-		object.Spec.Selector.HostSelector = make(map[string]string)
+	instanceTypeRef := t.bareMetalInstance.GetSpec().GetInstanceType()
+	if instanceTypeRef == nil {
+		return fmt.Errorf("BareMetalInstance '%s' has no instance_type", t.bareMetalInstance.GetId())
 	}
-	if t.bareMetalInstance.GetSpec().HasInstanceType() {
-		instanceTypeRef := t.bareMetalInstance.GetSpec().GetInstanceType()
-		instanceTypeResp, err := t.r.bareMetalInstanceTypesClient.Get(ctx, privatev1.BareMetalInstanceTypesGetRequest_builder{
-			Id: instanceTypeRef.GetId(),
-		}.Build())
-		if err != nil {
-			return fmt.Errorf("failed to get instance type '%s': %w", instanceTypeRef.GetId(), err)
-		}
 
-		instanceType := instanceTypeResp.GetObject()
-		if instanceType.GetSpec().HasHostLabelSelector() {
-			for key, value := range instanceType.GetSpec().GetHostLabelSelector().GetMatchLabels() {
-				object.Spec.Selector.HostSelector[key] = value
-			}
+	// Replace any prior selector so updates cannot retain legacy placement labels.
+	object.Spec.Selector.HostSelector = make(map[string]string)
+	instanceTypeResp, err := t.r.bareMetalInstanceTypesClient.Get(ctx, privatev1.BareMetalInstanceTypesGetRequest_builder{
+		Id: instanceTypeRef.GetId(),
+	}.Build())
+	if err != nil {
+		return fmt.Errorf("failed to get instance type '%s': %w", instanceTypeRef.GetId(), err)
+	}
+
+	instanceType := instanceTypeResp.GetObject()
+	if instanceType.GetSpec().HasHostLabelSelector() {
+		for key, value := range instanceType.GetSpec().GetHostLabelSelector().GetMatchLabels() {
+			object.Spec.Selector.HostSelector[key] = value
 		}
-	} else {
-		// Fall back to template host_type when no instance type is specified.
-		templateResp, err := t.r.bareMetalInstanceTemplatesClient.Get(ctx, privatev1.BareMetalInstanceTemplatesGetRequest_builder{
-			Id: templateID,
-		}.Build())
-		if err != nil {
-			return fmt.Errorf("failed to get instance template '%s': %w", templateID, err)
-		}
-		hostType := templateResp.GetObject().GetHostType()
-		if hostType == "" {
-			hostType = defaultHostType
-		}
-		object.Spec.Selector.HostSelector["hostType"] = hostType
 	}
 
 	// Validate that HostSelector is non-empty after resolving from instance type or template.
 	// The CRD requires MinProperties=1, so an empty selector would fail K8s admission.
 	// Return an explicit error here rather than letting K8s reject with a generic validation error.
 	if len(object.Spec.Selector.HostSelector) == 0 {
-		if t.bareMetalInstance.GetSpec().HasInstanceType() {
-			return fmt.Errorf(
-				"instance type '%s' has no host_label_selector - cannot determine host selection",
-				t.bareMetalInstance.GetSpec().GetInstanceType().GetId(),
-			)
-		}
-		return fmt.Errorf("cannot determine host selection: no instance_type and no template host_type")
+		return fmt.Errorf(
+			"instance type '%s' has no host_label_selector - cannot determine host selection",
+			instanceTypeRef.GetId(),
+		)
 	}
 
 	object.Spec.TemplateID = templateID
@@ -853,24 +888,36 @@ func (t *task) mutateBMI(ctx context.Context, object *bmfov1alpha1.BareMetalInst
 	}
 
 	protoAttachments := t.bareMetalInstance.GetSpec().GetNetworkAttachments()
+	var networkAttachments []bmfov1alpha1.BareMetalNetworkAttachment
 	if len(protoAttachments) > 0 {
-		networkAttachments := make([]bmfov1alpha1.BareMetalNetworkAttachment, 0, len(protoAttachments))
+		networkAttachments = make([]bmfov1alpha1.BareMetalNetworkAttachment, 0, len(protoAttachments))
 		for _, att := range protoAttachments {
 			secGroupRefs := make([]string, 0, len(att.GetSecurityGroups()))
 			for _, sg := range att.GetSecurityGroups() {
 				secGroupRefs = append(secGroupRefs, controllers.RefKeyStr(sg))
 			}
+			primary := att.GetPrimary()
+			if len(protoAttachments) == 1 {
+				primary = true
+			}
 			networkAttachments = append(networkAttachments, bmfov1alpha1.BareMetalNetworkAttachment{
 				SubnetRef:         controllers.RefKeyStr(att.GetSubnet()),
 				SecurityGroupRefs: secGroupRefs,
 				Interface:         att.GetInterface(),
-				Primary:           att.GetPrimary(),
+				Primary:           primary,
 			})
 		}
-		object.Spec.NetworkAttachments = networkAttachments
 	}
+	object.Spec.NetworkAttachments = networkAttachments
 
 	return nil
+}
+
+func equalNetworkAttachments(left, right []bmfov1alpha1.BareMetalNetworkAttachment) bool {
+	if len(left) == 0 && len(right) == 0 {
+		return true
+	}
+	return apiequality.Semantic.DeepEqual(left, right)
 }
 
 // ensureUserDataSecret creates a Kubernetes Secret containing the cloud-init user data

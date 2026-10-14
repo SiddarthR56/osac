@@ -44,9 +44,9 @@ message BareMetalInstance {
 // The spec contains the details of a bare metal instance as desired by the user.
 message BareMetalInstanceSpec {
   option (buf.validate.message).cel = {
-    id: "baremetal_instance_primary_attachment"
-    message: "when multiple network attachments are specified, exactly one must have primary set to true"
-    expression: "this.network_attachments.size() <= 1 || this.network_attachments.filter(a, a.primary == true).size() == 1"
+    id: "baremetal_instance_single_attachment"
+    message: "at most one network attachment is supported"
+    expression: "this.network_attachments.size() <= 1"
   };
 
   // Reference to the BareMetalInstanceCatalogItem. Either `catalog_item` or `template` is required on create.
@@ -133,11 +133,10 @@ message BareMetalInstanceSpec {
   // This can't be modified after the bare metal instance is created.
   BareMetalInstanceTemplateReference template = 10 [(google.api.field_behavior) = IMMUTABLE];
 
-  // Reference to a BareMetalInstanceType. Optional; immutable after creation.
-  // When set, the system resolves this to the instance type's host_label_selector and maps it
-  // to the CRD's Selector.HostSelector for host selection. When omitted, host selection falls
-  // back to the catalog item's template host_type.
-  BareMetalInstanceTypeLocalReference instance_type = 11 [(google.api.field_behavior) = IMMUTABLE];
+  // Reference to the BareMetalInstanceType used for hardware placement.
+  // If omitted from the create request, a catalog item or template may provide it.
+  // The resolved reference is immutable after creation.
+  BareMetalInstanceTypeReference instance_type = 11 [(google.api.field_behavior) = IMMUTABLE];
 
   // Reference to a DiskImage resource, selected by ID or name. The reference is immutable after creation.
   // Catalog items can provide a default when callers omit it. The reference must resolve to an image in the instance

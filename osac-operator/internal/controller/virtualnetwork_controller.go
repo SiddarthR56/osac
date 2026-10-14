@@ -172,15 +172,15 @@ func (r *VirtualNetworkReconciler) handleUpdate(ctx context.Context, vnet *v1alp
 	// Determine implementation strategy from the dispatcher-resolved manager for this
 	// VirtualNetwork's NetworkClass (fabric_manager, falling back to k8s_manager).
 	implementationStrategy, err := resolveImplementationStrategy(
-		ctx, r.Resolver, "VirtualNetwork", vnet.Spec.NetworkClass, "")
+		ctx, r.Resolver, "VirtualNetwork", vnet.Spec.NetworkClass)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if implementationStrategy == "" {
 		msg := fmt.Sprintf("NetworkClass '%s' has no fabric_manager or k8s_manager configured", vnet.Spec.NetworkClass)
 		setReadyConditionBlocked(&vnet.Status.Conditions, v1alpha1.ReasonNoManagerConfigured, msg)
-		log.Info("implementation strategy not set, requeueing", "virtualNetwork", vnet.Name)
-		return ctrl.Result{RequeueAfter: defaultPreconditionRequeueInterval}, nil
+		log.Info("implementation strategy not set", "virtualNetwork", vnet.Name)
+		return ctrl.Result{}, fmt.Errorf("cannot reconcile VirtualNetwork %q: %s", vnet.Name, msg)
 	}
 
 	// Add implementation-strategy annotation if not present or different
@@ -226,15 +226,21 @@ func (r *VirtualNetworkReconciler) handleProvisioning(ctx context.Context, vnet 
 		return ctrl.Result{}, nil
 	}
 
+	onProvisioningFailure := func(message string) {
+		vnet.Status.Phase = v1alpha1.VirtualNetworkPhaseFailed
+		setReadyConditionFailed(&vnet.Status.Conditions, message)
+	}
+
 	return provisioning.RunProvisioningLifecycle(ctx, r.ProvisioningProvider, vnet,
 		&provisioning.State{Jobs: &vnet.Status.ProvisioningJobs, DesiredConfigVersion: vnet.Status.DesiredConfigVersion},
 		r.MaxJobHistory, r.StatusPollInterval,
 		&provisioning.PollCallbacks{
-			OnFailed: func(message string) {
-				vnet.Status.Phase = v1alpha1.VirtualNetworkPhaseFailed
-				setReadyConditionFailed(&vnet.Status.Conditions, message)
-			},
+			OnFailed:      onProvisioningFailure,
+			OnOutputError: onProvisioningFailure,
 			OnSuccess: func(_ provisioning.ProvisionStatus) {
+				if vnet.Annotations[osacImplementationStrategyAnnotation] == agentlessNetImplementationStrategy {
+					vnet.Status.BackendNetworkID = string(vnet.UID)
+				}
 				vnet.Status.Phase = v1alpha1.VirtualNetworkPhaseReady
 				setReadyConditionTrue(&vnet.Status.Conditions)
 			},
