@@ -32,6 +32,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clnt "sigs.k8s.io/controller-runtime/pkg/client"
@@ -90,6 +91,7 @@ type FunctionBuilder struct {
 type function struct {
 	logger                 *slog.Logger
 	hubCache               controllers.HubCache
+	networkingHubReader    controllers.NetworkingHubReader
 	computeInstancesClient privatev1.ComputeInstancesClient
 	hubsClient             privatev1.HubsClient
 	instanceTypesClient    privatev1.InstanceTypesClient
@@ -157,6 +159,13 @@ func (b *FunctionBuilder) Build() (result controllers.ReconcilerFunction[*privat
 		hubCache:               b.hubCache,
 		maskCalculator:         masks.NewCalculator().Build(),
 	}
+	object.networkingHubReader, err = controllers.NewNetworkingHubReader().
+		SetNetworkClassesClient(privatev1.NewNetworkClassesClient(b.connection)).
+		SetHubCache(b.hubCache).
+		Build()
+	if err != nil {
+		return nil, err
+	}
 	result = object.run
 	return
 }
@@ -173,19 +182,31 @@ func (r *function) run(ctx context.Context, computeInstance *privatev1.ComputeIn
 	} else {
 		reconcileErr = t.update(ctx)
 	}
-	var secretErr *SecretResolutionError
-	if errors.As(reconcileErr, &secretErr) {
-		if secretErr.Permanent {
-			t.setReconciliationFailedWithReason(secretErr.Err, secretErr.Reason)
-		} else {
-			// Resolution failures are retried without changing API status or creating
-			// a Kubernetes object. Restore the input so defaults and hub selection do
-			// not turn a transient lookup failure into a persisted mutation.
-			proto.Reset(computeInstance)
-			proto.Merge(computeInstance, oldComputeInstance)
+	var hubResolutionRetryErr error
+	if reconcileErr != nil {
+		handled, retry := controllers.HandleResourceNetworkingHubResolutionError(reconcileErr, t.setPending, t.setFailed)
+		if handled {
+			if retry {
+				hubResolutionRetryErr = reconcileErr
+			}
+			reconcileErr = nil
 		}
-	} else if reconcileErr != nil && !errors.Is(reconcileErr, errTransientK8sError) {
-		t.setReconciliationFailed(reconcileErr)
+	}
+	if reconcileErr != nil {
+		var secretErr *SecretResolutionError
+		if errors.As(reconcileErr, &secretErr) {
+			if secretErr.Permanent {
+				t.setReconciliationFailedWithReason(secretErr.Err, secretErr.Reason)
+			} else {
+				// Resolution failures are retried without changing API status or creating
+				// a Kubernetes object. Restore the input so defaults and hub selection do
+				// not turn a transient lookup failure into a persisted mutation.
+				proto.Reset(computeInstance)
+				proto.Merge(computeInstance, oldComputeInstance)
+			}
+		} else if !errors.Is(reconcileErr, errTransientK8sError) {
+			t.setReconciliationFailed(reconcileErr)
+		}
 	}
 	// Calculate which fields the reconciler actually modified and use a field mask
 	// to update only those fields. This prevents overwriting concurrent user changes.
@@ -209,7 +230,10 @@ func (r *function) run(ctx context.Context, computeInstance *privatev1.ComputeIn
 		}
 		return reconcileErr
 	}
-	return updateErr
+	if updateErr != nil {
+		return updateErr
+	}
+	return hubResolutionRetryErr
 }
 
 func (t *task) update(ctx context.Context) error {
@@ -250,7 +274,7 @@ func (t *task) update(ctx context.Context) error {
 	}
 
 	// Prepare the changes to the spec:
-	spec, err := t.buildSpec(ctx)
+	spec, err := t.buildSpecWithNetworkAttachments(ctx, object == nil)
 	if err != nil {
 		return err
 	}
@@ -288,6 +312,15 @@ func (t *task) update(ctx context.Context) error {
 			slog.String("name", object.GetName()),
 		)
 	} else {
+		var desiredNetworkSpec osacv1alpha1.ComputeInstanceSpec
+		if networkErr := t.buildSpecNetworkAttachments(ctx, &desiredNetworkSpec); networkErr != nil {
+			t.r.logger.WarnContext(ctx, "Failed to resolve private network attachments; preserving stored network attachments on existing ComputeInstance",
+				slog.String("namespace", object.GetNamespace()), slog.String("name", object.GetName()), slog.Any("error", networkErr))
+		} else if !equalNetworkAttachments(object.Spec.NetworkAttachments, desiredNetworkSpec.NetworkAttachments) {
+			t.r.logger.WarnContext(ctx, "Private and stored network attachments differ; preserving stored network attachments on existing ComputeInstance",
+				slog.String("namespace", object.GetNamespace()), slog.String("name", object.GetName()))
+		}
+		spec.NetworkAttachments = object.Spec.NetworkAttachments
 		update := object.DeepCopy()
 		update.Spec = spec
 		err = t.hubClient.Patch(ctx, update, clnt.MergeFrom(object))
@@ -413,6 +446,20 @@ func (t *task) delete(ctx context.Context) (err error) {
 
 func (t *task) selectHub(ctx context.Context) error {
 	t.hubId = t.computeInstance.GetStatus().GetHub()
+	if len(t.computeInstance.GetSpec().GetNetworkAttachments()) > 0 {
+		if t.r.networkingHubReader == nil {
+			return controllers.ErrCanonicalHubUnavailable
+		}
+		resolution, err := controllers.ResolveResourceNetworkingHub(ctx, t.r.networkingHubReader, t.hubId)
+		if err != nil {
+			return err
+		}
+		t.hubId = resolution.HubID
+		t.hubNamespace = resolution.Namespace
+		t.hubClient = resolution.Client
+		t.r.logger.DebugContext(ctx, "Selected canonical networking hub", slog.String("id", t.hubId))
+		return nil
+	}
 	if t.hubId == "" {
 		response, err := t.r.hubsClient.List(ctx, privatev1.HubsListRequest_builder{}.Build())
 		if err != nil {
@@ -571,6 +618,18 @@ func (t *task) setFailed(err error) {
 	)
 }
 
+func (t *task) setPending(err error) {
+	if !t.computeInstance.HasStatus() {
+		t.computeInstance.SetStatus(&privatev1.ComputeInstanceStatus{})
+	}
+	t.updateCondition(
+		privatev1.ComputeInstanceConditionType_COMPUTE_INSTANCE_CONDITION_TYPE_PROVISIONED,
+		privatev1.ConditionStatus_CONDITION_STATUS_FALSE,
+		"ResourcesUnavailable",
+		err.Error(),
+	)
+}
+
 // updateCondition updates or creates a condition with the specified type, status, reason, and message.
 func (t *task) updateCondition(conditionType privatev1.ComputeInstanceConditionType, status privatev1.ConditionStatus,
 	reason string, message string) {
@@ -623,6 +682,10 @@ func (t *task) setReconciliationFailedWithReason(err error, reason string) {
 // buildSpec constructs the spec for the Kubernetes ComputeInstance object based on the
 // compute instance from the database.
 func (t *task) buildSpec(ctx context.Context) (osacv1alpha1.ComputeInstanceSpec, error) {
+	return t.buildSpecWithNetworkAttachments(ctx, true)
+}
+
+func (t *task) buildSpecWithNetworkAttachments(ctx context.Context, includeNetworkAttachments bool) (osacv1alpha1.ComputeInstanceSpec, error) {
 	templateParameters, err := utils.ConvertTemplateParametersToJSON(t.computeInstance.GetSpec().GetTemplateParameters())
 	if err != nil {
 		return osacv1alpha1.ComputeInstanceSpec{}, err
@@ -643,13 +706,22 @@ func (t *task) buildSpec(ctx context.Context) (osacv1alpha1.ComputeInstanceSpec,
 		return osacv1alpha1.ComputeInstanceSpec{}, err
 	}
 
-	// Handle network_attachments (required)
-	err = t.buildSpecNetworkAttachments(ctx, &spec)
-	if err != nil {
-		return osacv1alpha1.ComputeInstanceSpec{}, err
+	if includeNetworkAttachments {
+		// Handle network_attachments (required)
+		err = t.buildSpecNetworkAttachments(ctx, &spec)
+		if err != nil {
+			return osacv1alpha1.ComputeInstanceSpec{}, err
+		}
 	}
 
 	return spec, nil
+}
+
+func equalNetworkAttachments(left, right []osacv1alpha1.ComputeNetworkAttachment) bool {
+	if len(left) == 0 && len(right) == 0 {
+		return true
+	}
+	return apiequality.Semantic.DeepEqual(left, right)
 }
 
 // buildSpecNetworkAttachments handles the network_attachments field.

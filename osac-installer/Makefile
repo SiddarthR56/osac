@@ -30,6 +30,12 @@ SHELL := /usr/bin/env bash -o pipefail
 # Extra helm --set/--set-string args appended to install commands.
 EXTRA_HELM_ARGS ?=
 FULFILLMENT_GINKGO_ARGS ?=
+MCP_TEST_ENABLED ?= false
+
+ifeq ($(MCP_TEST_ENABLED),true)
+MCP_TEST_HELM_ARGS := --set service.mcp.enabled=true --set-string service.mcp.externalHostname=mcp.osac.localhost --set service.mcp.externalPort=8443
+MCP_TEST_URL := https://mcp.osac.localhost:8443
+endif
 
 # Work around HTTP/2 stream resets from proxy.golang.org during container
 # builds (see osac-test-infra#543).  Override with `make test GODEBUG=` to
@@ -71,6 +77,11 @@ $(error SUITE is required (all|fulfillment|operator|bmf))
 endif
 ifeq ($(filter $(SUITE),all fulfillment operator bmf),)
 $(error SUITE=$(SUITE) is invalid; must be all, fulfillment, operator, or bmf)
+endif
+ifeq ($(MCP_TEST_ENABLED),true)
+ifneq ($(PLATFORM),kind)
+$(error MCP_TEST_ENABLED=true requires PLATFORM=kind (the MCP test endpoint uses mcp.osac.localhost:8443))
+endif
 endif
 endif
 
@@ -356,6 +367,7 @@ ifeq ($(HELM_MAJOR),4)
 endif
 	# Helm install: operators + AWX + UI + seeding
 	helm upgrade --install osac-devstack charts/osac-devstack \
+		-f $(INSTANCE_VALUES) $(INSTANCE_VALUES_EXTRA) \
 		--namespace $(NS) --create-namespace \
 		--set osacNamespace=$(NS) \
 		--set kindClusterName=$(KIND_CLUSTER_NAME) \
@@ -391,9 +403,9 @@ ifeq ($(SUITE),fulfillment)
 	$(call kind-container-build,--build-arg GODEBUG=$(GODEBUG) -t localhost/osac-operator:it -f ../osac-operator/Containerfile ..)
 	$(call kind-load-image,localhost/osac-operator:it)
 	$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
-		EXTRA_HELM_ARGS="--set service.images.service.repository=localhost/fulfillment-service --set service.images.service.tag=it --set service.images.service.pullPolicy=Never --set service.controller.sync=false --set operator.enabled=false --set operator.networkManagers.enabled=true --set global.networking.networkClass.enabled=false"
+		EXTRA_HELM_ARGS="--set service.images.service.repository=localhost/fulfillment-service --set service.images.service.tag=it --set service.images.service.pullPolicy=Never --set service.controller.sync=false --set operator.enabled=false --set operator.networkManagers.enabled=true --set global.networking.networkClass.enabled=false $(MCP_TEST_HELM_ARGS)"
 	@for f in ../fulfillment-service/it/crds/*.yaml; do kubectl apply --server-side --field-manager=helm --force-conflicts -f "$$f"; done
-	cd ../fulfillment-service && ginkgo run --timeout 1h15m -v --skip 'NetworkClass manager (capability discovery|readiness)' $(FULFILLMENT_GINKGO_ARGS) it
+	cd ../fulfillment-service && IT_MCP_DEPLOYED_URL="$(MCP_TEST_URL)" ginkgo run --timeout 1h15m -v --skip 'NetworkClass manager (capability discovery|readiness)' $(FULFILLMENT_GINKGO_ARGS) it
 	$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
 		EXTRA_HELM_ARGS="--set service.images.service.repository=localhost/fulfillment-service --set service.images.service.tag=it --set service.images.service.pullPolicy=Never --set service.controller.sync=false --set operator.enabled=true --set operator.image.repository=localhost/osac-operator --set operator.image.tag=it --set operator.image.pullPolicy=Never --set operator.networkManagers.enabled=true --set global.networking.networkClass.enabled=false"
 	cd ../fulfillment-service && ginkgo run --timeout 1h -v --focus 'NetworkClass manager capability discovery' it
@@ -408,7 +420,7 @@ ifeq ($(SUITE),operator)
 	$(call kind-container-build,--build-arg GODEBUG=$(GODEBUG) -t localhost/osac-operator:it -f ../osac-operator/Containerfile ..)
 	$(call kind-load-image,localhost/osac-operator:it)
 	$(MAKE) install-osac PLATFORM=$(PLATFORM) PROFILE=$(PROFILE) NS=$(NS) \
-		EXTRA_HELM_ARGS="--set operator.image.repository=localhost/osac-operator --set operator.image.tag=it --set operator.image.pullPolicy=Never --set service.enabled=false --set hubAccess.enabled=false --set validation.enabled=false --set global.fulfillmentTrust.enabled=false --set global.networking.networkClass.enabled=false"
+		EXTRA_HELM_ARGS="--set operator.image.repository=localhost/osac-operator --set operator.image.tag=it --set operator.image.pullPolicy=Never --set operator.fulfillment.serverAddress= --set service.enabled=false --set hubAccess.enabled=false --set validation.enabled=false --set global.fulfillmentTrust.enabled=false --set global.networking.networkClass.enabled=false"
 	cd ../osac-operator && ginkgo run --timeout 30m -v test/integration
 endif
 ifeq ($(SUITE),bmf)
@@ -443,6 +455,7 @@ helm-template: ## Dry-run render all templates
 	helm template osac-infra $(INFRA_CHART)
 	helm template osac $(OSAC_CHART) --values $(HELM_VALIDATION_VALUES)
 
+# Schema-error patterns accept Helm 3 dotted paths and Helm 4 JSON pointers.
 .PHONY: csi-render-test
 csi-render-test: helm-deps ## Verify CSI and storage-provider chart rendering
 	@set -euo pipefail; \
@@ -460,11 +473,11 @@ csi-render-test: helm-deps ## Verify CSI and storage-provider chart rendering
 		assert_helm_failure() { \
 			expected="$$1"; shift; \
 			if "$$@" >/dev/null 2>"$$error_render"; then \
-				printf 'Helm unexpectedly accepted invalid values; expected error: %s\n' "$$expected" >&2; \
+				printf 'Helm unexpectedly accepted invalid values; expected error pattern: %s\n' "$$expected" >&2; \
 				exit 1; \
 			fi; \
-			if ! rg -Fq "$$expected" "$$error_render"; then \
-				printf 'Helm failed without the expected error: %s\n' "$$expected" >&2; \
+			if ! rg -q -- "$$expected" "$$error_render"; then \
+				printf 'Helm failed without the expected error pattern: %s\n' "$$expected" >&2; \
 				cat "$$error_render" >&2; \
 				exit 1; \
 			fi; \
@@ -488,16 +501,17 @@ csi-render-test: helm-deps ## Verify CSI and storage-provider chart rendering
 		helm template osac $(OSAC_CHART) \
 			--values $(OSAC_CHART)/ci/default-values.yaml > "$$default_operator_render"; \
 		! rg -q 'name: OSAC_VENDOR_CONTROLLERS' "$$default_operator_render"; \
-		assert_helm_failure "at '/operator/vendorControllers/lvms'" \
+		assert_helm_failure 'operator[./]vendorControllers[./]lvms' \
 			helm template osac $(OSAC_CHART) \
 			--values $(OSAC_CHART)/ci/default-values.yaml \
 			--set-string operator.vendorControllers.lvms=; \
-		assert_helm_failure "at '/operator/vendorControllers/lvms'" \
+		assert_helm_failure 'operator[./]vendorControllers[./]lvms' \
 			helm template osac $(OSAC_CHART) \
 			--values $(OSAC_CHART)/ci/default-values.yaml \
 			--set operator.vendorControllers.lvms=42; \
 		helm template osac $(OSAC_CHART) \
 			--values charts/osac/ci/default-values.yaml \
+			--set-string global.clusterDomain=example.com \
 			--set operator.enabled=false \
 			--set operator.networkManagers.enabled=true \
 			--set csiDriver.enabled=true \
@@ -537,7 +551,7 @@ csi-render-test: helm-deps ## Verify CSI and storage-provider chart rendering
 			--values values/caas-ci/infra.yaml \
 			--set csiDriver.enabled=true > "$$infra_enabled_render"; \
 		rg -q 'name: osac-infra-create-csi-creds' "$$infra_enabled_render"; \
-		assert_helm_failure 'csiDriver.namespace must be one of the following: "osac-csi"' \
+		assert_helm_failure "at '/csiDriver/namespace'" \
 			helm template osac $(OSAC_CHART) \
 			--values charts/osac/ci/full-values.yaml \
 			--set operator.networkManagers.enabled=true \
@@ -553,7 +567,7 @@ csi-render-test: helm-deps ## Verify CSI and storage-provider chart rendering
 			--set operator.networkManagers.enabled=true \
 			--namespace osac-csi \
 			--set csiDriver.controller.fulfillment.configMap.name=osac-fulfillment-config; \
-		assert_helm_failure 'namespace must be one of the following: "", "osac-csi"' \
+		assert_helm_failure "at '/namespace'" \
 			helm template csi-driver ../osac-csi-driver/charts/csi-driver \
 			--set namespace=not-osac-csi; \
 		echo 'CSI render checks passed.'
@@ -562,16 +576,24 @@ csi-render-test: helm-deps ## Verify CSI and storage-provider chart rendering
 fulfillment-trust-render-test: helm-deps ## Check verified fulfillment transport renders
 	python3 scripts/test-fulfillment-trust-render.py
 
+.PHONY: metering-auth-render-test
+metering-auth-render-test: helm-deps ## Check metering service-account auth renders in supported profiles
+	python3 scripts/test-metering-auth-render.py
+
 .PHONY: mce-render-test
 mce-render-test: ## Check disabled MCE defaults, explicit enablement, and CaaS inheritance
 	uv run --project .. python scripts/test-mce-render.py
+
+.PHONY: fulfillment-auth-test
+fulfillment-auth-test: ## Check Fulfillment service-account token exchange behavior
+	./scripts/test-fulfillment-auth.sh
 
 .PHONY: dev-full-render-test
 dev-full-render-test: helm-deps ## Check dev-full TLS and Helm post-rendering
 	./scripts/test-dev-full-render.sh
 
 .PHONY: helm-validate
-helm-validate: helm-lint csi-render-test helm-networking-test fulfillment-trust-render-test mce-render-test dev-full-render-test ## Validate all charts (lint + template)
+helm-validate: helm-lint csi-render-test helm-networking-test fulfillment-trust-render-test fulfillment-auth-test metering-auth-render-test mce-render-test dev-full-render-test ## Validate all charts (lint + template)
 	@for d in values/*/; do \
 		infra="$${d}infra.yaml"; \
 		[ -f "$$infra" ] && echo "Validating $$infra..." && \

@@ -30,7 +30,7 @@ const nodeSetRowSchema = (t: TFunction) =>
   yup.object({
     rowId: yup.string().required(),
     name: resourceNameSchema(t),
-    bareMetalInstanceType: yup.string().required(t('Bare-metal instance type is required')),
+    hostType: yup.string().required(t('Host type is required')),
     size: yup
       .string()
       .required(t('Pool size is required'))

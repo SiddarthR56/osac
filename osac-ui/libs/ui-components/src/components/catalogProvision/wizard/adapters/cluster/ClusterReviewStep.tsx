@@ -12,9 +12,6 @@ import {
 } from '@patternfly/react-core';
 import { useFormikContext } from 'formik';
 
-import { type BareMetalInstanceType, BareMetalInstanceTypes } from '@osac/types';
-import { cel } from '@osac/ui-components/api/cel';
-import { useListResource } from '@osac/ui-components/api/use-resource';
 import {
   CLUSTER_VERSION_ACTIVE_LIST_FILTER,
   useClusterVersions,
@@ -34,7 +31,6 @@ import { formatReviewScalar } from '../../catalogOverlay';
 import { NetworkAttachmentReviewFields } from '../NetworkAttachmentReviewFields';
 
 const formatNodeSetsForReview = (
-  instanceTypes: BareMetalInstanceType[],
   nodeSetRows: ClusterWizardValues['spec']['nodeSetRows'],
 ): string => {
   if (nodeSetRows.length === 0) {
@@ -42,9 +38,7 @@ const formatNodeSetsForReview = (
   }
   return nodeSetRows
     .map((row) => {
-      const instanceType = instanceTypes.find((item) => item.id === row.bareMetalInstanceType);
-
-      return `${instanceType?.metadata?.name || row.bareMetalInstanceType}: ${row.size}`;
+      return `${row.hostType}: ${row.size}`;
     })
     .join(', ');
 };
@@ -56,19 +50,6 @@ interface Props {
 export const ClusterReviewStep = ({ catalogItem }: Props) => {
   const { t } = useTranslation();
   const { values } = useFormikContext<ClusterWizardValues>();
-
-  const {
-    data: instanceTypesResponse,
-    isLoading,
-    error,
-  } = useListResource(BareMetalInstanceTypes, {
-    filter: cel<BareMetalInstanceType>((filter) =>
-      filter
-        .field('id')
-        .isIn(values.spec.nodeSetRows.map(({ bareMetalInstanceType }) => bareMetalInstanceType)),
-    ),
-  });
-  const instanceTypes = instanceTypesResponse?.items ?? [];
 
   const { data: versions = [] } = useClusterVersions({
     filter: CLUSTER_VERSION_ACTIVE_LIST_FILTER,
@@ -87,7 +68,7 @@ export const ClusterReviewStep = ({ catalogItem }: Props) => {
     values.spec.versionName,
   );
 
-  if (isLoading || projectsLoading) {
+  if (projectsLoading) {
     return (
       <Bullseye>
         <Spinner />
@@ -97,13 +78,6 @@ export const ClusterReviewStep = ({ catalogItem }: Props) => {
 
   return (
     <Stack hasGutter>
-      {!!error && (
-        <StackItem>
-          <Alert variant="warning" isInline title={t('Failed to fetch bare-metal instance types')}>
-            {getErrorMessage(error)}
-          </Alert>
-        </StackItem>
-      )}
       {!!projectsError && (
         <StackItem>
           <Alert variant="warning" isInline title={t('Failed to fetch project')}>
@@ -158,7 +132,7 @@ export const ClusterReviewStep = ({ catalogItem }: Props) => {
           <DescriptionListGroup>
             <DescriptionListTerm>{t('Node sets')}</DescriptionListTerm>
             <DescriptionListDescription>
-              {formatNodeSetsForReview(instanceTypes, values.spec.nodeSetRows)}
+              {formatNodeSetsForReview(values.spec.nodeSetRows)}
             </DescriptionListDescription>
           </DescriptionListGroup>
         </DescriptionList>

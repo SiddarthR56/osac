@@ -58,6 +58,7 @@ type PrivateClustersServer struct {
 	catalogItemsDao           *dao.GenericDAO[*privatev1.ClusterCatalogItem]
 	clusterVersionsDao        *dao.GenericDAO[*privatev1.ClusterVersion]
 	virtualNetworksDao        *dao.GenericDAO[*privatev1.VirtualNetwork]
+	networkClassesDao         *dao.GenericDAO[*privatev1.NetworkClass]
 	subnetsDao                *dao.GenericDAO[*privatev1.Subnet]
 	securityGroupsDao         *dao.GenericDAO[*privatev1.SecurityGroup]
 	tenantsDao                *dao.GenericDAO[*privatev1.Tenant]
@@ -120,6 +121,10 @@ func (b *PrivateClustersServerBuilder) Build() (result *PrivateClustersServer, e
 	}
 	if b.tenancyLogic == nil {
 		err = errors.New("tenancy logic is mandatory")
+		return
+	}
+	networkClassesDao, err := newNetworkClassesDAO(b.logger, b.tenancyLogic, b.metricsRegisterer)
+	if err != nil {
 		return
 	}
 	// Create the templates DAO:
@@ -282,6 +287,7 @@ func (b *PrivateClustersServerBuilder) Build() (result *PrivateClustersServer, e
 		bareMetalInstanceTypesDao: bareMetalInstanceTypesDao,
 		clusterVersionsDao:        clusterVersionsDao,
 		virtualNetworksDao:        virtualNetworksDao,
+		networkClassesDao:         networkClassesDao,
 		subnetsDao:                subnetsDao,
 		securityGroupsDao:         securityGroupsDao,
 		tenantsDao:                tenantsDao,
@@ -495,7 +501,7 @@ func (s *PrivateClustersServer) Update(ctx context.Context,
 }
 
 // prepareUpdatedClusterNodeSets retains resolved metadata for unchanged NodeSets and
-// validates new hardware selections against the shared CaaS type scope.
+// checks that newly selected hardware types are not being deleted.
 func (s *PrivateClustersServer) prepareUpdatedClusterNodeSets(
 	ctx context.Context, current, candidate *privatev1.Cluster, mask *fieldmaskpb.FieldMask, sizeOnlyNodeSets bool,
 ) error {
@@ -519,11 +525,17 @@ func (s *PrivateClustersServer) prepareUpdatedClusterNodeSets(
 			}
 			continue
 		}
-		if key := refKey(nodeSet.GetBaremetalInstanceType()); key != "" {
-			if _, err := resolveCaaSBareMetalInstanceType(ctx, s.bareMetalInstanceTypesDao, candidate.GetMetadata(),
-				nodeSet.GetBaremetalInstanceType(), "node_sets."+name+".baremetal_instance_type", false); err != nil {
-				return err
-			}
+		ref := nodeSet.GetBaremetalInstanceType()
+		if refKey(ref) == "" {
+			continue
+		}
+		kind := "node_sets." + name + ".baremetal_instance_type"
+		resolved, err := getReferenceResource(ctx, s.bareMetalInstanceTypesDao, ref.GetId())
+		if err != nil {
+			return resourceLookupError(err, kind, ref.GetId(), "", grpccodes.InvalidArgument)
+		}
+		if err := validateResourceNotDeleted(kind, refKey(ref), "", resolved.GetMetadata()); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -651,31 +663,11 @@ func (s *PrivateClustersServer) validatePullSecretSecret(
 		privatev1.SecretType_SECRET_TYPE_PULL_SECRET)
 }
 
-// clusterUsesBareMetalWorkers reports whether the effective Cluster spec selects a bare-metal instance type.
-func clusterUsesBareMetalWorkers(cluster *privatev1.Cluster) bool {
-	for _, nodeSet := range cluster.GetSpec().GetNodeSets() {
-		if nodeSet != nil && refKey(nodeSet.GetBaremetalInstanceType()) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func validateClusterVersionDiskImageForBareMetal(version *privatev1.ClusterVersion) error {
-	if refKey(version.GetSpec().GetDiskImage()) == "" {
-		return grpcstatus.Errorf(grpccodes.FailedPrecondition,
-			"cluster version '%s' does not have a disk image attached, which is required for bare-metal workers",
-			version.GetMetadata().GetName())
-	}
-	return nil
-}
-
 // ensureClusterVersion makes sure the cluster spec has a usable version reference: if the user didn't provide one, it
-// resolves the system default. BM clusters require the selected ClusterVersion to reference a DiskImage.
+// resolves the system default.
 func (s *PrivateClustersServer) ensureClusterVersion(
 	ctx context.Context,
 	cluster *privatev1.Cluster,
-	requireDiskImage bool,
 ) (*privatev1.ClusterVersion, error) {
 	versionRef := cluster.GetSpec().GetVersion()
 	if versionRef != nil {
@@ -686,14 +678,9 @@ func (s *PrivateClustersServer) ensureClusterVersion(
 		if err := validateResolvedClusterVersion(version, version.GetMetadata().GetName(), ""); err != nil {
 			return nil, err
 		}
-		if requireDiskImage {
-			if err := validateClusterVersionDiskImageForBareMetal(version); err != nil {
-				return nil, err
-			}
-		}
 		return version, nil
 	}
-	version, err := resolveDefaultClusterVersion(ctx, s.logger, s.clusterVersionsDao, requireDiskImage)
+	version, err := resolveDefaultClusterVersion(ctx, s.logger, s.clusterVersionsDao)
 	if err != nil {
 		return nil, err
 	}
@@ -1234,6 +1221,11 @@ func (s *PrivateClustersServer) validateNetworkAttachmentState(ctx context.Conte
 	if err := validateResolvedSubnetReady(subnet, subnetKey, " in spec.network_attachment"); err != nil {
 		return err
 	}
+	hubReferences := []networkingHubReference{{
+		resourceType: "Subnet",
+		id:           subnet.GetId(),
+		hubID:        subnet.GetStatus().GetHub(),
+	}}
 
 	virtualNetworkID := refKey(subnet.GetSpec().GetVirtualNetwork())
 	if virtualNetworkID == "" {
@@ -1262,9 +1254,18 @@ func (s *PrivateClustersServer) validateNetworkAttachmentState(ctx context.Conte
 			fmt.Sprintf(" in spec.network_attachment.security_groups[%d]", i), virtualNetworkID); err != nil {
 			return err
 		}
+		hubReferences = append(hubReferences, networkingHubReference{
+			resourceType: "SecurityGroup",
+			id:           sg.GetId(),
+			hubID:        sg.GetStatus().GetHub(),
+		})
 	}
 
-	return nil
+	canonicalHubID, err := canonicalNetworkingHubID(ctx, s.logger, s.networkClassesDao)
+	if err != nil {
+		return err
+	}
+	return validateNetworkingHubReferences(canonicalHubID, hubReferences...)
 }
 
 // validateAutoExternalIPImmutability prevents changing auto_external_ip_attachment after creation.
@@ -1292,15 +1293,19 @@ func (s *PrivateClustersServer) validateAutoExternalIPImmutability(ctx context.C
 }
 
 // resolveFabricInterfaces populates fabric_interface on each node set by
-// resolving its canonical BareMetalInstanceType reference and selecting the first interface with role "fabric".
+// loading its BareMetalInstanceType by the already-resolved ID and selecting the first interface with role "fabric".
 func (s *PrivateClustersServer) resolveFabricInterfaces(ctx context.Context, cluster *privatev1.Cluster) error {
 	for name, nodeSet := range cluster.GetSpec().GetNodeSets() {
 		if refKey(nodeSet.GetBaremetalInstanceType()) == "" {
 			continue
 		}
-		bmit, err := resolveCaaSBareMetalInstanceType(ctx, s.bareMetalInstanceTypesDao, cluster.GetMetadata(),
-			nodeSet.GetBaremetalInstanceType(), "node_sets."+name+".baremetal_instance_type", false)
+		ref := nodeSet.GetBaremetalInstanceType()
+		kind := "node_sets." + name + ".baremetal_instance_type"
+		bmit, err := getReferenceResource(ctx, s.bareMetalInstanceTypesDao, ref.GetId())
 		if err != nil {
+			return resourceLookupError(err, kind, ref.GetId(), "", grpccodes.InvalidArgument)
+		}
+		if err := validateResourceNotDeleted(kind, refKey(ref), "", bmit.GetMetadata()); err != nil {
 			return err
 		}
 		fabricInterface, err := selectClusterFabricInterface(bmit)
@@ -1444,7 +1449,7 @@ func (s *PrivateClustersServer) applyClusterTemplate(
 		return nil, err
 	}
 
-	clusterVersion, err := s.ensureClusterVersion(ctx, cluster, clusterUsesBareMetalWorkers(cluster))
+	clusterVersion, err := s.ensureClusterVersion(ctx, cluster)
 	if err != nil {
 		return nil, err
 	}
@@ -1458,22 +1463,28 @@ func (s *PrivateClustersServer) applyClusterTemplate(
 		return nil, err
 	}
 
-	// Store the template reference with both ID and name. NodeSet hardware references were
-	// canonicalized in resolveClusterNodeSets, so metering can use their names.
+	// Store the template reference with both ID and name. NodeSet hardware references
+	// already have their IDs and names from the interceptor or Catalog Item authoring.
 	cluster.GetSpec().SetTemplate(canonicalClusterTemplateReference(template))
 
 	return clusterVersion, nil
 }
 
-// resolveClusterNodeSets validates and canonicalizes the effective Cluster NodeSets after
-// Catalog Item policies have been applied. Templates do not supply hardware selections.
+// resolveClusterNodeSets validates the effective Cluster NodeSets after Catalog Item
+// policies have been applied. References are already resolved by the interceptor or
+// Catalog Item authoring; only the hardware types' current deletion state is checked here.
 func (s *PrivateClustersServer) resolveClusterNodeSets(ctx context.Context, cluster *privatev1.Cluster) error {
 	if err := validateClusterNodeSetMap(cluster.GetSpec().GetNodeSets()); err != nil {
 		return grpcstatus.Errorf(grpccodes.InvalidArgument, "node_sets: %s", err)
 	}
 	for name, nodeSet := range cluster.GetSpec().GetNodeSets() {
-		if _, err := resolveCaaSBareMetalInstanceType(ctx, s.bareMetalInstanceTypesDao, cluster.GetMetadata(),
-			nodeSet.GetBaremetalInstanceType(), "node_sets."+name+".baremetal_instance_type", false); err != nil {
+		ref := nodeSet.GetBaremetalInstanceType()
+		kind := "node_sets." + name + ".baremetal_instance_type"
+		resolved, err := getReferenceResource(ctx, s.bareMetalInstanceTypesDao, ref.GetId())
+		if err != nil {
+			return resourceLookupError(err, kind, ref.GetId(), "", grpccodes.InvalidArgument)
+		}
+		if err := validateResourceNotDeleted(kind, refKey(ref), "", resolved.GetMetadata()); err != nil {
 			return err
 		}
 	}
@@ -1483,40 +1494,6 @@ func (s *PrivateClustersServer) resolveClusterNodeSets(ctx context.Context, clus
 // resolveCatalogItem finds the Cluster's published Catalog Item in the selected tenant/project
 // or shared scope, then finds the item's Template under the item's ownership. It applies locked
 // and editable field and parameter rules and returns that Template for defaults.
-func resolveCaaSBareMetalInstanceType(
-	ctx context.Context,
-	instanceTypes *dao.GenericDAO[*privatev1.BareMetalInstanceType],
-	ownerMetadata *privatev1.Metadata,
-	ref *privatev1.BareMetalInstanceTypeReference,
-	kind string,
-	lockTarget bool,
-) (*privatev1.BareMetalInstanceType, error) {
-	if ref == nil {
-		return nil, grpcstatus.Errorf(grpccodes.InvalidArgument, "%s reference is mandatory", kind)
-	}
-
-	// Cluster NodeSets and Catalog Item policies select hardware only; callers cannot
-	// select a tenant-scoped BMIT by omitting or changing the reference scope.
-	ref.SetShared(true)
-	var (
-		resolved *privatev1.BareMetalInstanceType
-		err      error
-	)
-	if lockTarget {
-		resolved, err = resolveAndCanonicalizeLockedReference(ctx, instanceTypes, ownerMetadata, ref, kind, grpccodes.InvalidArgument)
-	} else {
-		resolved, err = resolveAndCanonicalizeReference(ctx, instanceTypes, ownerMetadata, ref, kind, grpccodes.InvalidArgument)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if resolved.GetMetadata().GetTenant() != auth.SharedTenant {
-		return nil, grpcstatus.Errorf(grpccodes.InvalidArgument,
-			"%s must reference a bare metal instance type in the shared tenant", kind)
-	}
-	return resolved, nil
-}
-
 func (s *PrivateClustersServer) resolveCatalogItem(ctx context.Context,
 	cluster *privatev1.Cluster) (*privatev1.ClusterTemplate, error) {
 	if cluster == nil {

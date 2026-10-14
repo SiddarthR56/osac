@@ -54,16 +54,16 @@ export const buildClusterCreatePayload = (
 
   const nodeSets = Object.create(null) as Record<
     string,
-    { baremetalInstanceType: { id: string }; size: number }
+    { hostType: { id: string }; size: number }
   >;
   for (const row of values.spec.nodeSetRows) {
     const nodeSetId = row.name.trim();
-    const instanceTypeId = row.bareMetalInstanceType;
+    const hostTypeId = row.hostType;
     const size = Number(row.size);
-    if (!nodeSetId || !instanceTypeId || !Number.isFinite(size) || size <= 0) {
+    if (!nodeSetId || !hostTypeId || !Number.isFinite(size) || size <= 0) {
       continue;
     }
-    nodeSets[nodeSetId] = { baremetalInstanceType: { id: instanceTypeId }, size };
+    nodeSets[nodeSetId] = { hostType: { id: hostTypeId }, size };
   }
   if (Object.keys(nodeSets).length > 0) {
     spec.nodeSets = nodeSets;

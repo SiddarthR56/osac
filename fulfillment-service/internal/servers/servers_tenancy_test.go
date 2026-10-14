@@ -149,7 +149,7 @@ var _ = Describe("Tenancy logic", func() {
 					Spec: publicv1.ClusterSpec_builder{
 						Template: publicv1.ClusterTemplateReference_builder{Id: "my-template"}.Build(),
 						NodeSets: map[string]*publicv1.ClusterNodeSet{"workers": publicv1.ClusterNodeSet_builder{
-							Size: proto.Int32(2), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "worker-bmit"}.Build(),
+							Size: proto.Int32(2), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "worker-bmit", Shared: true}.Build(),
 						}.Build()},
 					}.Build(),
 				}.Build(),
@@ -287,7 +287,7 @@ var _ = Describe("Tenancy logic", func() {
 				}.Build(),
 				Spec: publicv1.ClusterSpec_builder{
 					Template: publicv1.ClusterTemplateReference_builder{Id: "my-template"}.Build(),
-					NodeSets: map[string]*publicv1.ClusterNodeSet{"workers": publicv1.ClusterNodeSet_builder{Size: proto.Int32(2), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "worker-bmit"}.Build()}.Build()},
+					NodeSets: map[string]*publicv1.ClusterNodeSet{"workers": publicv1.ClusterNodeSet_builder{Size: proto.Int32(2), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "worker-bmit", Shared: true}.Build()}.Build()},
 				}.Build(),
 			}.Build(),
 		}.Build())
@@ -354,7 +354,7 @@ var _ = Describe("Tenancy logic", func() {
 				}.Build(),
 				Spec: publicv1.ClusterSpec_builder{
 					Template: publicv1.ClusterTemplateReference_builder{Id: "my-template"}.Build(),
-					NodeSets: map[string]*publicv1.ClusterNodeSet{"workers": publicv1.ClusterNodeSet_builder{Size: proto.Int32(2), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "worker-bmit"}.Build()}.Build()},
+					NodeSets: map[string]*publicv1.ClusterNodeSet{"workers": publicv1.ClusterNodeSet_builder{Size: proto.Int32(2), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "worker-bmit", Shared: true}.Build()}.Build()},
 				}.Build(),
 			}.Build(),
 		}.Build())
@@ -417,7 +417,7 @@ var _ = Describe("Tenancy logic", func() {
 				Spec: publicv1.ClusterSpec_builder{
 					Template: publicv1.ClusterTemplateReference_builder{Id: "my-template"}.Build(),
 					NodeSets: map[string]*publicv1.ClusterNodeSet{"compute": publicv1.ClusterNodeSet_builder{
-						Size: proto.Int32(2), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "worker-bmit"}.Build(),
+						Size: proto.Int32(2), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "worker-bmit", Shared: true}.Build(),
 					}.Build()},
 				}.Build(),
 			}.Build(),
@@ -490,7 +490,7 @@ var _ = Describe("Tenancy logic", func() {
 				}.Build(),
 				Spec: publicv1.ClusterSpec_builder{
 					Template: publicv1.ClusterTemplateReference_builder{Id: "my-template"}.Build(),
-					NodeSets: map[string]*publicv1.ClusterNodeSet{"compute": publicv1.ClusterNodeSet_builder{Size: proto.Int32(2), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "worker-bmit"}.Build()}.Build()},
+					NodeSets: map[string]*publicv1.ClusterNodeSet{"compute": publicv1.ClusterNodeSet_builder{Size: proto.Int32(2), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "worker-bmit", Shared: true}.Build()}.Build()},
 				}.Build(),
 			}.Build(),
 		}.Build())
@@ -504,7 +504,7 @@ var _ = Describe("Tenancy logic", func() {
 				Spec: publicv1.ClusterSpec_builder{
 					NodeSets: map[string]*publicv1.ClusterNodeSet{
 						"compute": publicv1.ClusterNodeSet_builder{
-							BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "worker-bmit"}.Build(),
+							BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "worker-bmit", Shared: true}.Build(),
 							Size:                  proto.Int32(4),
 						}.Build(),
 					},
@@ -630,7 +630,7 @@ var _ = Describe("Tenancy logic", func() {
 				}.Build(),
 				Spec: publicv1.ClusterSpec_builder{
 					Template: publicv1.ClusterTemplateReference_builder{Id: "my-template"}.Build(),
-					NodeSets: map[string]*publicv1.ClusterNodeSet{"workers": publicv1.ClusterNodeSet_builder{Size: proto.Int32(2), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "worker-bmit"}.Build()}.Build()},
+					NodeSets: map[string]*publicv1.ClusterNodeSet{"workers": publicv1.ClusterNodeSet_builder{Size: proto.Int32(2), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: "worker-bmit", Shared: true}.Build()}.Build()},
 				}.Build(),
 			}.Build(),
 		}.Build())

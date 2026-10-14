@@ -212,6 +212,32 @@ func (r *SubnetReconciler) getParentVirtualNetwork(ctx context.Context, subnet *
 	return &vnetList.Items[0], ctrl.Result{}, nil
 }
 
+func resolveK8sCleanupStrategy(subnet *v1alpha1.Subnet, configuredK8sTarget *dispatcher.DispatchTarget) (string, *dispatcher.DispatchTarget, error) {
+	k8sCleanupStrategy := subnet.Annotations[osacK8sCleanupStrategyAnnotation]
+	if k8sCleanupStrategy == "" && subnet.Annotations[osacK8sImplementationStrategyAnnotation] == cudnEVPNManagerName {
+		// Upgrade older dual-dispatch Subnets before their provision-target annotation can be cleared.
+		k8sCleanupStrategy = cudnEVPNManagerName
+	}
+	staleTargetCheck := configuredK8sTarget
+	if configuredK8sTarget != nil && configuredK8sTarget.Manager.Name == cudnEVPNManagerName {
+		if subnet.Annotations[osacSkipK8sManagerAnnotation] == labelValueTrue {
+			staleTargetCheck = nil
+		}
+		// Persist shared-resource cleanup even when sequential policy or an explicit skip
+		// suppresses this Subnet's K8s provision target.
+		k8sCleanupStrategy = cudnEVPNManagerName
+	} else if configuredK8sTarget != nil && k8sCleanupStrategy != cudnEVPNManagerName {
+		k8sCleanupStrategy = ""
+	}
+	if k8sCleanupStrategy == cudnEVPNManagerName && configuredK8sTarget != nil && configuredK8sTarget.Manager.Name != cudnEVPNManagerName {
+		return "", nil, fmt.Errorf(
+			"cannot replace Subnet Kubernetes manager %q with %q while the shared cudn_evpn resource is still owned; migrate or remove the shared CUDN before changing managers",
+			subnet.Annotations[osacK8sImplementationStrategyAnnotation], configuredK8sTarget.Manager.Name,
+		)
+	}
+	return k8sCleanupStrategy, staleTargetCheck, nil
+}
+
 func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Subnet) (ctrl.Result, error) {
 	log := ctrllog.FromContext(ctx)
 
@@ -256,6 +282,11 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 	// resource kind whose plan can carry a k8s target alongside the fabric one — see
 	// pkg/dispatcher's dispatch table.
 	plan, err := resolveDispatchPlan(ctx, r.Resolver, "Subnet", vnet.Spec.NetworkClass)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	configuredK8sTarget := plan.K8sTarget()
+	k8sCleanupStrategy, staleTargetCheck, err := resolveK8sCleanupStrategy(subnet, configuredK8sTarget)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -313,13 +344,13 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 
 	// Reverse migration: deprovision a k8s target the NetworkClass has since dropped,
 	// before dropping its annotation. See deprovisionStaleK8sTarget's doc comment.
-	if requeue, deprovErr := r.deprovisionStaleK8sTarget(ctx, subnet, k8sTarget); deprovErr != nil {
+	if requeue, deprovErr := r.deprovisionStaleK8sTarget(ctx, subnet, staleTargetCheck); deprovErr != nil {
 		return ctrl.Result{}, deprovErr
 	} else if requeue != nil {
 		return *requeue, nil
 	}
 
-	updated, err := r.updateSubnetStrategyAnnotations(ctx, subnet, implementationStrategy, k8sStrategy, vipCIDR, k8sTarget != nil)
+	updated, err := r.updateSubnetStrategyAnnotations(ctx, subnet, implementationStrategy, k8sStrategy, k8sCleanupStrategy, vipCIDR, k8sTarget != nil)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -362,7 +393,7 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 }
 
 // applySequentialProvisioningPolicy limits cudn_evpn to one K8s target per
-// VirtualNetwork. The oldest Subnet keeps K8s provisioning; later Subnets are
+// VirtualNetwork. The oldest eligible Subnet keeps K8s provisioning; later Subnets are
 // fabric-only unless they already have K8s target history, which is grandfathered
 // to preserve previously provisioned CUDNs. An explicit skip annotation always
 // removes the K8s target so the normal stale-target deprovisioning path can run.
@@ -370,7 +401,7 @@ func (r *SubnetReconciler) applySequentialProvisioningPolicy(
 	ctx context.Context, subnet *v1alpha1.Subnet, plan *dispatcher.DispatchPlan,
 ) (*dispatcher.DispatchPlan, error) {
 	k8sTarget := plan.K8sTarget()
-	if k8sTarget == nil || k8sTarget.Manager.Name != "cudn_evpn" {
+	if k8sTarget == nil || k8sTarget.Manager.Name != cudnEVPNManagerName {
 		return plan, nil
 	}
 	if subnet.Annotations[osacSkipK8sManagerAnnotation] == labelValueTrue {
@@ -389,7 +420,8 @@ func (r *SubnetReconciler) applySequentialProvisioningPolicy(
 	foundCurrent := false
 	for i := range subnetList.Items {
 		candidate := &subnetList.Items[i]
-		if candidate.Spec.VirtualNetwork != subnet.Spec.VirtualNetwork {
+		if candidate.Spec.VirtualNetwork != subnet.Spec.VirtualNetwork ||
+			candidate.Annotations[osacSkipK8sManagerAnnotation] == labelValueTrue {
 			continue
 		}
 		candidates = append(candidates, candidate)
@@ -490,14 +522,15 @@ func (r *SubnetReconciler) ensureVNetLockLease(ctx context.Context, subnet *v1al
 }
 
 // updateSubnetStrategyAnnotations stamps the implementation-strategy, k8s
-// implementation-strategy, and VIP CIDR annotations AAP playbooks rely on, persisting
-// subnet if anything changed. The k8s annotation is compared and, when hasK8sTarget is
-// false, removed unconditionally (not just when previously present) so a Subnet
-// transitioning from dual-dispatch to fabric-only doesn't leave a stale k8s target for
-// handleDeprovisioning to act on. Returns true when it persisted a change — the caller
-// should return immediately in that case, since the change itself triggers a fresh
-// reconcile that resumes with up-to-date annotations.
-func (r *SubnetReconciler) updateSubnetStrategyAnnotations(ctx context.Context, subnet *v1alpha1.Subnet, implementationStrategy, k8sStrategy, vipCIDR string, hasK8sTarget bool) (bool, error) {
+// implementation-strategy, shared-resource cleanup strategy, and VIP CIDR
+// annotations AAP playbooks rely on, persisting the Subnet if anything changed.
+// The k8s implementation annotation is removed when its provision target is absent;
+// the cleanup annotation is tracked separately so sequential cudn_evpn Subnets can
+// omit K8s provisioning while retaining the K8s teardown needed by the final sibling.
+// Returns true when it persisted a change — the caller should return immediately in
+// that case, since the change itself triggers a fresh reconcile that resumes with
+// up-to-date annotations.
+func (r *SubnetReconciler) updateSubnetStrategyAnnotations(ctx context.Context, subnet *v1alpha1.Subnet, implementationStrategy, k8sStrategy, k8sCleanupStrategy, vipCIDR string, hasK8sTarget bool) (bool, error) {
 	if subnet.Annotations == nil {
 		subnet.Annotations = make(map[string]string)
 	}
@@ -514,6 +547,14 @@ func (r *SubnetReconciler) updateSubnetStrategyAnnotations(ctx context.Context, 
 		}
 		changed = true
 	}
+	if subnet.Annotations[osacK8sCleanupStrategyAnnotation] != k8sCleanupStrategy {
+		if k8sCleanupStrategy != "" {
+			subnet.Annotations[osacK8sCleanupStrategyAnnotation] = k8sCleanupStrategy
+		} else {
+			delete(subnet.Annotations, osacK8sCleanupStrategyAnnotation)
+		}
+		changed = true
+	}
 	if vipCIDR != "" && subnet.Annotations[osacVIPCIDRAnnotation] != vipCIDR {
 		subnet.Annotations[osacVIPCIDRAnnotation] = vipCIDR
 		changed = true
@@ -524,7 +565,7 @@ func (r *SubnetReconciler) updateSubnetStrategyAnnotations(ctx context.Context, 
 	if !changed {
 		return false, nil
 	}
-	ctrllog.FromContext(ctx).Info("updating annotations", "strategy", implementationStrategy, "k8sStrategy", k8sStrategy, "vipCIDR", vipCIDR)
+	ctrllog.FromContext(ctx).Info("updating annotations", "strategy", implementationStrategy, "k8sStrategy", k8sStrategy, "k8sCleanupStrategy", k8sCleanupStrategy, "vipCIDR", vipCIDR)
 	if err := r.Update(ctx, subnet); err != nil {
 		return false, err
 	}
@@ -546,6 +587,12 @@ func (r *SubnetReconciler) updateSubnetStrategyAnnotations(ctx context.Context, 
 func (r *SubnetReconciler) deprovisionStaleK8sTarget(ctx context.Context, subnet *v1alpha1.Subnet, currentK8sTarget *dispatcher.DispatchTarget) (*ctrl.Result, error) {
 	existingK8sStrategy := subnet.Annotations[osacK8sImplementationStrategyAnnotation]
 	if currentK8sTarget != nil || existingK8sStrategy == "" || r.ProvisioningProvider == nil {
+		return nil, nil
+	}
+	if existingK8sStrategy == cudnEVPNManagerName {
+		// The CUDN is shared by every Subnet in its VirtualNetwork. Preserve the
+		// cleanup marker and defer teardown until a Subnet is actually deleted,
+		// when the role can see whether a sibling still consumes the CUDN.
 		return nil, nil
 	}
 
@@ -843,8 +890,10 @@ func allProvisionTargetsSucceeded(jobs []v1alpha1.JobStatus, desiredVersion stri
 // original single-target, fully untargeted RunDeprovisioningLifecycle. The fabric
 // target's AbsorbsLegacyHistory absorbs any such untargeted history that does exist,
 // so it's found rather than orphaned into a separate, disconnected Target=="" job.
-// When the k8s annotation is also present, both managers are torn down in parallel,
-// and the finalizer is only removed once both reach a terminal, non-blocking state.
+// When the k8s annotation is also present, ordinary dual-dispatch managers are torn
+// down in parallel. A retained cudn_evpn cleanup marker instead serializes replacement
+// K8s teardown, shared CUDN cleanup, and fabric teardown because the CUDN role also
+// removes the Subnet workload namespace.
 func (r *SubnetReconciler) handleDeprovisioning(ctx context.Context, subnet *v1alpha1.Subnet) (ctrl.Result, error) {
 	if r.ProvisioningProvider == nil {
 		ctrllog.FromContext(ctx).Info("no provisioning provider configured, skipping deprovisioning")
@@ -861,12 +910,89 @@ func (r *SubnetReconciler) handleDeprovisioning(ctx context.Context, subnet *v1a
 		return ctrl.Result{}, nil
 	}
 
+	k8sStrategy := subnet.Annotations[osacK8sImplementationStrategyAnnotation]
+	k8sCleanupStrategy := subnet.Annotations[osacK8sCleanupStrategyAnnotation]
+	sharedCudnCleanup := k8sStrategy == cudnEVPNManagerName || k8sCleanupStrategy == cudnEVPNManagerName
+
+	if sharedCudnCleanup {
+		// A Subnet that changed managers may own both replacement-manager
+		// namespace resources and a shared CUDN from its prior manager. Remove
+		// replacement resources first, then run cudn_evpn even when it is no longer
+		// the current provision target, and only then tear down the fabric.
+		if k8sStrategy != "" && k8sStrategy != cudnEVPNManagerName {
+			currentK8sTarget := provisioning.DeprovisionTarget{
+				Name:     string(dispatcher.ManagerRoleK8s),
+				Provider: newDispatchTargetProvider(r.ProvisioningProvider, k8sStrategy),
+			}
+			result, done, err := provisioning.RunMultiTargetDeprovisioningLifecycle(ctx,
+				[]provisioning.DeprovisionTarget{currentK8sTarget}, subnet,
+				&subnet.Status.ProvisioningJobs, r.MaxJobHistory, r.StatusPollInterval)
+			if err != nil || !done {
+				return result, err
+			}
+		}
+
+		if k8sStrategy != cudnEVPNManagerName {
+			cudnTargetName := string(dispatcher.ManagerRoleK8s)
+			if k8sStrategy != "" {
+				// The replacement manager also records K8s-target jobs. Give the
+				// retained CUDN pass its own history key so its job cannot be
+				// mistaken for the replacement manager's already-completed job.
+				cudnTargetName = cudnEVPNCleanupJobTarget
+			}
+			cudnTarget := provisioning.DeprovisionTarget{
+				Name:     cudnTargetName,
+				Provider: newDispatchTargetProvider(r.ProvisioningProvider, cudnEVPNManagerName),
+			}
+			result, done, err := provisioning.RunMultiTargetDeprovisioningLifecycle(ctx,
+				[]provisioning.DeprovisionTarget{cudnTarget}, subnet,
+				&subnet.Status.ProvisioningJobs, r.MaxJobHistory, r.StatusPollInterval)
+			if err != nil || !done {
+				return result, err
+			}
+		} else {
+			// The current target is itself cudn_evpn; its shared cleanup is the
+			// first stage and must finish before fabric teardown.
+			cudnTarget := provisioning.DeprovisionTarget{
+				Name:     string(dispatcher.ManagerRoleK8s),
+				Provider: newDispatchTargetProvider(r.ProvisioningProvider, k8sStrategy),
+			}
+			result, done, err := provisioning.RunMultiTargetDeprovisioningLifecycle(ctx,
+				[]provisioning.DeprovisionTarget{cudnTarget}, subnet,
+				&subnet.Status.ProvisioningJobs, r.MaxJobHistory, r.StatusPollInterval)
+			if err != nil || !done {
+				return result, err
+			}
+		}
+
+		fabricTarget := provisioning.DeprovisionTarget{
+			Name:                 string(dispatcher.ManagerRoleFabric),
+			Provider:             newDispatchTargetProvider(r.ProvisioningProvider, fabricStrategy),
+			AbsorbsLegacyHistory: true,
+		}
+		result, done, err := provisioning.RunMultiTargetDeprovisioningLifecycle(ctx,
+			[]provisioning.DeprovisionTarget{fabricTarget}, subnet,
+			&subnet.Status.ProvisioningJobs, r.MaxJobHistory, r.StatusPollInterval)
+		if err != nil || !done {
+			return result, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	if k8sStrategy == "" {
+		// Keep the historical cleanup fallback for future sequential K8s cleanup
+		// managers that omit a current provision target.
+		k8sStrategy = k8sCleanupStrategy
+	}
 	targets := []provisioning.DeprovisionTarget{
 		// AbsorbsLegacyHistory: true — see the matching comment in handleProvisioning.
 		{Name: string(dispatcher.ManagerRoleFabric), Provider: newDispatchTargetProvider(r.ProvisioningProvider, fabricStrategy), AbsorbsLegacyHistory: true},
 	}
-	if k8sStrategy := subnet.Annotations[osacK8sImplementationStrategyAnnotation]; k8sStrategy != "" {
-		targets = append(targets, provisioning.DeprovisionTarget{Name: string(dispatcher.ManagerRoleK8s), Provider: newDispatchTargetProvider(r.ProvisioningProvider, k8sStrategy)})
+	if k8sStrategy != "" {
+		targets = append(targets, provisioning.DeprovisionTarget{
+			Name:     string(dispatcher.ManagerRoleK8s),
+			Provider: newDispatchTargetProvider(r.ProvisioningProvider, k8sStrategy),
+		})
 	}
 
 	result, done, err := provisioning.RunMultiTargetDeprovisioningLifecycle(ctx, targets, subnet,

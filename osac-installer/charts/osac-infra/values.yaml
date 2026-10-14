@@ -67,6 +67,7 @@ keycloak:
   # outside Kind/CI -- this chart is also used for real installs.
   devFixtures:
     enabled: false
+    mcpResourceURL: "https://mcp.osac.localhost:8443/"
   images:
     keycloak: quay.io/keycloak/keycloak:26.6.4
     postgres: quay.io/sclorg/postgresql-18-c10s@sha256:6be2c9d855f06fb665257a6b0911676a38d740be7022cc61acee1c99a832b1b2
@@ -147,7 +148,7 @@ bundledPostgres:
 # --- Bundled OpenBao (dev/CI only) ---
 # Vault-compatible secret store for testing and CI. Not for production.
 bundledVault:
-  enabled: true
+  enabled: false
   image: "ghcr.io/openbao/openbao:2.6.2"
   # podSecurityContext: {}
   # Leave absent (nil) to use the template's built-in standard-Kubernetes defaults
@@ -165,9 +166,10 @@ bundledVault:
       cpu: 100m
       memory: 256Mi
   # --- Bootstrap configuration ---
-  # keycloakIssuerUrl: Keycloak OIDC issuer URL for JWT auth bootstrap. On
-  # OpenShift this must be the external route URL (not the internal service URL)
-  # to avoid OIDC discovery issuer mismatch. Leave empty to skip JWT bootstrap.
+  # keycloakIssuerUrl: Keycloak OIDC issuer URL for JWT auth bootstrap.
+  # Required when bundledVault is enabled. On OpenShift this must be the
+  # external route URL (not the internal service URL) to avoid OIDC discovery
+  # issuer mismatch.
   keycloakIssuerUrl: ""
   # keycloakAudience: expected "aud" claim in JWT tokens.
   keycloakAudience: "osac-api"

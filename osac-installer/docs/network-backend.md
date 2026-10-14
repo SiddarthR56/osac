@@ -32,6 +32,8 @@ When `global.networking.fabricManager` is `netris`, Helm automatically:
 - Enables `operator.networkManagers.fabricManagers.netris`
 - Sets `NETWORK_CLASS`, `NETWORK_STEPS_COLLECTION`, and shared `NETRIS_*` fields on
   both AAP instance groups when they are enabled (no manual duplication)
+- Sets `NETRIS_VALIDATE_CERTS` on both AAP instance groups from
+  `global.networking.netris.validateCerts`
 - Points the generated NetworkClass at `fabricManager: netris`
 
 When `fabricManager` is empty and `k8sManager` is `k8s_only`, Helm enables
@@ -80,6 +82,11 @@ global:
     k8sManager: ""
     netris:
       controllerUrl: "https://redhat-ctl.netris.io"
+      validateCerts: true
+      # Optional customer-created ConfigMap in the AAP namespace.
+      # It must contain the PEM chain under the fixed bundle.pem key.
+      caBundle:
+        configMap: "customer-netris-ca"
       credentials:
         username: "netris"
         externalSecret: true
@@ -99,6 +106,48 @@ When Netris is selected, the schema requires `controllerUrl` (HTTPS), credential
 `siteId`, `tenantId`, and `tenantName`. Credentials may contain either a direct
 password or `externalSecret: true` when the `netris-credentials` Secret is
 managed outside Helm.
+
+TLS certificate verification defaults to `true`. Set
+`global.networking.netris.validateCerts: false` only for a trusted,
+non-production Netris endpoint using a self-signed certificate.
+
+### Netris HTTPS trust
+
+For a Netris controller signed by a private or customer CA, create the CA
+ConfigMap in the AAP namespace before installing OSAC:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: customer-netris-ca
+immutable: true
+data:
+  bundle.pem: |
+    -----BEGIN CERTIFICATE-----
+    ...
+    -----END CERTIFICATE-----
+```
+
+Set `global.networking.netris.caBundle.configMap` to that ConfigMap name and
+keep `global.networking.netris.validateCerts: true`. The installer does not
+create the ConfigMap and never receives the PEM contents. It passes the name
+to AAP config-as-code, which mounts `bundle.pem` read-only at
+`/etc/netris/ca/bundle.pem` in OSAC-managed Netris execution pods and sets
+`NETRIS_CA_PATH` for the Ansible requests. The ConfigMap must be in the same
+namespace as AAP and is required at pod start; a missing object or key causes
+the job pod to fail with `FailedMount`.
+
+The Enclave Wizard exposes the ConfigMap name through the installer schema as
+an optional text value. It does not upload or store certificate material.
+HTTP is suitable only for an isolated test profile; production Netris
+configuration uses HTTPS and certificate validation.
+
+To rotate the CA, create a new immutable ConfigMap, update the Helm value to
+the new name, and reconcile the release. Verify a new job pod mounts the new
+bundle and completes a Netris operation before deleting the old ConfigMap.
+For rollback, restore the previous ConfigMap name while it remains available,
+reconcile, and verify a new job pod before cleanup.
 
 ## AgentlessNet VirtualNetwork and Subnet baseline
 
@@ -200,6 +249,7 @@ Prefer the facade above. When not using it, set variables on
 | Variable | Description |
 |----------|-------------|
 | `NETRIS_CONTROLLER_URL` | Netris controller API URL |
+| `NETRIS_VALIDATE_CERTS` | Whether Netris TLS certificates are verified |
 | `NETRIS_USERNAME` | Netris API username |
 | `NETRIS_SITE_ID` | Netris site ID (integer) |
 | `NETRIS_TENANT_ID` | Netris tenant ID (integer) |

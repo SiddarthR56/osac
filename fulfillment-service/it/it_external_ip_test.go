@@ -68,6 +68,15 @@ func createReadyExternalIPNetworkClass(ctx context.Context, client privatev1.Net
 		g.Expect(response.GetObject().GetStatus().GetState()).To(
 			Equal(privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY))
 	}, time.Minute, time.Second).Should(Succeed())
+	setNetworkClassCanonicalHub(ctx, client, id, hubId)
+	expectNetworkClassStatus(
+		ctx,
+		client,
+		id,
+		privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY,
+		hubId,
+		"",
+	)
 	return id
 }
 
@@ -254,6 +263,9 @@ var _ = Describe("Private ExternalIPPool CRUD", func() {
 		createReadyExternalIPNetworkClass(ctx, networkClassesClient)
 
 		poolId := fmt.Sprintf("test-pool-%s", uuid.New())
+		ipId := fmt.Sprintf("test-ip-%s", uuid.New())
+		externalIPsClient := publicv1.NewExternalIPsClient(tool.ExternalView().UserConn())
+		privateIPsClient := privatev1.NewExternalIPsClient(tool.InternalView().AdminConn())
 		_, err := client.Create(ctx, privatev1.ExternalIPPoolsCreateRequest_builder{
 			Object: privatev1.ExternalIPPool_builder{
 				Id: poolId,
@@ -267,64 +279,7 @@ var _ = Describe("Private ExternalIPPool CRUD", func() {
 			}.Build(),
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
-
-		Eventually(func(g Gomega) {
-			resp, err := client.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{
-				Id: poolId,
-			}.Build())
-			g.Expect(err).ToNot(HaveOccurred())
-			g.Expect(resp.GetObject().GetStatus().GetState()).To(
-				Equal(privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_PENDING))
-			g.Expect(resp.GetObject().GetStatus().GetHub()).ToNot(BeEmpty())
-		}, time.Minute, time.Second).Should(Succeed())
-
-		getResp, err := client.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{
-			Id: poolId,
-		}.Build())
-		Expect(err).ToNot(HaveOccurred())
-		pool := getResp.GetObject()
-		pool.SetStatus(privatev1.ExternalIPPoolStatus_builder{
-			State:     privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_READY,
-			Total:     pool.GetStatus().GetTotal(),
-			Available: pool.GetStatus().GetAvailable(),
-			Allocated: pool.GetStatus().GetAllocated(),
-		}.Build())
-		_, err = client.Update(ctx, privatev1.ExternalIPPoolsUpdateRequest_builder{
-			Object:     pool,
-			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"status.state"}},
-		}.Build())
-		Expect(err).ToNot(HaveOccurred())
-		Eventually(func(g Gomega) {
-			resp, err := client.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{Id: poolId}.Build())
-			g.Expect(err).ToNot(HaveOccurred())
-			g.Expect(resp.GetObject().GetStatus().GetState()).To(Equal(privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_READY))
-		}, time.Minute, time.Second).Should(Succeed())
-
-		Eventually(func(g Gomega) {
-			resp, err := client.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{
-				Id: poolId,
-			}.Build())
-			g.Expect(err).ToNot(HaveOccurred())
-			g.Expect(resp.GetObject().GetStatus().GetState()).To(
-				Equal(privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_READY))
-		}, time.Minute, time.Second).Should(Succeed())
-
-		externalIPsClient := publicv1.NewExternalIPsClient(tool.ExternalView().UserConn())
-		ipId := fmt.Sprintf("test-ip-%s", uuid.New())
-		_, err = externalIPsClient.Create(ctx, publicv1.ExternalIPsCreateRequest_builder{
-			Object: publicv1.ExternalIP_builder{
-				Id: ipId,
-				Metadata: publicv1.Metadata_builder{
-					Name: fmt.Sprintf("test-ip-%s", uuid.New()[24:32]),
-				}.Build(),
-				Spec: publicv1.ExternalIPSpec_builder{
-					Pool: publicv1.ExternalIPPoolReference_builder{Id: poolId}.Build(),
-				}.Build(),
-			}.Build(),
-		}.Build())
-		Expect(err).ToNot(HaveOccurred())
 		DeferCleanup(func() {
-			privateIPsClient := privatev1.NewExternalIPsClient(tool.InternalView().AdminConn())
 			ipGetResp, err := privateIPsClient.Get(ctx, privatev1.ExternalIPsGetRequest_builder{
 				Id: ipId,
 			}.Build())
@@ -349,6 +304,48 @@ var _ = Describe("Private ExternalIPPool CRUD", func() {
 				Id: poolId,
 			}.Build())
 		})
+
+		Eventually(func(g Gomega) {
+			resp, err := client.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{
+				Id: poolId,
+			}.Build())
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(resp.GetObject().GetStatus().GetState()).To(
+				Equal(privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_PENDING))
+			g.Expect(resp.GetObject().GetStatus().GetHub()).To(Equal(hubId))
+		}, time.Minute, time.Second).Should(Succeed())
+
+		getResp, err := client.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{
+			Id: poolId,
+		}.Build())
+		Expect(err).ToNot(HaveOccurred())
+		pool := getResp.GetObject()
+		pool.GetStatus().SetState(privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_READY)
+		pool.GetStatus().SetHub(hubId)
+		_, err = client.Update(ctx, privatev1.ExternalIPPoolsUpdateRequest_builder{
+			Object:     pool,
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"status.state", "status.hub"}},
+		}.Build())
+		Expect(err).ToNot(HaveOccurred())
+		Eventually(func(g Gomega) {
+			resp, err := client.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{Id: poolId}.Build())
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(resp.GetObject().GetStatus().GetState()).To(
+				Equal(privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_READY))
+		}, time.Minute, time.Second).Should(Succeed())
+
+		_, err = externalIPsClient.Create(ctx, publicv1.ExternalIPsCreateRequest_builder{
+			Object: publicv1.ExternalIP_builder{
+				Id: ipId,
+				Metadata: publicv1.Metadata_builder{
+					Name: fmt.Sprintf("test-ip-%s", uuid.New()[24:32]),
+				}.Build(),
+				Spec: publicv1.ExternalIPSpec_builder{
+					Pool: publicv1.ExternalIPPoolReference_builder{Id: poolId}.Build(),
+				}.Build(),
+			}.Build(),
+		}.Build())
+		Expect(err).ToNot(HaveOccurred())
 
 		_, err = client.Delete(ctx, privatev1.ExternalIPPoolsDeleteRequest_builder{
 			Id: poolId,
@@ -608,6 +605,8 @@ var _ = Describe("ExternalIP lifecycle", func() {
 	})
 })
 
+// The installer integration target disables operator and fulfillment sync; delete
+// acknowledgements do not guarantee immediate NotFound responses in that mode.
 var _ = Describe("ExternalIPAttachment cross-resource validation", func() {
 	var (
 		ctx                      context.Context
@@ -618,15 +617,17 @@ var _ = Describe("ExternalIPAttachment cross-resource validation", func() {
 		attachmentsClient        publicv1.ExternalIPAttachmentsClient
 		privateAttachmentsClient privatev1.ExternalIPAttachmentsClient
 		clustersClient           publicv1.ClustersClient
+		privateClustersClient    privatev1.ClustersClient
 		instanceTypesClient      privatev1.BareMetalInstanceTypesClient
 		clusterTemplatesClient   privatev1.ClusterTemplatesClient
 
-		poolId       string
-		externalIPId string
-		clusterId    string
-		bmitName     string
-		templateId   string
-		network      catalogItemNetworkFixture
+		poolId            string
+		externalIPId      string
+		clusterId         string
+		bmitName          string
+		templateId        string
+		network           catalogItemNetworkFixture
+		networkClassHubID string
 	)
 
 	BeforeEach(func() {
@@ -638,13 +639,20 @@ var _ = Describe("ExternalIPAttachment cross-resource validation", func() {
 		attachmentsClient = publicv1.NewExternalIPAttachmentsClient(tool.ExternalView().UserConn())
 		privateAttachmentsClient = privatev1.NewExternalIPAttachmentsClient(tool.InternalView().AdminConn())
 		clustersClient = publicv1.NewClustersClient(tool.ExternalView().UserConn())
+		privateClustersClient = privatev1.NewClustersClient(tool.InternalView().AdminConn())
 		instanceTypesClient = privatev1.NewBareMetalInstanceTypesClient(tool.InternalView().AdminConn())
 		clusterTemplatesClient = privatev1.NewClusterTemplatesClient(tool.InternalView().AdminConn())
 		networkClassID := createReadyExternalIPNetworkClass(ctx, networkClassesClient)
+		networkClassResponse, err := networkClassesClient.Get(ctx, privatev1.NetworkClassesGetRequest_builder{
+			Id: networkClassID,
+		}.Build())
+		Expect(err).ToNot(HaveOccurred())
+		networkClassHubID = networkClassResponse.GetObject().GetStatus().GetHub()
+		Expect(networkClassHubID).ToNot(BeEmpty())
 		network = createCatalogItemNetworkInClassFixture(ctx, usersGroup, "", networkClassID)
 
 		poolId = fmt.Sprintf("test-pool-%s", uuid.New())
-		_, err := poolsClient.Create(ctx, privatev1.ExternalIPPoolsCreateRequest_builder{
+		_, err = poolsClient.Create(ctx, privatev1.ExternalIPPoolsCreateRequest_builder{
 			Object: privatev1.ExternalIPPool_builder{
 				Id: poolId,
 				Metadata: privatev1.Metadata_builder{
@@ -657,6 +665,13 @@ var _ = Describe("ExternalIPAttachment cross-resource validation", func() {
 			}.Build(),
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
+		DeferCleanup(func(cleanupCtx context.Context) {
+			deleteComputeInstanceFixtureResource(cleanupCtx,
+				func(deleteCtx context.Context) error {
+					_, deleteErr := poolsClient.Delete(deleteCtx, privatev1.ExternalIPPoolsDeleteRequest_builder{Id: poolId}.Build())
+					return deleteErr
+				})
+		})
 
 		Eventually(func(g Gomega) {
 			resp, err := poolsClient.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{
@@ -707,6 +722,20 @@ var _ = Describe("ExternalIPAttachment cross-resource validation", func() {
 			}.Build(),
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
+		DeferCleanup(func(cleanupCtx context.Context) {
+			deleteComputeInstanceFixtureResource(cleanupCtx,
+				func(deleteCtx context.Context) error {
+					_, deleteErr := externalIPsClient.Delete(deleteCtx, publicv1.ExternalIPsDeleteRequest_builder{Id: externalIPId}.Build())
+					return deleteErr
+				})
+		})
+		Eventually(func(g Gomega) {
+			resp, err := privateExternalIPsClient.Get(ctx, privatev1.ExternalIPsGetRequest_builder{
+				Id: externalIPId,
+			}.Build())
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(resp.GetObject().GetStatus().GetHub()).To(Equal(networkClassHubID))
+		}, time.Minute, time.Second).Should(Succeed())
 
 		// State promotion requires private API (admin-only)
 		ipGetResp, err := privateExternalIPsClient.Get(ctx, privatev1.ExternalIPsGetRequest_builder{
@@ -749,6 +778,17 @@ var _ = Describe("ExternalIPAttachment cross-resource validation", func() {
 			}.Build(),
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
+		DeferCleanup(func(cleanupCtx context.Context) {
+			deleteAndWaitForComputeInstanceFixtureResource(cleanupCtx,
+				func(deleteCtx context.Context) error {
+					_, deleteErr := instanceTypesClient.Delete(deleteCtx, privatev1.BareMetalInstanceTypesDeleteRequest_builder{Id: bmitName}.Build())
+					return deleteErr
+				},
+				func(getCtx context.Context) error {
+					_, getErr := instanceTypesClient.Get(getCtx, privatev1.BareMetalInstanceTypesGetRequest_builder{Id: bmitName}.Build())
+					return getErr
+				})
+		})
 
 		templateId = fmt.Sprintf("test-tmpl-%s", uuid.New())
 		_, err = clusterTemplatesClient.Create(ctx, privatev1.ClusterTemplatesCreateRequest_builder{
@@ -761,51 +801,52 @@ var _ = Describe("ExternalIPAttachment cross-resource validation", func() {
 			}.Build(),
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
+		DeferCleanup(func(cleanupCtx context.Context) {
+			deleteAndWaitForComputeInstanceFixtureResource(cleanupCtx,
+				func(deleteCtx context.Context) error {
+					_, deleteErr := clusterTemplatesClient.Delete(deleteCtx, privatev1.ClusterTemplatesDeleteRequest_builder{Id: templateId}.Build())
+					return deleteErr
+				},
+				func(getCtx context.Context) error {
+					_, getErr := clusterTemplatesClient.Get(getCtx, privatev1.ClusterTemplatesGetRequest_builder{Id: templateId}.Build())
+					return getErr
+				})
+		})
 
+		// The shared fixture provides a ready subnet and SecurityGroup on the
+		// same NetworkClass as the ExternalIP.
 		createClusterResp, err := clustersClient.Create(ctx, publicv1.ClustersCreateRequest_builder{
 			Object: publicv1.Cluster_builder{
 				Metadata: publicv1.Metadata_builder{
 					Name: fmt.Sprintf("test-cluster-%s", uuid.New()[24:32]),
 				}.Build(),
 				Spec: publicv1.ClusterSpec_builder{
-					Template:          publicv1.ClusterTemplateReference_builder{Id: templateId}.Build(),
-					NetworkAttachment: network.clusterAttachment(),
+					Template: publicv1.ClusterTemplateReference_builder{Id: templateId}.Build(),
 					NodeSets: map[string]*publicv1.ClusterNodeSet{"workers": publicv1.ClusterNodeSet_builder{
-						Size: new(int32(1)), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: bmitName}.Build(),
+						Size: new(int32(1)), BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: bmitName, Shared: true}.Build(),
 					}.Build()},
+					NetworkAttachment: network.clusterAttachment(),
 				}.Build(),
 			}.Build(),
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
 		clusterId = createClusterResp.GetObject().GetId()
-	})
-
-	AfterEach(func() {
-		if externalIPId != "" {
-			_, _ = externalIPsClient.Delete(ctx, publicv1.ExternalIPsDeleteRequest_builder{
-				Id: externalIPId,
-			}.Build())
-		}
-		if poolId != "" {
-			_, _ = poolsClient.Delete(ctx, privatev1.ExternalIPPoolsDeleteRequest_builder{
-				Id: poolId,
-			}.Build())
-		}
-		if clusterId != "" {
-			clustersClient.Delete(ctx, publicv1.ClustersDeleteRequest_builder{
+		DeferCleanup(func(cleanupCtx context.Context) {
+			deleteComputeInstanceFixtureResource(cleanupCtx,
+				func(deleteCtx context.Context) error {
+					_, deleteErr := clustersClient.Delete(deleteCtx, publicv1.ClustersDeleteRequest_builder{Id: clusterId}.Build())
+					return deleteErr
+				})
+		})
+		expectNetworkingResourceHub(ctx, networkClassHubID, func(getCtx context.Context) (string, error) {
+			resp, getErr := privateClustersClient.Get(getCtx, privatev1.ClustersGetRequest_builder{
 				Id: clusterId,
 			}.Build())
-		}
-		if templateId != "" {
-			clusterTemplatesClient.Delete(ctx, privatev1.ClusterTemplatesDeleteRequest_builder{
-				Id: templateId,
-			}.Build())
-		}
-		if bmitName != "" {
-			instanceTypesClient.Delete(ctx, privatev1.BareMetalInstanceTypesDeleteRequest_builder{
-				Id: bmitName,
-			}.Build())
-		}
+			if getErr != nil {
+				return "", getErr
+			}
+			return resp.GetObject().GetStatus().GetHub(), nil
+		})
 	})
 
 	It("Can create, get, and list an ExternalIPAttachment with cluster target", func() {
@@ -825,10 +866,12 @@ var _ = Describe("ExternalIPAttachment cross-resource validation", func() {
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
 		Expect(response).ToNot(BeNil())
-		DeferCleanup(func() {
-			attachmentsClient.Delete(ctx, publicv1.ExternalIPAttachmentsDeleteRequest_builder{
-				Id: attachmentId,
-			}.Build())
+		DeferCleanup(func(cleanupCtx context.Context) {
+			deleteComputeInstanceFixtureResource(cleanupCtx,
+				func(deleteCtx context.Context) error {
+					_, deleteErr := attachmentsClient.Delete(deleteCtx, publicv1.ExternalIPAttachmentsDeleteRequest_builder{Id: attachmentId}.Build())
+					return deleteErr
+				})
 		})
 
 		attachment := response.GetObject()
@@ -874,10 +917,12 @@ var _ = Describe("ExternalIPAttachment cross-resource validation", func() {
 			}.Build(),
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
-		DeferCleanup(func() {
-			attachmentsClient.Delete(ctx, publicv1.ExternalIPAttachmentsDeleteRequest_builder{
-				Id: attachmentId1,
-			}.Build())
+		DeferCleanup(func(cleanupCtx context.Context) {
+			deleteComputeInstanceFixtureResource(cleanupCtx,
+				func(deleteCtx context.Context) error {
+					_, deleteErr := attachmentsClient.Delete(deleteCtx, publicv1.ExternalIPAttachmentsDeleteRequest_builder{Id: attachmentId1}.Build())
+					return deleteErr
+				})
 		})
 
 		attachmentId2 := fmt.Sprintf("test-att-%s", uuid.New())
@@ -930,6 +975,20 @@ var _ = Describe("ExternalIPAttachment cross-resource validation", func() {
 			}.Build(),
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
+		DeferCleanup(func(cleanupCtx context.Context) {
+			deleteComputeInstanceFixtureResource(cleanupCtx,
+				func(deleteCtx context.Context) error {
+					_, deleteErr := externalIPsClient.Delete(deleteCtx, publicv1.ExternalIPsDeleteRequest_builder{Id: pendingIPId}.Build())
+					return deleteErr
+				})
+		})
+		Eventually(func(g Gomega) {
+			resp, err := privateExternalIPsClient.Get(ctx, privatev1.ExternalIPsGetRequest_builder{
+				Id: pendingIPId,
+			}.Build())
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(resp.GetObject().GetStatus().GetHub()).To(Equal(networkClassHubID))
+		}, time.Minute, time.Second).Should(Succeed())
 
 		attachmentId := fmt.Sprintf("test-att-%s", uuid.New())
 		_, err = attachmentsClient.Create(ctx, publicv1.ExternalIPAttachmentsCreateRequest_builder{
@@ -1021,10 +1080,11 @@ var _ = Describe("ExternalIPAttachment cross-resource validation", func() {
 		Expect(ipResp.GetObject().GetStatus().GetAttribution().GetCluster().GetId()).To(Equal(clusterId))
 		Expect(ipResp.GetObject().GetStatus().GetAttachmentTransitionTime()).ToNot(BeNil())
 
-		_, err = attachmentsClient.Delete(ctx, publicv1.ExternalIPAttachmentsDeleteRequest_builder{
-			Id: attachmentId,
-		}.Build())
-		Expect(err).ToNot(HaveOccurred())
+		deleteComputeInstanceFixtureResource(ctx,
+			func(deleteCtx context.Context) error {
+				_, deleteErr := attachmentsClient.Delete(deleteCtx, publicv1.ExternalIPAttachmentsDeleteRequest_builder{Id: attachmentId}.Build())
+				return deleteErr
+			})
 
 		ipResp, err = privateExternalIPsClient.Get(ctx, privatev1.ExternalIPsGetRequest_builder{
 			Id: externalIPId,

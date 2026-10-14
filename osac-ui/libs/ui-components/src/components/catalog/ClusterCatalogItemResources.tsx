@@ -19,9 +19,9 @@ import {
   clusterNodeSetItemsFromPolicy,
   clusterNodeSetMapPolicy,
   clusterVersionReference,
-  findBareMetalInstanceTypeForReference,
   findClusterVersionForReference,
-  formatClusterCatalogBareMetalInstanceTypeRow,
+  findHostTypeForReference,
+  formatClusterCatalogHostTypeRow,
   formatClusterCatalogNodeSetRow,
   formatClusterCatalogVersionRow,
   primaryClusterCatalogNodeSet,
@@ -53,9 +53,9 @@ const ClusterCatalogItemResources = ({
     [clusterVersions, versionReference],
   );
 
-  const instanceType = useMemo(
+  const hostType = useMemo(
     () =>
-      findBareMetalInstanceTypeForReference(
+      findHostTypeForReference(
         bareMetalInstanceTypes,
         primaryNodeSet?.nodeSet.baremetalInstanceType,
       ),
@@ -65,11 +65,7 @@ const ClusterCatalogItemResources = ({
   const versionLabel = formatClusterCatalogVersionRow(fields, clusterVersion, versionReference);
   const showClusterVersionIcon = Boolean(versionReference || clusterVersion);
   const nodeSetLabel = formatClusterCatalogNodeSetRow(nodeSetsPolicy, primaryNodeSet);
-  const instanceTypeLabel = formatClusterCatalogBareMetalInstanceTypeRow(
-    nodeSetsPolicy,
-    primaryNodeSet,
-    instanceType,
-  );
+  const hostTypeLabel = formatClusterCatalogHostTypeRow(nodeSetsPolicy, primaryNodeSet, hostType);
 
   return (
     <DescriptionList isHorizontal isCompact>
@@ -105,10 +101,10 @@ const ClusterCatalogItemResources = ({
         </DescriptionListDescription>
       </DescriptionListGroup>
       <DescriptionListGroup>
-        <DescriptionListTerm>{t('Bare-metal instance type')}</DescriptionListTerm>
+        <DescriptionListTerm>{t('Host type')}</DescriptionListTerm>
         <DescriptionListDescription>
           <Flex flexWrap={{ default: 'nowrap' }} gap={{ default: 'gapXs' }}>
-            <FlexItem>{instanceTypeLabel || '-'}</FlexItem>
+            <FlexItem>{hostTypeLabel || '-'}</FlexItem>
             <FlexItem>
               <CatalogFieldEditabilityLabel behavior={nodeSetsPolicyBehavior} />
             </FlexItem>

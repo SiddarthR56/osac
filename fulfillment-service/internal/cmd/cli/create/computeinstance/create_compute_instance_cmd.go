@@ -259,6 +259,7 @@ func (c *runnerContext) run(cmd *cobra.Command, args []string) error {
 		SetConnection(conn).
 		AddPackages(c.settings.Packages()).
 		SetTenantFunc(config.TenantFromContext).
+		SetProjectFunc(config.ProjectFromContext).
 		Build()
 	if err != nil {
 		return fmt.Errorf("failed to create reflection tool: %w", err)
@@ -299,8 +300,9 @@ func (c *runnerContext) run(cmd *cobra.Command, args []string) error {
 
 		computeInstance := publicv1.ComputeInstance_builder{
 			Metadata: publicv1.Metadata_builder{
-				Name:   c.args.name,
-				Tenant: c.settings.Tenant(),
+				Name:    c.args.name,
+				Tenant:  c.settings.Tenant(),
+				Project: config.ProjectFromContext(ctx),
 			}.Build(),
 			Spec: specResult,
 		}.Build()
@@ -356,7 +358,8 @@ func (c *runnerContext) run(cmd *cobra.Command, args []string) error {
 	// Prepare the compute instance:
 	computeInstance := publicv1.ComputeInstance_builder{
 		Metadata: publicv1.Metadata_builder{
-			Name: c.args.name,
+			Name:    c.args.name,
+			Project: config.ProjectFromContext(ctx),
 		}.Build(),
 		Spec: spec,
 	}.Build()
@@ -1139,13 +1142,16 @@ _STRATEGY_ - Run strategy, for example {{ bt }}Always{{ bt }} or
 `
 
 const userDataFlagHelp = `
-_DATA_ - User data for the compute instance, for example cloud-init or
-ignition configuration.
+_DATA_ - User data for the compute instance. For Linux DiskImages, this is
+cloud-init or ignition configuration. For Windows DiskImages, the content is
+treated as an Unattend.xml answer file and must be well-formed XML.
 `
 
 const userDataSecretFlagHelp = `
 _NAME_ - Name of a Secret resource containing user data for the compute
-instance. The secret must exist in the same tenant. See also
+instance. For Linux DiskImages, content is cloud-init or ignition configuration.
+For Windows DiskImages, the content is treated as an Unattend.xml answer file
+and must be well-formed XML. The secret must exist in the same tenant. See also
 {{ bt }}osac create secret{{ bt }}. Mutually exclusive with
 {{ bt }}--user-data{{ bt }}.
 `

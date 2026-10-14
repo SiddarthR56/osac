@@ -398,6 +398,35 @@ func newDiscoveryIgnitionFetcher(reader client.Reader) (baremetalworker.Ignition
 
 // setupClusterControllers registers the ClusterOrder controller and, when grpcConn is set,
 // the cluster Feedback controller.
+
+// setupAddOnOperatorController registers the ClusterOrder add-on operator controller.
+func setupAddOnOperatorController(mgr mcmanager.Manager, maxJobHistory int) error {
+	localMgr := mgr.GetLocalManager()
+	aapURL := os.Getenv(envAAPURL)
+	aapToken := os.Getenv(envAAPToken)
+	aapInsecureSkipVerify := helpers.GetEnvWithDefault(envAAPInsecureSkipVerify, false)
+	templatePrefix := helpers.GetEnvWithDefault(envAAPTemplatePrefix, "osac")
+	provider, pollInterval, err := createAAPProvider(
+		aapURL, aapToken,
+		fmt.Sprintf("%s-install-addon-operator", templatePrefix), "", "", aapInsecureSkipVerify,
+	)
+	if err != nil {
+		return fmt.Errorf("create add-on operator provider: %w", err)
+	}
+
+	reconciler := controller.NewAddOnOperatorReconciler(
+		localMgr.GetClient(), localMgr.GetAPIReader(),
+		os.Getenv(envClusterOrderNamespace), provider, pollInterval,
+	)
+	reconciler.MaxJobHistory = maxJobHistory
+	if err := reconciler.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("add-on operator controller: %w", err)
+	}
+	return nil
+}
+
+// setupClusterControllers registers the ClusterOrder and add-on operator controllers and,
+// when grpcConn is set, the cluster Feedback controller.
 func setupClusterControllers(
 	mgr mcmanager.Manager, grpcConn grpc.ClientConnInterface,
 	maxJobHistory int,
@@ -424,7 +453,7 @@ func setupClusterControllers(
 		return err
 	}
 
-	return setupProvisioningController(
+	if err := setupProvisioningController(
 		envClusterAAPProvisionTemplate, envClusterAAPDeprovisionTemplate,
 		func() error {
 			if grpcConn == nil {
@@ -444,9 +473,15 @@ func setupClusterControllers(
 			)
 			reconciler.StallThresholds = clusterOrderStallThresholdsFromEnv()
 			reconciler.Recorder = localMgr.GetEventRecorder(controller.ClusterOrderControllerName)
-			return reconciler.SetupWithManager(mgr)
+			if err := reconciler.SetupWithManager(mgr); err != nil {
+				return err
+			}
+			return nil
 		},
-	)
+	); err != nil {
+		return err
+	}
+	return setupAddOnOperatorController(mgr, maxJobHistory)
 }
 
 func clusterOrderStallThresholdsFromEnv() controller.ClusterOrderStallThresholds {
@@ -1193,7 +1228,6 @@ func main() {
 	var enableHTTP2 bool
 	var grpcPlaintext bool
 	var grpcInsecure bool
-	var grpcTokenFile string
 	var fulfillmentCAFile string
 	var fulfillmentServerAddress string
 	var remoteClusterKubeconfig string
@@ -1218,12 +1252,6 @@ func main() {
 		"grpc-insecure",
 		false,
 		"Enable insecure gRPC, without checking the server TLS certificates.",
-	)
-	flag.StringVar(
-		&grpcTokenFile,
-		"fulfillment-server-token-file",
-		os.Getenv("OSAC_FULFILLMENT_TOKEN_FILE"),
-		"Path of the file containing the token for gRPC authentication to the fulfillment service.",
 	)
 	flag.StringVar(
 		&fulfillmentServerAddress,
@@ -1383,6 +1411,16 @@ func main() {
 	var grpcConn grpc.ClientConnInterface
 	if fulfillmentServerAddress != "" {
 		setupLog.Info("gRPC connection to fulfillment service is enabled")
+		tokenSource, tokenErr := newFulfillmentTokenSource(fulfillmentOAuthConfig{
+			IssuerURL:    os.Getenv(envFulfillmentIssuerURL),
+			ClientID:     os.Getenv("OSAC_FULFILLMENT_CLIENT_ID"),
+			ClientSecret: os.Getenv("OSAC_FULFILLMENT_CLIENT_SECRET"),
+			CAFile:       fulfillmentCAFile,
+		})
+		if tokenErr != nil {
+			setupLog.Error(tokenErr, "invalid fulfillment OAuth configuration")
+			os.Exit(1)
+		}
 		if helpers.GetEnvWithDefault(envEnableFulfillmentTrust, false) {
 			if fulfillmentCAFile == "" || grpcPlaintext || grpcInsecure {
 				setupLog.Error(
@@ -1392,7 +1430,7 @@ func main() {
 				os.Exit(1)
 			}
 			verified := &verifiedFulfillmentConn{
-				address: fulfillmentServerAddress, caFile: fulfillmentCAFile, tokenFile: grpcTokenFile,
+				address: fulfillmentServerAddress, caFile: fulfillmentCAFile, tokenSource: tokenSource,
 			}
 			if err := verified.validateCAFile(); err != nil {
 				setupLog.Error(err, "invalid fulfillment CA bundle")
@@ -1406,7 +1444,7 @@ func main() {
 			grpcConn = verified
 		} else {
 			legacy, dialErr := createGrpcConn(
-				grpcPlaintext, grpcInsecure, grpcTokenFile, fulfillmentServerAddress, fulfillmentCAFile,
+				grpcPlaintext, grpcInsecure, tokenSource, fulfillmentServerAddress, fulfillmentCAFile,
 			)
 			if dialErr != nil {
 				setupLog.Error(dialErr, "failed to create gRPC connection to fulfillment service")
@@ -1499,9 +1537,12 @@ func ignoreCanceled(err error) error {
 //nolint:nakedret
 func createGrpcConn(
 	plaintext, insecure bool,
-	tokenFile, serverAddress string,
+	tokenSource oauth2.TokenSource, serverAddress string,
 	caFiles ...string,
 ) (result *grpc.ClientConn, err error) {
+	if tokenSource != nil && (plaintext || insecure) {
+		return nil, fmt.Errorf("fulfillment OAuth credentials require verified TLS")
+	}
 	// Configure use of TLS:
 	var dialOpts []grpc.DialOption
 	var transportCreds credentials.TransportCredentials
@@ -1532,12 +1573,10 @@ func createGrpcConn(
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(transportCreds))
 	}
 
-	// Confgure use of token:
-	if tokenFile != "" {
+	// Configure OAuth credentials:
+	if tokenSource != nil {
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(oauth.TokenSource{
-			TokenSource: &fileTokenSource{
-				tokenFile: tokenFile,
-			},
+			TokenSource: tokenSource,
 		}))
 	}
 
@@ -1557,22 +1596,4 @@ func loadFulfillmentCAPool(caFile string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("read fulfillment CA bundle: %w", err)
 	}
 	return verifiedCAPool(bundle)
-}
-
-// fileTokenSource is a token source that reads the token from a file whenever it is needed.
-type fileTokenSource struct {
-	tokenFile string
-}
-
-func (s *fileTokenSource) Token() (token *oauth2.Token, err error) {
-	var data []byte
-	data, err = os.ReadFile(s.tokenFile)
-	if err != nil {
-		err = fmt.Errorf("failed to read token from file '%s': %w", s.tokenFile, err)
-		return
-	}
-	token = &oauth2.Token{
-		AccessToken: strings.TrimSpace(string(data)),
-	}
-	return
 }

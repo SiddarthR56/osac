@@ -184,6 +184,141 @@ render_success \
   --set-string global.networking.netris.tenantId=1 \
   --set-string global.networking.netris.tenantName=test
 
+# The networking facade forwards certificate validation to config-as-code and
+# both enabled AAP instance groups, and keeps verification enabled by default.
+render_success \
+  netris-validate-certs-default \
+  'NETRIS_VALIDATE_CERTS: "true"' \
+  --set global.networking.fabricManager=netris \
+  --set global.networking.k8sManager= \
+  --set-string global.networking.netris.controllerUrl=https://netris.example.com \
+  --set-string global.networking.netris.credentials.username=test-user \
+  --set global.networking.netris.credentials.externalSecret=true \
+  --set-string global.networking.netris.siteId=1 \
+  --set-string global.networking.netris.tenantId=1 \
+  --set-string global.networking.netris.tenantName=test \
+  --set aap.instanceGroups.clusterFulfillment.enabled=true \
+  --set aap.instanceGroups.networkFulfillment.enabled=true
+if [[ $(grep -Fc 'NETRIS_VALIDATE_CERTS: "true"' "${TMP_DIR}/netris-validate-certs-default.yaml") -ne 3 ]]; then
+  echo "ERROR: certificate validation default was not rendered to config-as-code and both AAP instance groups" >&2
+  exit 1
+fi
+
+render_success \
+  netris-validate-certs-disabled \
+  'NETRIS_VALIDATE_CERTS: "false"' \
+  --set global.networking.fabricManager=netris \
+  --set global.networking.k8sManager= \
+  --set global.networking.netris.validateCerts=false \
+  --set-string global.networking.netris.controllerUrl=https://netris.example.com \
+  --set-string global.networking.netris.credentials.username=test-user \
+  --set global.networking.netris.credentials.externalSecret=true \
+  --set-string global.networking.netris.siteId=1 \
+  --set-string global.networking.netris.tenantId=1 \
+  --set-string global.networking.netris.tenantName=test \
+  --set aap.instanceGroups.clusterFulfillment.enabled=true \
+  --set aap.instanceGroups.networkFulfillment.enabled=true
+if [[ $(grep -Fc 'NETRIS_VALIDATE_CERTS: "false"' "${TMP_DIR}/netris-validate-certs-disabled.yaml") -ne 3 ]]; then
+  echo "ERROR: certificate validation opt-out was not rendered to config-as-code and both AAP instance groups" >&2
+  exit 1
+fi
+
+# Netris-backed CI profiles opt out explicitly because their lab controllers
+# do not use a certificate trusted by the execution environment.
+render_success \
+  netris-bmaas-ci-validate-certs \
+  'NETRIS_VALIDATE_CERTS: "false"' \
+  --values "${SCRIPT_DIR}/../values/bmaas-ci/instance.yaml" \
+  --set-string service.externalHostname=fulfillment-api.test.example.com \
+  --set-string service.internalHostname=fulfillment-internal-api.test.example.com
+
+render_success \
+  netris-cudn-evpn-test-validate-certs \
+  'NETRIS_VALIDATE_CERTS: "false"' \
+  --values "${SCRIPT_DIR}/../values/cudn-evpn-netris-test/instance.yaml" \
+  --set-string service.externalHostname=fulfillment-api.test.example.com \
+  --set-string service.internalHostname=fulfillment-internal-api.test.example.com
+
+render_success \
+  netris-full-ci-validate-certs \
+  'NETRIS_VALIDATE_CERTS: "false"' \
+  --values "${CHART_DIR}/ci/full-values.yaml"
+if [[ $(grep -Fc 'NETRIS_VALIDATE_CERTS: "false"' "${TMP_DIR}/netris-full-ci-validate-certs.yaml") -ne 3 ]]; then
+  echo "ERROR: full CI certificate validation opt-out was not rendered to config-as-code and both AAP instance groups" >&2
+  exit 1
+fi
+
+# Expert AAP overrides remain an escape hatch for direct ConfigMap control.
+render_success \
+  netris-expert-validate-certs-disabled \
+  'NETRIS_VALIDATE_CERTS: "false"' \
+  --set global.expertOverrides.aap=true \
+  --set aap.instanceGroups.clusterFulfillment.enabled=true \
+  --set aap.instanceGroups.networkFulfillment.enabled=true \
+  --set-string aap.instanceGroups.clusterFulfillment.config.NETRIS_VALIDATE_CERTS=false \
+  --set-string aap.instanceGroups.networkFulfillment.config.NETRIS_VALIDATE_CERTS=false
+if [[ $(grep -Fc 'NETRIS_VALIDATE_CERTS: "false"' "${TMP_DIR}/netris-expert-validate-certs-disabled.yaml") -ne 2 ]]; then
+  echo "ERROR: expert certificate validation override was not rendered to both AAP instance groups" >&2
+  exit 1
+fi
+
+# Low-level AAP values become authoritative only when the expert override is
+# enabled. This deliberately permits an AAP-only value that differs from the
+# global facade; without the expert switch, the facade remains authoritative.
+render_success \
+  netris-expert-validate-certs-enabled \
+  'NETRIS_VALIDATE_CERTS: "true"' \
+  --set global.networking.fabricManager=netris \
+  --set global.networking.k8sManager= \
+  --set global.networking.netris.validateCerts=false \
+  --set-string global.networking.netris.controllerUrl=https://netris.example.com \
+  --set-string global.networking.netris.credentials.username=test-user \
+  --set global.networking.netris.credentials.externalSecret=true \
+  --set-string global.networking.netris.siteId=1 \
+  --set-string global.networking.netris.tenantId=1 \
+  --set-string global.networking.netris.tenantName=test \
+  --set global.expertOverrides.aap=true \
+  --set aap.instanceGroups.clusterFulfillment.enabled=true \
+  --set aap.instanceGroups.networkFulfillment.enabled=true \
+  --set-string aap.instanceGroups.clusterFulfillment.config.NETRIS_VALIDATE_CERTS=true \
+  --set-string aap.instanceGroups.networkFulfillment.config.NETRIS_VALIDATE_CERTS=true
+if [[ $(grep -Fc 'NETRIS_VALIDATE_CERTS: "true"' "${TMP_DIR}/netris-expert-validate-certs-enabled.yaml") -ne 2 ]]; then
+  echo "ERROR: expert certificate validation opt-in was not rendered to both AAP instance groups" >&2
+  exit 1
+fi
+
+# A customer-created CA ConfigMap must reach the AAP config-as-code Secret.
+# The AAP pod-spec contract test verifies that the same value is consumed by
+# both Netris container groups.
+render_success \
+  netris-ca-configmap \
+  'NETRIS_CA_CONFIGMAP: "customer.netris-ca"' \
+  --set global.networking.fabricManager=netris \
+  --set global.networking.k8sManager= \
+  --set-string global.networking.netris.controllerUrl=https://netris.example.com \
+  --set-string global.networking.netris.credentials.username=test-user \
+  --set global.networking.netris.credentials.externalSecret=true \
+  --set-string global.networking.netris.siteId=1 \
+  --set-string global.networking.netris.tenantId=1 \
+  --set-string global.networking.netris.tenantName=test \
+  --set global.networking.netris.validateCerts=true \
+  --set-string global.networking.netris.caBundle.configMap=customer.netris-ca
+
+# ConfigMap names use the Kubernetes DNS-subdomain form: dots may separate
+# valid DNS labels, but empty labels and leading dots remain invalid.
+render_failure \
+  netris-ca-configmap-invalid-dot \
+  --set global.networking.fabricManager=netris \
+  --set global.networking.k8sManager= \
+  --set-string global.networking.netris.controllerUrl=https://netris.example.com \
+  --set-string global.networking.netris.credentials.username=test-user \
+  --set global.networking.netris.credentials.externalSecret=true \
+  --set-string global.networking.netris.siteId=1 \
+  --set-string global.networking.netris.tenantId=1 \
+  --set-string global.networking.netris.tenantName=test \
+  --set global.networking.netris.validateCerts=true \
+  --set-string global.networking.netris.caBundle.configMap=.customer-netris-ca
+
 # Inline passwords and externalSecret are mutually exclusive.
 render_failure \
   netris-both-password-sources \
@@ -281,9 +416,12 @@ def resource(kind, name):
     return matches[0]
 
 job = resource('Job', 'create-network-class')
-env = {e['name']: e['value'] for c in job['spec']['template']['spec']['containers']
-       if c['name'] == 'create-network-class' for e in c['env']}
-body = json.loads(env['NETWORK_CLASS_BODY'])
+containers = [c for c in job['spec']['template']['spec']['containers']
+              if c['name'] == 'create-network-class']
+assert len(containers) == 1, f"expected one create-network-class container, got {len(containers)}"
+body_env = [e for e in containers[0]['env'] if e['name'] == 'NETWORK_CLASS_BODY']
+assert len(body_env) == 1 and 'value' in body_env[0], 'expected one literal NETWORK_CLASS_BODY env var'
+body = json.loads(body_env[0]['value'])
 assert body.get('fabric_manager') == 'cudn_net', 'default class must select CUDN'
 assert not body.get('k8s_manager'), 'default class must have no k8s manager'
 manager = resource('ConfigMap', 'osac-network-fabric-manager-cudn-net')

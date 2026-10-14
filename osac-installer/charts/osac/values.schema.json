@@ -320,12 +320,30 @@
           "properties": {
             "serverAddress": {
               "type": "string",
-              "description": "Fulfillment service gRPC address",
+              "description": "Fulfillment service gRPC address; leave empty to disable the operator Fulfillment client",
               "default": "fulfillment-internal-api:8001"
             },
-            "tokenFile": {
-              "type": "string",
-              "description": "Path to service account token file"
+            "credentials": {
+              "type": "object",
+              "description": "Reference to the existing osac-controller Keycloak service-account credentials; osac-infra provisions this for bundled Keycloak, while external Keycloak deployments must provide an equivalent Secret",
+              "properties": {
+                "secretName": {
+                  "type": "string",
+                  "description": "Secret name",
+                  "default": "fulfillment-controller-credentials"
+                },
+                "clientIdKey": {
+                  "type": "string",
+                  "description": "Key within the Secret containing the OAuth client ID",
+                  "default": "client-id"
+                },
+                "clientSecretKey": {
+                  "type": "string",
+                  "description": "Key within the Secret containing the OAuth client secret",
+                  "default": "client-secret"
+                }
+              },
+              "additionalProperties": false
             },
             "tls": {
               "type": "object",
@@ -360,8 +378,8 @@
                 },
                 "optional": {
                   "type": "boolean",
-                  "description": "Allow the ConfigMap to be absent when external CSI configuration is disabled",
-                  "default": true
+                  "description": "Allow the ConfigMap to be absent when external fulfillment configuration is disabled",
+                  "default": false
                 }
               },
               "additionalProperties": false
@@ -669,6 +687,74 @@
           "minLength": 1,
           "description": "Hostname for the internal API Route"
         },
+        "mcp": {
+          "type": "object",
+          "description": "Optional fulfillment MCP endpoint",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Deploy the fulfillment MCP server",
+              "default": false
+            },
+            "externalHostname": {
+              "type": "string",
+              "description": "DNS hostname advertised by the MCP server; Kind requires mcp.<namespace>.localhost"
+            },
+            "externalPort": {
+              "type": "integer",
+              "description": "Externally reachable TLS port for the MCP server; OpenShift Routes require 443",
+              "minimum": 1,
+              "maximum": 65535,
+              "default": 443
+            },
+            "exchangeClientId": {
+              "type": "string",
+              "description": "Confidential OAuth token exchange client ID; use the MCP resource URL ending in / for Keycloak audience validation"
+            },
+            "exchangeCredentialsSecret": {
+              "type": "string",
+              "description": "Secret containing client-secret for the MCP token exchange client"
+            },
+            "resources": {
+              "type": "object",
+              "description": "CPU and memory resources for the MCP server container",
+              "required": ["requests", "limits"],
+              "properties": {
+                "requests": {
+                  "type": "object",
+                  "required": ["cpu", "memory"],
+                  "properties": {
+                    "cpu": {"type": "string", "minLength": 1, "default": "50m"},
+                    "memory": {"type": "string", "minLength": 1, "default": "128Mi"}
+                  },
+                  "additionalProperties": false
+                },
+                "limits": {
+                  "type": "object",
+                  "required": ["cpu", "memory"],
+                  "properties": {
+                    "cpu": {"type": "string", "minLength": 1, "default": "500m"},
+                    "memory": {"type": "string", "minLength": 1, "default": "512Mi"}
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "allOf": [{
+            "if": {"properties": {"enabled": {"const": true}}},
+            "then": {
+              "required": ["externalHostname", "exchangeClientId", "exchangeCredentialsSecret"],
+              "properties": {
+                "externalHostname": {"minLength": 1},
+                "exchangeClientId": {"minLength": 1},
+                "exchangeCredentialsSecret": {"minLength": 1}
+              }
+            }
+          }],
+          "additionalProperties": false
+        },
         "variant": {
           "type": "string",
           "description": "Deployment variant",
@@ -962,6 +1048,27 @@
           "description": "Helm-injected global values (passed automatically to subcharts)"
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "variant": {"const": "openshift"},
+              "mcp": {
+                "properties": {"enabled": {"const": true}},
+                "required": ["enabled"]
+              }
+            },
+            "required": ["variant", "mcp"]
+          },
+          "then": {
+            "properties": {
+              "mcp": {
+                "properties": {"externalPort": {"const": 443}}
+              }
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "aap": {
@@ -1298,6 +1405,14 @@
                     "NETRIS_CONTROLLER_URL": {
                       "type": "string",
                       "description": "Netris controller API endpoint URL"
+                    },
+                    "NETRIS_VALIDATE_CERTS": {
+                      "type": "string",
+                      "enum": [
+                        "true",
+                        "false"
+                      ],
+                      "description": "Verify Netris HTTPS certificates; defaults to enabled"
                     },
                     "NETRIS_SITE_ID": {
                       "type": "string",
@@ -2264,12 +2379,70 @@
                 "type": "string",
                 "description": "OCI release image pullspec"
               },
+              "diskImage": {
+                "type": "object",
+                "description": "Seed a shared Linux registry DiskImage before this ClusterVersion. Required for default versions; existing named records are retained without updates.",
+                "required": [
+                  "name",
+                  "sourceRef"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Name of the shared DiskImage to create and reference",
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                  },
+                  "sourceRef": {
+                    "type": "string",
+                    "description": "OCI disk image artifact URL (oci://registry/repository:tag or @digest), not the OpenShift release image",
+                    "pattern": "^oci://\\S+$"
+                  },
+                  "architecture": {
+                    "type": "array",
+                    "description": "CPU architectures supported by the disk image",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "default": [
+                      "ARCHITECTURE_AMD64"
+                    ],
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "ARCHITECTURE_AMD64",
+                        "ARCHITECTURE_ARM64",
+                        "ARCHITECTURE_S390X"
+                      ]
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
               "default": {
                 "type": "boolean",
-                "description": "Mark as the default cluster version",
+                "description": "Mark as the default cluster version; requires a diskImage",
                 "default": false
               }
             },
+            "allOf": [
+              {
+                "if": {
+                  "required": [
+                    "default"
+                  ],
+                  "properties": {
+                    "default": {
+                      "const": true
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "diskImage"
+                  ]
+                }
+              }
+            ],
             "additionalProperties": false
           }
         }
@@ -2676,6 +2849,24 @@
           "description": "Netris controller API URL (HTTPS only).",
           "pattern": "^$|^https://[^/\\s:]+(:[0-9]+)?(/[^\\s]*)?$"
         },
+        "validateCerts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Verify Netris HTTPS certificates. Disable only for trusted non-production endpoints with self-signed certificates."
+        },
+        "caBundle": {
+          "type": "object",
+          "description": "Optional customer-created ConfigMap containing the Netris CA chain under the fixed bundle.pem key.",
+          "properties": {
+            "configMap": {
+              "type": "string",
+              "description": "Name of the customer-created ConfigMap in the AAP namespace. It must contain bundle.pem and is mounted read-only into Netris execution pods.",
+              "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+              "maxLength": 253
+            }
+          },
+          "additionalProperties": false
+        },
         "credentials": {
           "type": "object",
           "properties": {
@@ -2861,6 +3052,11 @@
           "type": "string",
           "pattern": "^$|^https://[^/\\s:]+(:[0-9]+)?(/[^\\s]*)?$",
           "description": "Netris controller API URL. Must match between AAP instance groups."
+        },
+        "NETRIS_VALIDATE_CERTS": {
+          "type": "string",
+          "enum": ["true", "false"],
+          "description": "Verify Netris HTTPS certificates; defaults to enabled."
         },
         "NETRIS_USERNAME": {
           "type": "string",

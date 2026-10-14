@@ -20,9 +20,15 @@ COPY --chown=1001:1001 osac-metering/schema/go.mod osac-metering/schema/go.sum o
 COPY --chown=1001:1001 osac-metering/metering-service/go.mod osac-metering/metering-service/go.sum osac-metering/metering-service/
 COPY --chown=1001:1001 osac-metering/adapters/go.mod osac-metering/adapters/go.sum osac-metering/adapters/
 COPY --chown=1001:1001 osac-ui/proxy/go.mod osac-ui/proxy/go.sum osac-ui/proxy/
+# [ -f /cachi2/cachi2.env ] && . ... sources Hermeto/Cachi2's generated env
+# (GOPROXY/GOFLAGS pointed at the prefetched module cache) when present --
+# i.e. a hermetic Konflux build. Absent entirely for local/non-hermetic
+# builds, where go mod download falls back to the real network as before.
 RUN \
   set -e; \
-  cd fulfillment-service && GODEBUG=http2client=0 go mod download
+  cd fulfillment-service; \
+  [ -f /cachi2/cachi2.env ] && . /cachi2/cachi2.env; \
+  GODEBUG=http2client=0 go mod download
 
 ARG VERSION=""
 
@@ -35,6 +41,7 @@ COPY --chown=1001:1001 osac-operator/api/ osac-operator/api/
 WORKDIR /opt/app-root/src/fulfillment-service
 RUN \
   set -e; \
+  [ -f /cachi2/cachi2.env ] && . /cachi2/cachi2.env; \
   version="${VERSION}"; \
   if [[ -z "${version}" ]]; then \
     version=$(git describe --tags --always 2>/dev/null || echo "dev"); \

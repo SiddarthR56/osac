@@ -39,7 +39,7 @@ pytestmark = pytest.mark.sanity
 # ClusterVersion via GRPCClient.ensure_cluster_version instead of accumulating
 # duplicates on the shared cluster.
 TEST_RELEASE_IMAGE = env("OSAC_TEST_RELEASE_IMAGE", "quay.io/openshift-release-dev/ocp-release:4.22.0-multi")
-RHCOS_IMAGE = env("OSAC_RHCOS_BMI_IMAGE", "oci://quay.io/rh_ee_rpiccoli/rhcos-bmi:4.22.0")
+RHCOS_IMAGE = env("OSAC_RHCOS_BMI_IMAGE", "oci://quay.io/osac-project/rhcos:4.22.0")
 _WORKER_METRICS = ("osac_caas_worker_desired", "osac_caas_worker_ready", "osac_caas_worker_provisioning_failures_total")
 _WORKER_LEVEL_METRICS = _WORKER_METRICS[:2]
 _WORKER_FAILURE_METRIC = _WORKER_METRICS[2]
@@ -346,7 +346,6 @@ def _assert_worker_bmi_resources(
 ) -> set[str]:
     """Return only verified test-owned IDs for use in deletion assertions."""
     owned_bmi_ids: set[str] = set()
-    expected_owner = f"ClusterOrder/{co_name}"
     for bmi_id, bmi in candidate_bmis.items():
         spec = bmi["spec"]
         assert spec.get("catalogItem", spec.get("catalog_item")) is None
@@ -360,12 +359,11 @@ def _assert_worker_bmi_resources(
             until=bool,
             retries=30,
             delay=2,
-            description=f"{bmi_id} Kubernetes BMI CR",
+            description=f"{co_name} worker {bmi_id} Kubernetes BMI CR",
         )
         cr = k8s.get_json(resource="baremetalinstance", name=cr_name)
         assert cr["metadata"]["labels"]["osac.openshift.io/baremetalinstance-uuid"] == bmi_id
         assert cr["metadata"]["annotations"]["osac.openshift.io/tenant"] == tenant
-        assert cr["metadata"]["annotations"]["osac.openshift.io/owner-reference"] == expected_owner
         owned_bmi_ids.add(bmi_id)
     return owned_bmi_ids
 

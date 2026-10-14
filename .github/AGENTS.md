@@ -65,12 +65,39 @@ state descriptions live in [osac-project/osac-ci](https://github.com/osac-projec
   `.pre-commit-config.yaml`; Markdown in them excepted) need an approval from `@osac-project/wg-infra`. `CODEOWNERS` lists them and the OSAC CI
   policy applies the same list; keep both in step.
 
+## CaaS suite selection and coverage
+
+The CaaS full-install caller runs only `caas/sanity` with `-m sanity` for PRs
+and merge queue. Periodics run `caas` (sanity + regression) and applicable
+reference tests with `-m 'sanity or regression or requires_caas or reference_common'`.
+Manual dispatch defaults to sanity and permits suite/filter/marker overrides.
+The test-infra reusable runner must not append references to sanity or widen
+an empty requested tier to the full suite. Readiness and fork authorization
+are independent of suite selection.
+
+| Area | Required coverage | Command (repository root) | Boundary |
+|---|---|---|---|
+| CaaS CI suite policy | [DEV] Unit/Contract selection checks | `OSAC_TEST_INFRA_DIR=/path/to/osac-test-infra uv run pytest -n 0 tests/unit/test_caas_ci_suite_policy.py` | Evaluates caller YAML and executes reusable path-selection Bash locally. No deployed services; companion checks skip if the checkout is not specified. |
+
+## Component-hooks and sandbox regression smoke tests
+
+Follow the [touched-area map and local commands](../.agentic-ci/AGENTS.md).
+The workflow stays present on every PR and merge-group run, including unrelated
+changes that skip execution.
+Its path filter uses one brace-alternation entry because `predicate-quantifier:
+every` combines separate entries with AND. Keep overlay/helper, test, and Python
+setup paths in that entry. See the [sandbox coverage boundary](../docs/INTEGRATION-TESTING.md#agentic-ci-sandbox).
+
 ## Release safety
 
 Nightly builds use provisional `sha-*` image tags while all build, unit,
 integration, security, and E2E gates run. Promote images to release-looking
 nightly tags only after every required gate passes; failed runs must not publish
-release-looking tags.
+release-looking tags. A manual `workflow_dispatch` run may opt out of the
+unit, integration, or E2E gate individually via `skip_unit`/
+`skip_integration`/`skip_e2e` (each surfaced in the tag message and the
+Slack success notification); the scheduled nightly cron never sets any of
+them, and security tests are never skippable.
 
 A real, permanent `<component>/vX.Y.Z` tag (release mode's `component_versions`
 bump) must be pushed with real actor credentials, not the default

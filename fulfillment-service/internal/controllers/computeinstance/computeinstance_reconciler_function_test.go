@@ -14,9 +14,11 @@ language governing permissions and limitations under the License.
 package computeinstance
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -1073,21 +1075,13 @@ var _ = Describe("buildSpec with subnetRef", func() {
 		Expect(spec.NetworkAttachments[0].SubnetRef).To(Equal("test-sn"))
 	})
 
-	It("should populate two networkAttachments and omit top-level subnetRef for multi-NIC", func() {
-		sid1, sid2 := "subnet-id-1", "subnet-id-2"
+	It("should populate the sole networkAttachment", func() {
+		sid1 := "subnet-id-1"
 		subnetCR1 := &osacv1alpha1.Subnet{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: hubNamespace,
 				Name:      "sn-1",
 				Labels:    map[string]string{labels.SubnetUuid: sid1},
-			},
-		}
-
-		subnetCR2 := &osacv1alpha1.Subnet{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: hubNamespace,
-				Name:      "sn-2",
-				Labels:    map[string]string{labels.SubnetUuid: sid2},
 			},
 		}
 
@@ -1097,7 +1091,7 @@ var _ = Describe("buildSpec with subnetRef", func() {
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
-			WithObjects(subnetCR1, subnetCR2).
+			WithObjects(subnetCR1).
 			Build()
 
 		template := "osac.templates.ocp_virt_vm"
@@ -1113,7 +1107,6 @@ var _ = Describe("buildSpec with subnetRef", func() {
 					InstanceType: &privatev1.InstanceTypeReference{Name: "test-type"},
 					NetworkAttachments: []*privatev1.ComputeNetworkAttachment{
 						privatev1.ComputeNetworkAttachment_builder{Subnet: &privatev1.SubnetLocalReference{Id: sid1}}.Build(),
-						privatev1.ComputeNetworkAttachment_builder{Subnet: &privatev1.SubnetLocalReference{Id: sid2}}.Build(),
 					},
 				}.Build(),
 			}.Build(),
@@ -1123,9 +1116,8 @@ var _ = Describe("buildSpec with subnetRef", func() {
 
 		spec, err := t.buildSpec(ctx)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(spec.NetworkAttachments).To(HaveLen(2))
+		Expect(spec.NetworkAttachments).To(HaveLen(1))
 		Expect(spec.NetworkAttachments[0].SubnetRef).To(Equal("sn-1"))
-		Expect(spec.NetworkAttachments[1].SubnetRef).To(Equal("sn-2"))
 	})
 
 	It("should resolve securityGroupRefs inside networkAttachments", func() {
@@ -2226,6 +2218,7 @@ var _ = Describe("instance_type resolution in reconciler", func() {
 		f := &function{
 			logger:                 logger,
 			hubCache:               hubCache,
+			networkingHubReader:    readyComputeNetworkingHubReader("test-hub", hubNamespace, fakeClient),
 			computeInstancesClient: computeInstancesClient,
 			hubsClient:             hubsClient,
 			instanceTypesClient:    mockInstanceTypesClient,
@@ -2362,6 +2355,7 @@ var _ = Describe("Kubernetes validation error handling", func() {
 		f := &function{
 			logger:                 logger,
 			hubCache:               hubCache,
+			networkingHubReader:    readyComputeNetworkingHubReader(hubID, hubNamespace, fakeClient),
 			computeInstancesClient: computeInstancesClient,
 			hubsClient:             hubsClient,
 			instanceTypesClient:    mockInstanceTypesClient,
@@ -2472,6 +2466,74 @@ var _ = Describe("Kubernetes validation error handling", func() {
 		Expect(computeInstance.GetStatus().GetState()).To(
 			Equal(privatev1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_FAILED),
 		)
+	})
+
+	It("preserves existing network attachments while patching a lifecycle update", func() {
+		mockInstanceTypesClient.EXPECT().
+			Get(gomock.Any(), gomock.Any()).
+			Return(privatev1.InstanceTypesGetResponse_builder{
+				Object: privatev1.InstanceType_builder{
+					Spec: privatev1.InstanceTypeSpec_builder{Vcpus: 4, MemoryGib: 8}.Build(),
+				}.Build(),
+			}.Build(), nil)
+
+		existingAttachments := []osacv1alpha1.ComputeNetworkAttachment{{
+			SubnetRef:         "stored-subnet-private",
+			SecurityGroupRefs: []string{"stored-security-group-private"},
+		}}
+		existingCR := &osacv1alpha1.ComputeInstance{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace:   hubNamespace,
+				Name:        "vm-existing-network",
+				Labels:      map[string]string{labels.ComputeInstanceUuid: computeInstanceID},
+				Annotations: map[string]string{"osac.openshift.io/tenant": tenantName},
+			},
+			Spec: osacv1alpha1.ComputeInstanceSpec{NetworkAttachments: existingAttachments},
+		}
+
+		var patched *osacv1alpha1.ComputeInstance
+		f, _ := newTestHarness(interceptor.Funcs{
+			Patch: func(ctx context.Context, client clnt.WithWatch, obj clnt.Object, patch clnt.Patch, opts ...clnt.PatchOption) error {
+				if instance, ok := obj.(*osacv1alpha1.ComputeInstance); ok {
+					patched = instance.DeepCopy()
+				}
+				return client.Patch(ctx, obj, patch, opts...)
+			},
+		}, existingCR)
+		var logOutput bytes.Buffer
+		f.logger = slog.New(slog.NewTextHandler(&logOutput, nil))
+
+		computeInstance := newComputeInstance()
+		restartAt := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+		computeInstance.GetSpec().SetRestartRequestedAt(timestamppb.New(restartAt))
+		Expect(f.run(ctx, computeInstance)).To(Succeed())
+
+		Expect(patched).NotTo(BeNil())
+		Expect(patched.Spec.NetworkAttachments).To(Equal(existingAttachments))
+		Expect(patched.Spec.RestartRequestedAt).NotTo(BeNil())
+		Expect(patched.Spec.RestartRequestedAt.Time).To(Equal(restartAt))
+		Expect(logOutput.String()).To(ContainSubstring("preserving stored network attachments"))
+		Expect(logOutput.String()).NotTo(ContainSubstring("stored-subnet-private"))
+		Expect(logOutput.String()).NotTo(ContainSubstring("stored-security-group-private"))
+	})
+
+	It("copies resolved network attachments into a newly created CR", func() {
+		mockInstanceTypesClient.EXPECT().
+			Get(gomock.Any(), gomock.Any()).
+			Return(privatev1.InstanceTypesGetResponse_builder{
+				Object: privatev1.InstanceType_builder{
+					Spec: privatev1.InstanceTypeSpec_builder{Vcpus: 4, MemoryGib: 8}.Build(),
+				}.Build(),
+			}.Build(), nil)
+
+		f, fakeClient := newTestHarness(interceptor.Funcs{})
+		Expect(f.run(ctx, newComputeInstance())).To(Succeed())
+
+		created := &osacv1alpha1.ComputeInstanceList{}
+		Expect(fakeClient.List(ctx, created)).To(Succeed())
+		Expect(created.Items).To(HaveLen(1))
+		Expect(created.Items[0].Spec.NetworkAttachments).To(HaveLen(1))
+		Expect(created.Items[0].Spec.NetworkAttachments[0].SubnetRef).To(Equal("test-sn"))
 	})
 
 	It("should still return transient errors from K8s Create", func() {

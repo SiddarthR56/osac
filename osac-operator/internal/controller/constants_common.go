@@ -17,6 +17,8 @@ limitations under the License.
 package controller
 
 const (
+	cudnEVPNManagerName = "cudn_evpn"
+
 	// ManagementStateManual indicates that the resource should not be managed by the controller
 	ManagementStateManual = "manual"
 
@@ -43,6 +45,18 @@ const (
 	// already be gone at delete time.
 	osacK8sImplementationStrategyAnnotation = osacPrefix + "/k8s-implementation-strategy"
 
+	// osacK8sCleanupStrategyAnnotation records a K8s manager that owns shared
+	// resources and therefore must be given a cleanup pass for every Subnet,
+	// including Subnets whose K8s provision target was filtered by a sequential
+	// provisioning policy. cudn_evpn uses this to remove its VirtualNetwork-wide
+	// CUDN when the final Subnet is deleted.
+	osacK8sCleanupStrategyAnnotation = osacPrefix + "/k8s-cleanup-strategy"
+
+	// cudnEVPNCleanupJobTarget gives retained shared-CUDN cleanup separate job
+	// history when the active K8s manager has since been replaced. Both dispatch
+	// through the K8s role, but must not share one latest-job slot.
+	cudnEVPNCleanupJobTarget = "k8s-cudn_evpn-cleanup"
+
 	// osacSkipK8sManagerAnnotation explicitly suppresses the K8s manager for a Subnet.
 	// The Subnet controller honors it only for cudn_evpn, the Phase 1 manager that
 	// supports one CUDN per VirtualNetwork.
@@ -54,6 +68,7 @@ const (
 
 	conditionReasonConfigurationApplied  = "ConfigurationApplied"
 	conditionMessageConfigurationApplied = "Controller has processed the current spec"
+	conditionMessageNoManagerConfigured  = "No dispatcher-resolvable network manager is configured"
 
 	labelValueTrue = "true"
 )

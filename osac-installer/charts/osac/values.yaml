@@ -51,6 +51,13 @@ global:
     k8sManager: k8s_only
     netris:
       controllerUrl: ""
+      # Validate the Netris controller certificate. Keep enabled for production;
+      # set false only in a separately managed test profile.
+      validateCerts: true
+      # Optional customer-created ConfigMap in the AAP namespace. It must
+      # contain the PEM bundle under the fixed key bundle.pem.
+      caBundle:
+        configMap: ""
       credentials:
         username: ""
       siteId: ""
@@ -115,14 +122,17 @@ operator:
     workersJoiningByInstanceType: {}
   fulfillment:
     serverAddress: "fulfillment-internal-api:8001"
-    tokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    credentials:
+      secretName: fulfillment-controller-credentials
+      clientIdKey: client-id
+      clientSecretKey: client-secret
     tls:
       caBundle:
         configMap: ca-bundle
         key: bundle.pem
     configMap:
       name: "osac-fulfillment-config"
-      optional: true
+      optional: false
   controllers:
     tenant: true
     networking: true
@@ -155,6 +165,21 @@ service:
   externalHostname: ""
   # [REQUIRED] Hostname for the internal API Route (e.g. fulfillment-internal-api-osac.apps.mycluster.example.com)
   internalHostname: ""
+  mcp:
+    enabled: false
+    externalHostname: ""
+    # OpenShift Routes use HTTPS port 443; custom external ports are supported on Kind.
+    externalPort: 443
+    # The OAuth resource URL is the MCP HTTPS root URL ending in /.
+    exchangeClientId: ""
+    exchangeCredentialsSecret: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
   images:
     service:
       repository: ghcr.io/osac-project/fulfillment-service
@@ -285,6 +310,7 @@ aap:
         # Netris connection fields below must also be set on networkFulfillment
         # (including NETRIS_PASSWORD); there is no shared Netris config block.
         NETRIS_CONTROLLER_URL: ""
+        NETRIS_VALIDATE_CERTS: "true"
         NETRIS_USERNAME: ""
         NETRIS_SITE_ID: ""
         NETRIS_TENANT_ID: ""
@@ -315,6 +341,7 @@ aap:
       config:
         # Duplicate of clusterFulfillment Netris connection fields — set both.
         NETRIS_CONTROLLER_URL: ""
+        NETRIS_VALIDATE_CERTS: "true"
         NETRIS_USERNAME: ""
         NETRIS_SITE_ID: ""
         NETRIS_TENANT_ID: ""
@@ -461,7 +488,10 @@ hubAccess:
 clusterVersions:
   enabled: false
   versions: []
-  # Example:
+  # Default versions require a diskImage; non-default versions may omit it.
+  # DiskImages are shared Linux registry images, created before the version.
+  # Existing named records are retained without updates.
+  # Example (development/CI image; use your own artifact in production):
   # enabled: true
   # versions:
   # - version: "4.20.0"
@@ -469,6 +499,10 @@ clusterVersions:
   # - version: "4.22.0"
   #   image: "quay.io/openshift-release-dev/ocp-release:4.22.0-multi"
   #   default: true
+  #   diskImage:
+  #     name: rhcos-4-22
+  #     sourceRef: oci://quay.io/osac-project/rhcos:4.22.0
+  #     architecture: [ARCHITECTURE_AMD64]
 
 lvms:
   # Register LVMS as a local StorageBackend + StorageTier in the fulfillment service

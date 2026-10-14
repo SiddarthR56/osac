@@ -12,10 +12,10 @@ import PlusCircleIcon from '@patternfly/react-icons/dist/esm/icons/plus-circle-i
 import { useFormikContext } from 'formik';
 
 import { BareMetalInstanceTypes } from '@osac/types';
+import { useListResource } from '@osac/ui-components/api/use-resource';
 
 import type { ClusterWizardValues } from './fields';
 import { createEmptyNodeSetRow } from './fields';
-import { useListResource } from '../../../../../api/use-resource';
 import { useTranslation } from '../../../../../hooks/useTranslation';
 import { getErrorMessage } from '../../../../../utils/error';
 import { SelectField } from '../../../../Form/SelectField';
@@ -26,16 +26,15 @@ const ClusterNodeSetsArrayField = () => {
   const { t } = useTranslation();
   const { values, setFieldValue } = useFormikContext<ClusterWizardValues>();
   const {
-    data: bareMetalInstanceTypesResponse,
-    isLoading: bareMetalInstanceTypesLoading,
-    error: bareMetalInstanceTypesError,
-    refetch: refetchBareMetalInstanceTypes,
+    data: hostTypes,
+    isLoading: hostTypesLoading,
+    error: hostTypesError,
+    refetch: refetchHostTypes,
   } = useListResource(BareMetalInstanceTypes);
-  const bareMetalInstanceTypes = bareMetalInstanceTypesResponse?.items ?? [];
 
-  const bareMetalInstanceTypeOptions = bareMetalInstanceTypes.map((instanceType) => ({
-    value: instanceType.id,
-    label: instanceType.metadata?.name || instanceType.id,
+  const hostTypeOptions = (hostTypes?.items || []).map((hostType) => ({
+    value: hostType.id,
+    label: hostType.metadata?.name || '',
   }));
 
   const addRow = () => {
@@ -51,11 +50,11 @@ const ClusterNodeSetsArrayField = () => {
 
   return (
     <Stack hasGutter>
-      {bareMetalInstanceTypesError ? (
+      {hostTypesError ? (
         <StackItem>
-          <Alert variant="danger" isInline title={t('Could not load bare-metal instance types')}>
-            {getErrorMessage(bareMetalInstanceTypesError)}
-            <Button variant="link" isInline onClick={() => void refetchBareMetalInstanceTypes()}>
+          <Alert variant="danger" isInline title={t('Could not load host types')}>
+            {getErrorMessage(hostTypesError)}
+            <Button variant="link" isInline onClick={() => void refetchHostTypes()}>
               {t('catalogProvision.actions.retry')}
             </Button>
           </Alert>
@@ -91,13 +90,13 @@ const ClusterNodeSetsArrayField = () => {
               fieldId={`cluster-node-set-name-${row.rowId}`}
             />
             <SelectField
-              name={`spec.nodeSetRows.${rowIndex}.bareMetalInstanceType`}
-              label={t('Bare-metal instance type')}
-              fieldId={`cluster-bare-metal-instance-type-${row.rowId}`}
-              options={bareMetalInstanceTypeOptions}
+              name={`spec.nodeSetRows.${rowIndex}.hostType`}
+              label={t('Host type')}
+              fieldId={`cluster-host-type-${row.rowId}`}
+              options={hostTypeOptions}
               isRequired
-              isLoading={bareMetalInstanceTypesLoading}
-              placeholder={t('Select bare-metal instance type')}
+              isLoading={hostTypesLoading}
+              placeholder={t('Select host type')}
             />
             <ClusterPoolSizeField rowIndex={rowIndex} isRequired />
           </FormFieldGroup>
@@ -109,7 +108,7 @@ const ClusterNodeSetsArrayField = () => {
             variant="link"
             icon={<PlusCircleIcon />}
             onClick={addRow}
-            isDisabled={bareMetalInstanceTypesLoading}
+            isDisabled={hostTypesLoading}
           >
             {t('Add node set')}
           </Button>

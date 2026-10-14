@@ -22,6 +22,7 @@ import (
 	grpccodes "google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/database"
 	"github.com/osac-project/osac/fulfillment-service/internal/database/dao"
@@ -170,6 +171,63 @@ var _ = Describe("SecurityGroups server", func() {
 			Expect(object.GetId()).ToNot(BeEmpty())
 			Expect(object.GetSpec().GetIngress()).To(HaveLen(1))
 			Expect(object.GetSpec().GetEgress()).To(HaveLen(1))
+		})
+
+		It("updates both rule lists while preserving the security group identity and parent", func() {
+			name := fmt.Sprintf("test-%s", uuid.NewString()[:8])
+			created, err := server.Create(ctx, publicv1.SecurityGroupsCreateRequest_builder{
+				Object: publicv1.SecurityGroup_builder{
+					Metadata: publicv1.Metadata_builder{Name: name}.Build(),
+					Spec: publicv1.SecurityGroupSpec_builder{
+						VirtualNetwork: publicv1.VirtualNetworkLocalReference_builder{Id: virtualNetworkID}.Build(),
+						Ingress: []*publicv1.SecurityRule{{
+							Protocol: publicv1.Protocol_PROTOCOL_TCP,
+							PortFrom: new(int32(80)),
+							PortTo:   new(int32(80)),
+							Ipv4Cidr: new("0.0.0.0/0"),
+						}},
+						Egress: []*publicv1.SecurityRule{{
+							Protocol: publicv1.Protocol_PROTOCOL_ALL,
+							Ipv4Cidr: new("0.0.0.0/0"),
+						}},
+					}.Build(),
+				}.Build(),
+			}.Build())
+			Expect(err).ToNot(HaveOccurred())
+
+			updated, err := server.Update(ctx, publicv1.SecurityGroupsUpdateRequest_builder{
+				Object: publicv1.SecurityGroup_builder{
+					Id:       created.GetObject().GetId(),
+					Metadata: publicv1.Metadata_builder{Name: "changed-name"}.Build(),
+					Spec: publicv1.SecurityGroupSpec_builder{
+						VirtualNetwork: publicv1.VirtualNetworkLocalReference_builder{Id: "changed-vnet"}.Build(),
+						Ingress: []*publicv1.SecurityRule{{
+							Protocol: publicv1.Protocol_PROTOCOL_UDP,
+							PortFrom: new(int32(53)),
+							PortTo:   new(int32(53)),
+							Ipv4Cidr: new("10.0.0.0/24"),
+						}},
+						Egress: []*publicv1.SecurityRule{{
+							Protocol: publicv1.Protocol_PROTOCOL_TCP,
+							PortFrom: new(int32(443)),
+							PortTo:   new(int32(443)),
+							Ipv4Cidr: new("192.168.0.0/16"),
+						}},
+					}.Build(),
+				}.Build(),
+			}.Build())
+			Expect(err).ToNot(HaveOccurred())
+
+			object := updated.GetObject()
+			Expect(object.GetId()).To(Equal(created.GetObject().GetId()))
+			Expect(object.GetMetadata().GetName()).To(Equal(name))
+			Expect(object.GetMetadata().GetAnnotations()["osac.openshift.io/owner-reference"]).To(Equal(virtualNetworkID))
+			Expect(object.GetSpec().GetVirtualNetwork().GetId()).To(Equal(virtualNetworkID))
+			Expect(object.GetSpec().GetIngress()).To(HaveLen(1))
+			Expect(object.GetSpec().GetIngress()[0].GetProtocol()).To(Equal(publicv1.Protocol_PROTOCOL_UDP))
+			Expect(object.GetSpec().GetIngress()[0].GetPortFrom()).To(Equal(int32(53)))
+			Expect(object.GetSpec().GetEgress()).To(HaveLen(1))
+			Expect(object.GetSpec().GetEgress()[0].GetPortFrom()).To(Equal(int32(443)))
 		})
 
 		It("List objects", func() {
@@ -431,6 +489,49 @@ var _ = Describe("SecurityGroups server", func() {
 				SetAttributionLogic(attribution).
 				SetTenancyLogic(tenancy).
 				Build()
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("rejects private rule edits before persistence while allowing status updates", func() {
+			created, err := privateServer.Create(ctx, privatev1.SecurityGroupsCreateRequest_builder{
+				Object: privatev1.SecurityGroup_builder{
+					Metadata: privatev1.Metadata_builder{Name: "immutable-security-group-rules", Tenant: testTenant}.Build(),
+					Spec: privatev1.SecurityGroupSpec_builder{
+						VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: virtualNetworkID}.Build(),
+						Ingress:        []*privatev1.SecurityRule{{Protocol: privatev1.Protocol_PROTOCOL_TCP, Ipv4Cidr: new("0.0.0.0/0")}},
+						Egress:         []*privatev1.SecurityRule{{Protocol: privatev1.Protocol_PROTOCOL_ALL, Ipv4Cidr: new("0.0.0.0/0")}},
+					}.Build(),
+				}.Build(),
+			}.Build())
+			Expect(err).ToNot(HaveOccurred())
+
+			for _, path := range []string{"spec.ingress", "spec.egress"} {
+				changed := proto.Clone(created.GetObject()).(*privatev1.SecurityGroup)
+				if path == "spec.ingress" {
+					changed.GetSpec().GetIngress()[0].SetIpv4Cidr("10.0.0.0/8")
+				} else {
+					changed.GetSpec().SetEgress(nil)
+				}
+				_, err = privateServer.Update(ctx, privatev1.SecurityGroupsUpdateRequest_builder{
+					Object: changed, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{path}},
+				}.Build())
+				Expect(grpcstatus.Code(err)).To(Equal(grpccodes.InvalidArgument), path)
+				Expect(err).To(MatchError(ContainSubstring("spec' is immutable")), path)
+
+				stored, getErr := privateServer.Get(ctx, privatev1.SecurityGroupsGetRequest_builder{Id: created.GetObject().GetId()}.Build())
+				Expect(getErr).ToNot(HaveOccurred())
+				Expect(proto.Equal(stored.GetObject().GetSpec(), created.GetObject().GetSpec())).To(BeTrue(), path)
+			}
+
+			_, err = privateServer.Update(ctx, privatev1.SecurityGroupsUpdateRequest_builder{
+				Object: privatev1.SecurityGroup_builder{
+					Id: created.GetObject().GetId(),
+					Status: privatev1.SecurityGroupStatus_builder{
+						State: privatev1.SecurityGroupState_SECURITY_GROUP_STATE_READY,
+					}.Build(),
+				}.Build(),
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"status.state"}},
+			}.Build())
 			Expect(err).ToNot(HaveOccurred())
 		})
 
