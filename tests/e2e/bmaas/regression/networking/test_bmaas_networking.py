@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from typing import Any, ClassVar
 
@@ -41,6 +42,22 @@ from tests.e2e.core.runner import poll_until
 pytestmark = pytest.mark.regression
 
 _NETRIS_BMI_RUNNING_RETRIES = 240
+_PROVISIONING_REPLAY_RETRIES = 180
+_PROVISIONING_REPLAY_DELAY = 2
+_UUID_LABELS = {
+    "externalip": "osac.openshift.io/externalip-uuid",
+    "externalipattachment": "osac.openshift.io/externalipattachment-uuid",
+    "externalippool": "osac.openshift.io/externalippool-uuid",
+    "natgateway": "osac.openshift.io/natgateway-uuid",
+    "subnet": "osac.openshift.io/subnet-uuid",
+    "virtualnetwork": "osac.openshift.io/virtualnetwork-uuid",
+}
+_REPLAY_STABLE_STATUS_FIELDS = {
+    "externalippool": ("total", "allocated", "available"),
+    "externalip": ("address", "state", "attached", "stateTransitionTime", "attachmentTransitionTime"),
+    "externalipattachment": ("stateTransitionTime",),
+    "natgateway": ("stateTransitionTime",),
+}
 
 
 def _require(state: dict[str, Any], *keys: str) -> None:
@@ -49,12 +66,140 @@ def _require(state: dict[str, Any], *keys: str) -> None:
         pytest.skip(f"Prerequisite state missing: {', '.join(missing)}")
 
 
+def _latest_provision_jobs(cr: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for job in cr.get("status", {}).get("provisioningJobs", []):
+        if job.get("type") != "provision":
+            continue
+        target = str(job.get("target", ""))
+        if target not in latest or str(job.get("timestamp", "")) > str(latest[target].get("timestamp", "")):
+            latest[target] = job
+    return latest
+
+
+def _replay_netris_create(*, k8s: K8sClient, resource: str, name: str, uuid: str) -> None:
+    """Re-run the deployed create path against an already-created Netris object.
+
+    Clearing only this test-owned CR's completed job history makes its normal
+    operator reconcile dispatch the same AAP create operation again. The CR's
+    spec and Kubernetes identity remain intact; the provider replay exercises
+    the Netris create operation's idempotency contract.
+    """
+    before = k8s.get_json(resource=resource, name=name)
+    before_status = before.get("status", {})
+    before_jobs = _latest_provision_jobs(before)
+    assert before_status.get("phase") == "Ready", f"{resource}/{name} is not Ready before replay"
+    annotations = before.get("metadata", {}).get("annotations") or {}
+    assert annotations.get("osac.openshift.io/implementation-strategy") == "netris", (
+        f"{resource}/{name} is not provisioned by Netris"
+    )
+    assert before_jobs, f"{resource}/{name} has no completed provision jobs to replay"
+    assert all(job.get("state") == "Succeeded" for job in before_jobs.values()), (
+        f"{resource}/{name} has an unsuccessful provision job before replay: {before_jobs}"
+    )
+    desired_config_version = before_status.get("desiredConfigVersion")
+    assert desired_config_version, f"{resource}/{name} has no desired config version"
+    assert all(job.get("configVersion") == desired_config_version for job in before_jobs.values()), (
+        f"{resource}/{name} has a provision job for a different config version: {before_jobs}"
+    )
+    old_job_ids = {target: str(job.get("jobID", "")) for target, job in before_jobs.items()}
+    assert all(old_job_ids.values()), f"{resource}/{name} has a provision job without an ID"
+    before_metadata = before.get("metadata", {})
+    uid = before_metadata.get("uid")
+    assert uid, f"{resource}/{name} has no Kubernetes UID"
+    assert before_metadata.get("labels", {}).get(_UUID_LABELS[resource]) == uuid, (
+        f"{resource}/{name} does not carry fulfillment UUID {uuid}"
+    )
+    stable_status = {
+        field: before_status[field]
+        for field in _REPLAY_STABLE_STATUS_FIELDS.get(resource, ())
+        if field in before_status
+    }
+    if resource == "externalip":
+        assert before_status.get("state") == "Allocated", f"{resource}/{name} is not Allocated before replay"
+        assert before_status.get("address"), f"{resource}/{name} has no allocated address before replay"
+
+    output, return_code = k8s.patch_status(
+        resource=resource, name=name, patch=json.dumps({"status": {"provisioningJobs": []}})
+    )
+    assert return_code == 0, f"Failed to reset test-owned {resource}/{name} job history: {output}"
+
+    def _resource_snapshot() -> dict[str, Any]:
+        return k8s.get_json(resource=resource, name=name)
+
+    def _replay_finished(snapshot: dict[str, Any]) -> bool:
+        latest = _latest_provision_jobs(snapshot)
+        terminal_states = {"Succeeded", "Failed", "Canceled"}
+        all_targets_terminal = True
+        for target, old_job_id in old_job_ids.items():
+            job = latest.get(target, {})
+            job_id = str(job.get("jobID", ""))
+            if not job_id or job_id == old_job_id or job.get("state") not in terminal_states:
+                all_targets_terminal = False
+                break
+        if not all_targets_terminal:
+            return False
+        all_targets_succeeded = all(latest[target].get("state") == "Succeeded" for target in old_job_ids)
+        phase = snapshot.get("status", {}).get("phase")
+        return phase in {"Ready", "Failed"} or not all_targets_succeeded
+
+    after = poll_until(
+        fn=_resource_snapshot,
+        until=_replay_finished,
+        retries=_PROVISIONING_REPLAY_RETRIES,
+        delay=_PROVISIONING_REPLAY_DELAY,
+        description=f"{resource}/{name} Netris create replay to finish",
+    )
+    after_status = after.get("status", {})
+    after_jobs = _latest_provision_jobs(after)
+    assert set(after_jobs) == set(old_job_ids), (
+        f"{resource}/{name} replay changed its provision targets: "
+        f"before={sorted(old_job_ids)}, after={sorted(after_jobs)}"
+    )
+    assert all(
+        after_jobs[target].get("jobID") and str(after_jobs[target].get("jobID")) != old_job_ids[target]
+        for target in old_job_ids
+    ), f"{resource}/{name} replay did not create a fresh AAP job for every target: {after_jobs}"
+    assert all(job.get("configVersion") == desired_config_version for job in after_jobs.values()), (
+        f"{resource}/{name} replay used a different config version: {after_jobs}"
+    )
+    failed_jobs = {
+        target: job for target, job in after_jobs.items() if target in old_job_ids and job.get("state") != "Succeeded"
+    }
+    assert not failed_jobs, f"{resource}/{name} Netris create replay failed: {failed_jobs}"
+    assert after_status.get("phase") == "Ready", f"{resource}/{name} did not return to Ready after replay"
+    assert after_status.get("desiredConfigVersion") == desired_config_version, (
+        f"{resource}/{name} desired config changed during a same-spec replay"
+    )
+    assert after.get("spec") == before.get("spec"), f"{resource}/{name} spec changed during replay"
+    after_metadata = after.get("metadata", {})
+    assert after_metadata.get("uid") == uid, f"{resource}/{name} Kubernetes identity changed during replay"
+    assert after_metadata.get("generation") == before_metadata.get("generation"), (
+        f"{resource}/{name} generation changed during a status-only replay"
+    )
+    assert after_metadata.get("labels", {}) == before_metadata.get("labels", {}), (
+        f"{resource}/{name} labels changed during replay"
+    )
+    assert after_metadata.get("annotations", {}) == before_metadata.get("annotations", {}), (
+        f"{resource}/{name} annotations changed during replay"
+    )
+    for field, value in stable_status.items():
+        assert after_status.get(field) == value, (
+            f"{resource}/{name} status.{field} changed during replay: "
+            f"before={value!r}, after={after_status.get(field)!r}"
+        )
+    matching_crs = k8s.count_by_label_all_namespaces(resource=resource, label=f"{_UUID_LABELS[resource]}={uuid}")
+    assert matching_crs == 1, (
+        f"Replay created duplicate Kubernetes {resource} objects for UUID {uuid}: found {matching_crs}"
+    )
+
+
 class TestBmaasNetworking:
     state: ClassVar[dict[str, Any]] = {}
 
     # ── Phase 0: External IP Pool ─────────────────────────────────────
 
-    def test_00_create_external_ip_pool(
+    def test_00_create_external_ip_pool_and_replay(
         self,
         private_grpc: GRPCClient,
         k8s_hub_client: K8sClient,
@@ -65,25 +210,30 @@ class TestBmaasNetworking:
             name=external_ip_pool_name, cidrs=[external_ip_pool_cidr], implementation_strategy="netris"
         )
         pool_cr = wait_for_external_ip_pool_cr(k8s=k8s_hub_client, uuid=pool_id)
+        self.__class__.state.update(pool_id=pool_id, pool_cr=pool_cr)
         wait_for_external_ip_pool_ready(k8s=k8s_hub_client, name=pool_cr)
         wait_for_external_ip_pool_grpc_ready(private_grpc=private_grpc, pool_id=pool_id)
-
-        self.__class__.state.update(pool_id=pool_id, pool_cr=pool_cr)
+        _replay_netris_create(k8s=k8s_hub_client, resource="externalippool", name=pool_cr, uuid=pool_id)
         print("Created ExternalIPPool")
 
     # ── Phase 1: Build the Network ──────────────────────────────────────
 
-    def test_01_create_virtual_network(self, grpc: GRPCClient, k8s_hub_client: K8sClient, net_test_run_id: str) -> None:
+    def test_01_create_virtual_network_and_replay(
+        self, grpc: GRPCClient, k8s_hub_client: K8sClient, net_test_run_id: str
+    ) -> None:
         name = f"net-{net_test_run_id}"
         vnet_id = grpc.create_virtual_network(name=name, ipv4_cidr="10.100.0.0/16")
         vnet_cr = wait_for_virtual_network_cr(k8s=k8s_hub_client, uuid=vnet_id)
-        wait_for_virtual_network_ready(k8s=k8s_hub_client, name=vnet_cr)
-
         self.__class__.state["vnet_id"] = vnet_id
         self.__class__.state["vnet_cr"] = vnet_cr
         self.__class__.state["vnet_name"] = name
+        wait_for_virtual_network_ready(k8s=k8s_hub_client, name=vnet_cr)
 
-    def test_02_create_subnets(self, grpc: GRPCClient, k8s_hub_client: K8sClient, net_test_run_id: str) -> None:
+        _replay_netris_create(k8s=k8s_hub_client, resource="virtualnetwork", name=vnet_cr, uuid=vnet_id)
+
+    def test_02_create_subnets_and_replay(
+        self, grpc: GRPCClient, k8s_hub_client: K8sClient, net_test_run_id: str
+    ) -> None:
         _require(self.state, "vnet_id")
 
         subnet_a_name = f"sub-a-{net_test_run_id}"
@@ -91,16 +241,20 @@ class TestBmaasNetworking:
             name=subnet_a_name, virtual_network=self.state["vnet_id"], ipv4_cidr="10.100.1.0/24"
         )
         subnet_a_cr = wait_for_subnet_cr(k8s=k8s_hub_client, uuid=subnet_a_id)
+        self.__class__.state.update(subnet_a_id=subnet_a_id, subnet_a_cr=subnet_a_cr)
         wait_for_subnet_ready(k8s=k8s_hub_client, name=subnet_a_cr)
         wait_for_grpc_subnet_ready(grpc=grpc, subnet_id=subnet_a_id)
+        _replay_netris_create(k8s=k8s_hub_client, resource="subnet", name=subnet_a_cr, uuid=subnet_a_id)
 
         subnet_b_name = f"sub-b-{net_test_run_id}"
         subnet_b_id = grpc.create_subnet(
             name=subnet_b_name, virtual_network=self.state["vnet_id"], ipv4_cidr="10.100.2.0/24"
         )
         subnet_b_cr = wait_for_subnet_cr(k8s=k8s_hub_client, uuid=subnet_b_id)
+        self.__class__.state.update(subnet_b_id=subnet_b_id, subnet_b_cr=subnet_b_cr)
         wait_for_subnet_ready(k8s=k8s_hub_client, name=subnet_b_cr)
         wait_for_grpc_subnet_ready(grpc=grpc, subnet_id=subnet_b_id)
+        _replay_netris_create(k8s=k8s_hub_client, resource="subnet", name=subnet_b_cr, uuid=subnet_b_id)
 
         self.__class__.state.update(
             subnet_a_id=subnet_a_id, subnet_a_cr=subnet_a_cr, subnet_b_id=subnet_b_id, subnet_b_cr=subnet_b_cr
@@ -120,22 +274,25 @@ class TestBmaasNetworking:
             egress=[{"protocol": "PROTOCOL_ALL", "ipv4_cidr": "0.0.0.0/0"}],
         )
         sg_cr = wait_for_security_group_cr(k8s=k8s_hub_client, uuid=sg_id)
+        self.__class__.state.update(sg_id=sg_id, sg_cr=sg_cr, sg_name=sg_name)
         wait_for_security_group_ready(k8s=k8s_hub_client, name=sg_cr)
 
-        self.__class__.state.update(sg_id=sg_id, sg_cr=sg_cr, sg_name=sg_name)
-
-    def test_04_create_nat_gateway(self, grpc: GRPCClient, k8s_hub_client: K8sClient, net_test_run_id: str) -> None:
+    def test_04_create_nat_gateway_and_replay(
+        self, grpc: GRPCClient, k8s_hub_client: K8sClient, net_test_run_id: str
+    ) -> None:
         _require(self.state, "vnet_name", "pool_id")
 
         nat_eip_name = f"nat-eip-{net_test_run_id}"
         nat_eip_id = grpc.create_external_ip(name=nat_eip_name, pool=self.state["pool_id"])
         nat_eip_cr = wait_for_external_ip_cr(k8s=k8s_hub_client, uuid=nat_eip_id)
+        self.__class__.state.update(nat_eip_id=nat_eip_id, nat_eip_cr=nat_eip_cr, nat_eip_name=nat_eip_name)
         wait_for_external_ip_allocated(k8s=k8s_hub_client, name=nat_eip_cr)
 
         nat_name = f"nat-{net_test_run_id}"
         nat_id = grpc.create_nat_gateway(
             name=nat_name, virtual_network_name=self.state["vnet_name"], external_ip_name=nat_eip_name
         )
+        self.__class__.state.update(nat_id=nat_id, nat_name=nat_name)
         poll_until(
             fn=lambda: (
                 grpc.call(service="osac.public.v1.NATGateways/Get", data={"id": nat_id})
@@ -155,13 +312,11 @@ class TestBmaasNetworking:
             delay=5,
             description=f"NATGateway CR for {nat_name}",
         )
+        self.__class__.state["nat_cr"] = nat_cr_name
         assert k8s_hub_client.get_jsonpath(
             resource="natgateway", name=nat_cr_name, jsonpath="{.status.stateTransitionTime}"
         )
-
-        self.__class__.state.update(
-            nat_eip_id=nat_eip_id, nat_eip_cr=nat_eip_cr, nat_eip_name=nat_eip_name, nat_id=nat_id, nat_name=nat_name
-        )
+        _replay_netris_create(k8s=k8s_hub_client, resource="natgateway", name=nat_cr_name, uuid=nat_id)
 
     # ── Phase 2: Provision Servers ──────────────────────────────────────
 
@@ -286,6 +441,7 @@ class TestBmaasNetworking:
         self.__class__.state.update(
             auto_attach_id=auto_attach_id, auto_eip_id=auto_eip_ref, auto_ext_addr=auto_ext_addr
         )
+
         print("BMI3 auto EIP and attachment resolved")
 
     # ── Phase 3: Connectivity Tests ─────────────────────────────────────
@@ -362,7 +518,7 @@ class TestBmaasNetworking:
             description=f"NAT gateway egress curl quay.io (ssh_host={bmi1['ssh_host']}, tenant_ip={bmi1['ip']})",
         )
 
-    def test_12_external_ip_ingress(
+    def test_12_external_ip_ingress_and_replay(
         self, grpc: GRPCClient, private_grpc: GRPCClient, k8s_hub_client: K8sClient, net_test_run_id: str
     ) -> None:
         _require(self.state, "bmi1", "pool_id")
@@ -371,6 +527,9 @@ class TestBmaasNetworking:
         eip_name = f"ingress-eip-{net_test_run_id}"
         eip_id = grpc.create_external_ip(name=eip_name, pool=self.state["pool_id"])
         eip_cr = wait_for_external_ip_cr(k8s=k8s_hub_client, uuid=eip_id)
+        self.__class__.state.update(ingress_eip_id=eip_id, ingress_eip_cr=eip_cr)
+        wait_for_external_ip_allocated(k8s=k8s_hub_client, name=eip_cr)
+        _replay_netris_create(k8s=k8s_hub_client, resource="externalip", name=eip_cr, uuid=eip_id)
         wait_for_external_ip_allocated(k8s=k8s_hub_client, name=eip_cr)
 
         attach_name = f"ingress-attach-{net_test_run_id}"
@@ -378,7 +537,9 @@ class TestBmaasNetworking:
             name=attach_name, external_ip=eip_id, baremetal_instance=bmi1["id"]
         )
         attach_cr = wait_for_external_ip_attachment_cr(k8s=k8s_hub_client, uuid=attach_id)
+        self.__class__.state.update(ingress_attach_id=attach_id, ingress_attach_cr=attach_cr)
         wait_for_external_ip_attachment_ready(k8s=k8s_hub_client, name=attach_cr)
+        _replay_netris_create(k8s=k8s_hub_client, resource="externalipattachment", name=attach_cr, uuid=attach_id)
         poll_until(
             fn=lambda: private_grpc.get_private_external_ip(external_ip_id=eip_id)["object"],
             until=lambda item: (
@@ -465,20 +626,23 @@ class TestBmaasNetworking:
         print("Auto EIP and attachment garbage collected after BMI3 deletion")
 
     def test_15_delete_nat_gateway(self, grpc: GRPCClient, k8s_hub_client: K8sClient) -> None:
-        if "nat_id" not in self.state:
-            pytest.skip("No NATGateway to delete")
+        if "nat_id" in self.state:
+            grpc.delete_nat_gateway(nat_gateway_id=self.state["nat_id"])
+            poll_until(
+                fn=lambda: (
+                    self.state["nat_id"]
+                    not in [
+                        item["id"] for item in grpc.call(service="osac.public.v1.NATGateways/List").get("items", [])
+                    ]
+                ),
+                until=lambda gone: gone is True,
+                retries=60,
+                delay=5,
+                description=f"NATGateway {self.state['nat_name']} deletion",
+            )
 
-        grpc.delete_nat_gateway(nat_gateway_id=self.state["nat_id"])
-        poll_until(
-            fn=lambda: (
-                self.state["nat_id"]
-                not in [item["id"] for item in grpc.call(service="osac.public.v1.NATGateways/List").get("items", [])]
-            ),
-            until=lambda gone: gone is True,
-            retries=60,
-            delay=5,
-            description=f"NATGateway {self.state['nat_name']} deletion",
-        )
+        if "nat_eip_id" not in self.state:
+            pytest.skip("No NATGateway to delete")
 
         grpc.delete_external_ip(external_ip_id=self.state["nat_eip_id"])
         wait_for_external_ip_deletion(k8s=k8s_hub_client, name=self.state["nat_eip_cr"])
