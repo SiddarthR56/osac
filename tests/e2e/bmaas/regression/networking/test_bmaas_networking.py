@@ -71,8 +71,6 @@ _DELETE_FINALIZERS = {
 _REPLAY_STABLE_STATUS_FIELDS = {
     "externalippool": ("total", "allocated", "available"),
     "externalip": ("address", "state", "attached", "stateTransitionTime", "attachmentTransitionTime"),
-    "externalipattachment": ("stateTransitionTime",),
-    "natgateway": ("stateTransitionTime",),
 }
 
 

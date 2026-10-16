@@ -48,7 +48,12 @@ desired state. It replays one BMaaS tenant-network attachment move and verifies
 the attachment status and handoff conditions remain ready. Teardown checks the
 successful provider deprovision job and controller-finalizer completion for
 each resource, and verifies BMaaS port moves back to the provisioning network
-during instance deletion. The `netris_subnet_delete` and `netris_parent_delete`
+during instance deletion. NATGateway and ExternalIPAttachment transition
+timestamps may advance during replay because their controllers timestamp
+Progressing/Ready phase changes. Run the suite without pytest's `-x` option to
+continue through later tests after an individual failure; dependent cases may
+skip when a failed create left their prerequisites unavailable. The
+`netris_subnet_delete` and `netris_parent_delete`
 component-integration targets cover provider-absence handling for their
 documented callers; default-resource guards are component-integration
 coverage. The deployed E2E does not force a second reconcile after deletion
