@@ -119,17 +119,20 @@ def _release_delete_observer(k8s: K8sClient, *, resource: str, name: str) -> Non
 def _wait_for_deprovision_jobs(
     *, k8s: K8sClient, resource: str, name: str, status_field: str, owner_finalizer: str
 ) -> dict[str, dict[str, Any]]:
-    terminal_states = {"Succeeded", "Failed", "Canceled"}
+    failed_states = {"Failed", "Canceled"}
 
     def _deprovision_finished(snapshot: dict[str, Any]) -> bool:
         latest = _latest_jobs(snapshot, status_field=status_field, job_type="deprovision")
         if not latest:
             return False
-        if not all(job.get("state") in terminal_states for job in latest.values()):
-            return False
-        failed = any(job.get("state") != "Succeeded" for job in latest.values())
+        if any(job.get("state") in failed_states for job in latest.values()):
+            return True
+
+        # The controller removes this finalizer after successful AAP
+        # deprovisioning. Its final status update may not be persisted before
+        # the finalizer removal, so the job can still appear Pending or Running.
         finalizers = snapshot.get("metadata", {}).get("finalizers", [])
-        return failed or owner_finalizer not in finalizers
+        return owner_finalizer not in finalizers
 
     snapshot = poll_until(
         fn=lambda: k8s.get_json(resource=resource, name=name),
@@ -141,7 +144,10 @@ def _wait_for_deprovision_jobs(
     jobs = _latest_jobs(snapshot, status_field=status_field, job_type="deprovision")
     assert jobs, f"{resource}/{name} deletion completed without a recorded deprovision job"
     assert all(job.get("jobID") for job in jobs.values()), f"{resource}/{name} has a deprovision job without an ID"
-    failed_jobs = {target: job for target, job in jobs.items() if job.get("state") != "Succeeded"}
+    assert all(job.get("blockDeletionOnFailure") is True for job in jobs.values()), (
+        f"{resource}/{name} deprovision jobs do not block deletion on failure: {jobs}"
+    )
+    failed_jobs = {target: job for target, job in jobs.items() if job.get("state") in failed_states}
     assert not failed_jobs, f"{resource}/{name} Netris deprovision failed: {failed_jobs}"
     assert owner_finalizer not in snapshot.get("metadata", {}).get("finalizers", []), (
         f"{resource}/{name} deprovision succeeded but its controller finalizer remains"
