@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from typing import Any, ClassVar
 
 import pytest
@@ -24,6 +25,7 @@ from tests.e2e.core.helpers import (
     wait_for_external_ip_pool_grpc_ready,
     wait_for_external_ip_pool_ready,
     wait_for_grpc_subnet_ready,
+    wait_for_nat_gateway_deletion,
     wait_for_security_group_cr,
     wait_for_security_group_deletion,
     wait_for_security_group_ready,
@@ -44,13 +46,27 @@ pytestmark = [pytest.mark.regression, pytest.mark.requires_netris, pytest.mark.r
 _NETRIS_BMI_RUNNING_RETRIES = 240
 _PROVISIONING_REPLAY_RETRIES = 180
 _PROVISIONING_REPLAY_DELAY = 2
+_DELETE_REPLAY_RETRIES = 180
+_DELETE_REPLAY_DELAY = 5
+_DELETE_OBSERVER_FINALIZER = "e2e.osac.openshift.io/delete-observer"
 _UUID_LABELS = {
     "externalip": "osac.openshift.io/externalip-uuid",
     "externalipattachment": "osac.openshift.io/externalipattachment-uuid",
     "externalippool": "osac.openshift.io/externalippool-uuid",
     "natgateway": "osac.openshift.io/natgateway-uuid",
+    "securitygroup": "osac.openshift.io/securitygroup-uuid",
     "subnet": "osac.openshift.io/subnet-uuid",
     "virtualnetwork": "osac.openshift.io/virtualnetwork-uuid",
+}
+_DELETE_FINALIZERS = {
+    "externalip": "osac.openshift.io/externalip-finalizer",
+    "externalipattachment": "osac.openshift.io/externalipattachment-finalizer",
+    "externalippool": "osac.openshift.io/externalippool-finalizer",
+    "natgateway": "osac.openshift.io/natgateway-finalizer",
+    "securitygroup": "osac.openshift.io/securitygroup-finalizer",
+    "subnet": "osac.openshift.io/subnet-finalizer",
+    "virtualnetwork": "osac.openshift.io/virtualnetwork-finalizer",
+    "baremetalinstance": "osac.openshift.io/baremetalinstance-networking",
 }
 _REPLAY_STABLE_STATUS_FIELDS = {
     "externalippool": ("total", "allocated", "available"),
@@ -66,15 +82,121 @@ def _require(state: dict[str, Any], *keys: str) -> None:
         pytest.skip(f"Prerequisite state missing: {', '.join(missing)}")
 
 
-def _latest_provision_jobs(cr: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _latest_jobs(cr: dict[str, Any], *, status_field: str, job_type: str) -> dict[str, dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
-    for job in cr.get("status", {}).get("provisioningJobs", []):
-        if job.get("type") != "provision":
+    for job in cr.get("status", {}).get(status_field, []):
+        if job.get("type") != job_type:
             continue
         target = str(job.get("target", ""))
         if target not in latest or str(job.get("timestamp", "")) > str(latest[target].get("timestamp", "")):
             latest[target] = job
     return latest
+
+
+def _latest_provision_jobs(cr: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return _latest_jobs(cr, status_field="provisioningJobs", job_type="provision")
+
+
+def _set_finalizers(k8s: K8sClient, *, resource: str, name: str, finalizers: list[str]) -> None:
+    output, return_code = k8s.patch(
+        resource=resource, name=name, patch=json.dumps({"metadata": {"finalizers": finalizers}})
+    )
+    assert return_code == 0, f"Failed to patch {resource}/{name} finalizers: {output}"
+
+
+def _release_delete_observer(k8s: K8sClient, *, resource: str, name: str) -> None:
+    if not k8s.is_present(resource=resource, name=name):
+        return
+    cr = k8s.get_json(resource=resource, name=name)
+    finalizers = cr.get("metadata", {}).get("finalizers", [])
+    if _DELETE_OBSERVER_FINALIZER in finalizers:
+        _set_finalizers(
+            k8s,
+            resource=resource,
+            name=name,
+            finalizers=[item for item in finalizers if item != _DELETE_OBSERVER_FINALIZER],
+        )
+
+
+def _wait_for_deprovision_jobs(
+    *, k8s: K8sClient, resource: str, name: str, status_field: str, owner_finalizer: str
+) -> dict[str, dict[str, Any]]:
+    terminal_states = {"Succeeded", "Failed", "Canceled"}
+
+    def _deprovision_finished(snapshot: dict[str, Any]) -> bool:
+        latest = _latest_jobs(snapshot, status_field=status_field, job_type="deprovision")
+        if not latest:
+            return False
+        if not all(job.get("state") in terminal_states for job in latest.values()):
+            return False
+        failed = any(job.get("state") != "Succeeded" for job in latest.values())
+        finalizers = snapshot.get("metadata", {}).get("finalizers", [])
+        return failed or owner_finalizer not in finalizers
+
+    snapshot = poll_until(
+        fn=lambda: k8s.get_json(resource=resource, name=name),
+        until=_deprovision_finished,
+        retries=_DELETE_REPLAY_RETRIES,
+        delay=_DELETE_REPLAY_DELAY,
+        description=f"{resource}/{name} Netris deprovision job completion",
+    )
+    jobs = _latest_jobs(snapshot, status_field=status_field, job_type="deprovision")
+    assert jobs, f"{resource}/{name} deletion completed without a recorded deprovision job"
+    assert all(job.get("jobID") for job in jobs.values()), f"{resource}/{name} has a deprovision job without an ID"
+    failed_jobs = {target: job for target, job in jobs.items() if job.get("state") != "Succeeded"}
+    assert not failed_jobs, f"{resource}/{name} Netris deprovision failed: {failed_jobs}"
+    assert owner_finalizer not in snapshot.get("metadata", {}).get("finalizers", []), (
+        f"{resource}/{name} deprovision succeeded but its controller finalizer remains"
+    )
+    return jobs
+
+
+def _delete_netris_resource_and_verify(
+    *,
+    k8s: K8sClient,
+    resource: str,
+    name: str,
+    delete: Callable[[], None],
+    status_field: str = "provisioningJobs",
+    require_netris_annotation: bool = True,
+) -> None:
+    """Delete a Netris-backed CR and assert its AAP deprovision job succeeds.
+
+    A test-only finalizer holds the terminating CR long enough to observe the
+    successful AAP job and verify the operator removes its own finalizer only
+    after deprovisioning. The observer finalizer is removed even if an assertion
+    fails. Some provider-already-absent handling has focused component coverage;
+    this E2E does not force a second deletion reconcile after deletion begins.
+    """
+    owner_finalizer = _DELETE_FINALIZERS[resource]
+    before = k8s.get_json(resource=resource, name=name)
+    before_metadata = before.get("metadata", {})
+    original_finalizers = list(before_metadata.get("finalizers", []))
+    assert owner_finalizer in original_finalizers, f"{resource}/{name} lacks {owner_finalizer} before deletion"
+    if require_netris_annotation:
+        annotations = before_metadata.get("annotations", {})
+        assert annotations.get("osac.openshift.io/implementation-strategy") == "netris", (
+            f"{resource}/{name} is not provisioned by Netris"
+        )
+    create_jobs = _latest_jobs(before, status_field=status_field, job_type="provision")
+    assert create_jobs and all(job.get("state") == "Succeeded" for job in create_jobs.values()), (
+        f"{resource}/{name} has no successful create job history: {create_jobs}"
+    )
+    create_job_ids = {str(job.get("jobID", "")) for job in create_jobs.values()}
+    assert create_job_ids and "" not in create_job_ids, f"{resource}/{name} has no successful create job history"
+    assert _DELETE_OBSERVER_FINALIZER not in original_finalizers
+    _set_finalizers(k8s, resource=resource, name=name, finalizers=[*original_finalizers, _DELETE_OBSERVER_FINALIZER])
+
+    try:
+        delete()
+        deprovision_jobs = _wait_for_deprovision_jobs(
+            k8s=k8s, resource=resource, name=name, status_field=status_field, owner_finalizer=owner_finalizer
+        )
+        assert all(str(job["jobID"]) not in create_job_ids for job in deprovision_jobs.values()), (
+            f"{resource}/{name} reused a create job ID for deprovisioning: {deprovision_jobs}"
+        )
+    finally:
+        _release_delete_observer(k8s, resource=resource, name=name)
 
 
 def _replay_netris_create(*, k8s: K8sClient, resource: str, name: str, uuid: str) -> None:
@@ -194,6 +316,100 @@ def _replay_netris_create(*, k8s: K8sClient, resource: str, name: str, uuid: str
     )
 
 
+def _replay_netris_network_attachment_move(*, k8s: K8sClient, name: str) -> None:
+    """Re-run an already-completed BMI move onto its tenant V-Net.
+
+    This uses the normal bare-metal operator reconcile path and checks that the
+    repeated Netris move gets a fresh successful AAP job without changing the
+    BMI, its network handoff conditions, or the discovered attachment state.
+    """
+    before = k8s.get_json(resource="baremetalinstance", name=name)
+    before_status = before.get("status", {})
+    before_jobs = _latest_jobs(before, status_field="networkingJobs", job_type="provision")
+    assert before_status.get("phase") == "Ready", f"BareMetalInstance/{name} is not Ready before move replay"
+    assert before_jobs, f"BareMetalInstance/{name} has no network-move jobs to replay"
+    assert all(job.get("state") == "Succeeded" for job in before_jobs.values()), (
+        f"BareMetalInstance/{name} has an unsuccessful network-move job: {before_jobs}"
+    )
+    old_job_ids = {target: str(job.get("jobID", "")) for target, job in before_jobs.items()}
+    assert all(old_job_ids.values()), f"BareMetalInstance/{name} has a network-move job without an ID"
+    config_versions = {target: job.get("configVersion") for target, job in before_jobs.items()}
+    assert all(config_versions.values()), f"BareMetalInstance/{name} has a network-move job without a config version"
+
+    before_metadata = before.get("metadata", {})
+    uid = before_metadata.get("uid")
+    assert uid, f"BareMetalInstance/{name} has no Kubernetes UID"
+    attachment_statuses = before_status.get("networkAttachmentStatuses", [])
+    assert attachment_statuses and all(item.get("ipAddress") for item in attachment_statuses), (
+        f"BareMetalInstance/{name} has no settled network attachment state: {attachment_statuses}"
+    )
+    required_conditions = {"NetworkAttachmentsReady", "NetworkHandoffComplete", "IPDiscoveryComplete"}
+    conditions = {condition.get("type"): condition.get("status") for condition in before_status.get("conditions", [])}
+    assert all(conditions.get(condition) == "True" for condition in required_conditions), (
+        f"BareMetalInstance/{name} network handoff is incomplete: {conditions}"
+    )
+
+    output, return_code = k8s.patch_status(
+        resource="baremetalinstance", name=name, patch=json.dumps({"status": {"networkingJobs": []}})
+    )
+    assert return_code == 0, f"Failed to reset test-owned BareMetalInstance/{name} network job history: {output}"
+
+    def _resource_snapshot() -> dict[str, Any]:
+        return k8s.get_json(resource="baremetalinstance", name=name)
+
+    def _replay_finished(snapshot: dict[str, Any]) -> bool:
+        latest = _latest_jobs(snapshot, status_field="networkingJobs", job_type="provision")
+        if set(latest) != set(old_job_ids):
+            return False
+        if any(
+            not latest[target].get("jobID")
+            or str(latest[target].get("jobID")) == old_job_ids[target]
+            or latest[target].get("state") not in {"Succeeded", "Failed", "Canceled"}
+            for target in old_job_ids
+        ):
+            return False
+        if any(job.get("state") != "Succeeded" for job in latest.values()):
+            return True
+        return snapshot.get("status", {}).get("phase") in {"Ready", "Failed"}
+
+    after = poll_until(
+        fn=_resource_snapshot,
+        until=_replay_finished,
+        retries=_PROVISIONING_REPLAY_RETRIES,
+        delay=_PROVISIONING_REPLAY_DELAY,
+        description=f"BareMetalInstance/{name} Netris tenant-network move replay",
+    )
+    after_status = after.get("status", {})
+    after_jobs = _latest_jobs(after, status_field="networkingJobs", job_type="provision")
+    assert set(after_jobs) == set(old_job_ids), (
+        f"BareMetalInstance/{name} move replay changed targets: "
+        f"before={sorted(old_job_ids)}, after={sorted(after_jobs)}"
+    )
+    assert all(
+        after_jobs[target].get("state") == "Succeeded"
+        and str(after_jobs[target].get("jobID", "")) != old_job_ids[target]
+        and after_jobs[target].get("configVersion") == config_versions[target]
+        for target in old_job_ids
+    ), f"BareMetalInstance/{name} Netris tenant-network move replay failed or changed config: {after_jobs}"
+    assert after_status.get("phase") == "Ready", f"BareMetalInstance/{name} did not return to Ready after move replay"
+    assert after.get("spec") == before.get("spec"), f"BareMetalInstance/{name} spec changed during move replay"
+    after_metadata = after.get("metadata", {})
+    assert after_metadata.get("uid") == uid, f"BareMetalInstance/{name} identity changed during move replay"
+    assert after_metadata.get("generation") == before_metadata.get("generation"), (
+        f"BareMetalInstance/{name} generation changed during a status-only move replay"
+    )
+    assert after_status.get("networkAttachmentStatuses") == attachment_statuses, (
+        f"BareMetalInstance/{name} network attachment state changed during move replay: "
+        f"before={attachment_statuses}, after={after_status.get('networkAttachmentStatuses')}"
+    )
+    after_conditions = {
+        condition.get("type"): condition.get("status") for condition in after_status.get("conditions", [])
+    }
+    assert all(after_conditions.get(condition) == "True" for condition in required_conditions), (
+        f"BareMetalInstance/{name} network handoff conditions changed during replay: {after_conditions}"
+    )
+
+
 class TestBmaasNetworking:
     state: ClassVar[dict[str, Any]] = {}
 
@@ -260,7 +476,9 @@ class TestBmaasNetworking:
             subnet_a_id=subnet_a_id, subnet_a_cr=subnet_a_cr, subnet_b_id=subnet_b_id, subnet_b_cr=subnet_b_cr
         )
 
-    def test_03_create_security_group(self, grpc: GRPCClient, k8s_hub_client: K8sClient, net_test_run_id: str) -> None:
+    def test_03_create_security_group_and_replay(
+        self, grpc: GRPCClient, k8s_hub_client: K8sClient, net_test_run_id: str
+    ) -> None:
         _require(self.state, "vnet_id")
 
         sg_name = f"sg-{net_test_run_id}"
@@ -276,6 +494,7 @@ class TestBmaasNetworking:
         sg_cr = wait_for_security_group_cr(k8s=k8s_hub_client, uuid=sg_id)
         self.__class__.state.update(sg_id=sg_id, sg_cr=sg_cr, sg_name=sg_name)
         wait_for_security_group_ready(k8s=k8s_hub_client, name=sg_cr)
+        _replay_netris_create(k8s=k8s_hub_client, resource="securitygroup", name=sg_cr, uuid=sg_id)
 
     def test_04_create_nat_gateway_and_replay(
         self, grpc: GRPCClient, k8s_hub_client: K8sClient, net_test_run_id: str
@@ -398,6 +617,8 @@ class TestBmaasNetworking:
                 f"BareMetalInstance {bmi['name']} has instance_type {instance_type.get('name')!r}, "
                 f"expected {bmi_instance_type!r}"
             )
+
+        _replay_netris_network_attachment_move(k8s=k8s_hub_client, name=bmis[0]["cr"])
 
     def test_05b_verify_auto_eip_on_bmi3(
         self, grpc: GRPCClient, private_grpc: GRPCClient, k8s_hub_client: K8sClient
@@ -582,10 +803,20 @@ class TestBmaasNetworking:
         if "ingress_attach_id" not in self.state:
             pytest.skip("No ExternalIPAttachment to delete")
 
-        grpc.delete_external_ip_attachment(attachment_id=self.state["ingress_attach_id"])
+        _delete_netris_resource_and_verify(
+            k8s=k8s_hub_client,
+            resource="externalipattachment",
+            name=self.state["ingress_attach_cr"],
+            delete=lambda: grpc.delete_external_ip_attachment(attachment_id=self.state["ingress_attach_id"]),
+        )
         wait_for_external_ip_attachment_deletion(k8s=k8s_hub_client, name=self.state["ingress_attach_cr"])
 
-        grpc.delete_external_ip(external_ip_id=self.state["ingress_eip_id"])
+        _delete_netris_resource_and_verify(
+            k8s=k8s_hub_client,
+            resource="externalip",
+            name=self.state["ingress_eip_cr"],
+            delete=lambda: grpc.delete_external_ip(external_ip_id=self.state["ingress_eip_id"]),
+        )
         wait_for_external_ip_deletion(k8s=k8s_hub_client, name=self.state["ingress_eip_cr"])
 
     def test_14_delete_bmis(
@@ -596,7 +827,14 @@ class TestBmaasNetworking:
                 continue
             bmi = self.state[key]
             print("Deleting BMI...")
-            cli.delete_baremetal_instance(uuid=bmi["id"])
+            _delete_netris_resource_and_verify(
+                k8s=k8s_hub_client,
+                resource="baremetalinstance",
+                name=bmi["cr"],
+                status_field="networkingJobs",
+                require_netris_annotation=False,
+                delete=lambda bmi=bmi: cli.delete_baremetal_instance(uuid=bmi["id"]),
+            )
 
         for key in ("bmi1", "bmi2", "bmi3"):
             if key not in self.state:
@@ -630,7 +868,13 @@ class TestBmaasNetworking:
 
     def test_15_delete_nat_gateway(self, grpc: GRPCClient, k8s_hub_client: K8sClient) -> None:
         if "nat_id" in self.state:
-            grpc.delete_nat_gateway(nat_gateway_id=self.state["nat_id"])
+            _delete_netris_resource_and_verify(
+                k8s=k8s_hub_client,
+                resource="natgateway",
+                name=self.state["nat_cr"],
+                delete=lambda: grpc.delete_nat_gateway(nat_gateway_id=self.state["nat_id"]),
+            )
+            wait_for_nat_gateway_deletion(k8s=k8s_hub_client, name=self.state["nat_cr"])
             poll_until(
                 fn=lambda: (
                     self.state["nat_id"]
@@ -647,28 +891,48 @@ class TestBmaasNetworking:
         if "nat_eip_id" not in self.state:
             pytest.skip("No NATGateway to delete")
 
-        grpc.delete_external_ip(external_ip_id=self.state["nat_eip_id"])
+        _delete_netris_resource_and_verify(
+            k8s=k8s_hub_client,
+            resource="externalip",
+            name=self.state["nat_eip_cr"],
+            delete=lambda: grpc.delete_external_ip(external_ip_id=self.state["nat_eip_id"]),
+        )
         wait_for_external_ip_deletion(k8s=k8s_hub_client, name=self.state["nat_eip_cr"])
 
     def test_16_delete_security_group(self, grpc: GRPCClient, k8s_hub_client: K8sClient) -> None:
         if "sg_id" not in self.state:
             pytest.skip("No SecurityGroup to delete")
 
-        grpc.delete_security_group(sg_id=self.state["sg_id"])
+        _delete_netris_resource_and_verify(
+            k8s=k8s_hub_client,
+            resource="securitygroup",
+            name=self.state["sg_cr"],
+            delete=lambda: grpc.delete_security_group(sg_id=self.state["sg_id"]),
+        )
         wait_for_security_group_deletion(k8s=k8s_hub_client, name=self.state["sg_cr"])
 
     def test_17_delete_subnets(self, grpc: GRPCClient, k8s_hub_client: K8sClient) -> None:
         for key, cr_key in [("subnet_a_id", "subnet_a_cr"), ("subnet_b_id", "subnet_b_cr")]:
             if key not in self.state:
                 continue
-            grpc.delete_subnet(subnet_id=self.state[key])
+            _delete_netris_resource_and_verify(
+                k8s=k8s_hub_client,
+                resource="subnet",
+                name=self.state[cr_key],
+                delete=lambda key=key: grpc.delete_subnet(subnet_id=self.state[key]),
+            )
             wait_for_subnet_deletion(k8s=k8s_hub_client, name=self.state[cr_key])
 
     def test_18_delete_virtual_network(self, grpc: GRPCClient, k8s_hub_client: K8sClient) -> None:
         if "vnet_id" not in self.state:
             pytest.skip("No VirtualNetwork to delete")
 
-        grpc.delete_virtual_network(vn_id=self.state["vnet_id"])
+        _delete_netris_resource_and_verify(
+            k8s=k8s_hub_client,
+            resource="virtualnetwork",
+            name=self.state["vnet_cr"],
+            delete=lambda: grpc.delete_virtual_network(vn_id=self.state["vnet_id"]),
+        )
         wait_for_virtual_network_deletion(k8s=k8s_hub_client, name=self.state["vnet_cr"])
 
         remaining = grpc.list_virtual_network_ids()
@@ -678,7 +942,12 @@ class TestBmaasNetworking:
         if "pool_id" not in self.state:
             pytest.skip("No ExternalIPPool to delete")
 
-        private_grpc.delete_external_ip_pool(pool_id=self.state["pool_id"])
+        _delete_netris_resource_and_verify(
+            k8s=k8s_hub_client,
+            resource="externalippool",
+            name=self.state["pool_cr"],
+            delete=lambda: private_grpc.delete_external_ip_pool(pool_id=self.state["pool_id"]),
+        )
         wait_for_external_ip_pool_deletion(k8s=k8s_hub_client, name=self.state["pool_cr"])
 
         remaining = private_grpc.list_external_ip_pool_ids()
