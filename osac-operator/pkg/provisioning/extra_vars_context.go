@@ -31,7 +31,9 @@ const (
 	storageBackendConnectionsKey
 	networkAttachmentMACsKey
 	subnetParentVirtualNetworkKey
+	aapExtraVarsKey
 	addOnOperatorNameKey
+	externalIPPoolKey
 )
 
 // TierDefinition is the flat, AAP-schema-shaped representation of a storage tier
@@ -84,6 +86,26 @@ func WithSubnetParentVirtualNetwork(ctx context.Context, parent SubnetParentVirt
 func SubnetParentVirtualNetworkFromContext(ctx context.Context) SubnetParentVirtualNetwork {
 	parent, _ := ctx.Value(subnetParentVirtualNetworkKey).(SubnetParentVirtualNetwork)
 	return parent
+}
+
+// ExternalIPPoolContext carries the pool identity selected for an ExternalIP job.
+type ExternalIPPoolContext struct {
+	FulfillmentID string
+	KubernetesUID string
+	TenantID      string
+	CIDR          string
+	Phase         string
+}
+
+// WithExternalIPPool returns a context carrying the selected ExternalIPPool.
+func WithExternalIPPool(ctx context.Context, pool ExternalIPPoolContext) context.Context {
+	return context.WithValue(ctx, externalIPPoolKey, pool)
+}
+
+// ExternalIPPoolFromContext retrieves the selected ExternalIPPool or its zero value.
+func ExternalIPPoolFromContext(ctx context.Context) ExternalIPPoolContext {
+	pool, _ := ctx.Value(externalIPPoolKey).(ExternalIPPoolContext)
+	return pool
 }
 
 // WithTenantStorageClasses returns a context carrying the tenant's resolved
@@ -164,4 +186,16 @@ func WithNetworkAttachmentMACs(ctx context.Context, macs map[string]string) cont
 func NetworkAttachmentMACsFromContext(ctx context.Context) map[string]string {
 	macs, _ := ctx.Value(networkAttachmentMACsKey).(map[string]string)
 	return macs
+}
+
+// WithAAPExtraVars returns a context carrying additional top-level AAP extra
+// variables. The AAP provider merges these with its standard osac_job_vars.
+func WithAAPExtraVars(ctx context.Context, extraVars map[string]any) context.Context {
+	return context.WithValue(ctx, aapExtraVarsKey, extraVars)
+}
+
+// AAPExtraVarsFromContext retrieves additional top-level AAP extra variables.
+func AAPExtraVarsFromContext(ctx context.Context) map[string]any {
+	extraVars, _ := ctx.Value(aapExtraVarsKey).(map[string]any)
+	return extraVars
 }

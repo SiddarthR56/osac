@@ -37,6 +37,24 @@ var _ = Describe("ExtraVarsContext", func() {
 		})
 	})
 
+	Describe("ExternalIPPool", func() {
+		It("round-trips the resolved pool identity", func() {
+			pool := provisioning.ExternalIPPoolContext{
+				FulfillmentID: "44444444-4444-4444-8444-444444444444",
+				KubernetesUID: "55555555-5555-4555-8555-555555555555",
+				TenantID:      "tenant-a",
+				CIDR:          "198.51.100.0/24",
+				Phase:         "Ready",
+			}
+			ctx := provisioning.WithExternalIPPool(context.Background(), pool)
+			Expect(provisioning.ExternalIPPoolFromContext(ctx)).To(Equal(pool))
+		})
+
+		It("returns zero values when no pool context is present", func() {
+			Expect(provisioning.ExternalIPPoolFromContext(context.Background())).To(BeZero())
+		})
+	})
+
 	Describe("AdminKubeconfig", func() {
 		It("should round-trip a kubeconfig value", func() {
 			ctx := context.Background()
@@ -116,6 +134,21 @@ var _ = Describe("ExtraVarsContext", func() {
 			result := provisioning.StorageBackendConnectionsFromContext(ctx)
 
 			Expect(result).To(BeNil())
+		})
+	})
+
+	Describe("AAPExtraVars", func() {
+		It("should round-trip additional top-level AAP variables", func() {
+			vars := map[string]any{
+				"ansible_eda": map[string]any{"event": map[string]any{"payload": map[string]any{"kind": "ServerCluster"}}},
+			}
+			ctx := provisioning.WithAAPExtraVars(context.Background(), vars)
+
+			Expect(provisioning.AAPExtraVarsFromContext(ctx)).To(Equal(vars))
+		})
+
+		It("should return nil when no extra variables are set", func() {
+			Expect(provisioning.AAPExtraVarsFromContext(context.Background())).To(BeNil())
 		})
 	})
 })

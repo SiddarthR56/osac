@@ -91,6 +91,12 @@ func catalogItemFixtureMetadata(tenant, project string) *privatev1.Metadata {
 	return privatev1.Metadata_builder{Name: catalogItemFixtureName(), Tenant: tenant, Project: project}.Build()
 }
 
+func catalogItemUnmanagedFixtureMetadata(tenant, project string) *privatev1.Metadata {
+	metadata := catalogItemFixtureMetadata(tenant, project)
+	metadata.SetAnnotations(map[string]string{"osac.openshift.io/management-state": "unmanaged"})
+	return metadata
+}
+
 func createCatalogItemProjectFixture(ctx context.Context, tenant string) string {
 	GinkgoHelper()
 	client := privatev1.NewProjectsClient(tool.InternalView().AdminConn())
@@ -216,7 +222,12 @@ func createCatalogItemNetworkClassFixtureWithoutCleanup(ctx context.Context) str
 	GinkgoHelper()
 	classes := privatev1.NewNetworkClassesClient(tool.InternalView().AdminConn())
 	class, err := classes.Create(ctx, privatev1.NetworkClassesCreateRequest_builder{
-		Object: privatev1.NetworkClass_builder{Metadata: catalogItemFixtureMetadata("shared", ""), Title: "Catalog item integration network", FabricManager: new("netris")}.Build(),
+		Object: privatev1.NetworkClass_builder{
+			Metadata:      catalogItemFixtureMetadata("shared", ""),
+			Title:         "Catalog item integration network",
+			FabricManager: new("netris"),
+			K8SManager:    new(testVMK8SManagerName),
+		}.Build(),
 	}.Build())
 	Expect(err).NotTo(HaveOccurred())
 	classID := class.GetObject().GetId()
@@ -278,7 +289,7 @@ func createCatalogItemSubnetInClassFixture(ctx context.Context, tenant, project,
 	networks := privatev1.NewVirtualNetworksClient(tool.InternalView().AdminConn())
 	network, err := networks.Create(ctx, privatev1.VirtualNetworksCreateRequest_builder{
 		Object: privatev1.VirtualNetwork_builder{
-			Metadata: catalogItemFixtureMetadata(tenant, project),
+			Metadata: catalogItemUnmanagedFixtureMetadata(tenant, project),
 			Spec: privatev1.VirtualNetworkSpec_builder{
 				NetworkClass: privatev1.NetworkClassReference_builder{Id: classID}.Build(),
 				Region:       "us-east-1",
@@ -330,7 +341,7 @@ func createCatalogItemSubnetInClassFixture(ctx context.Context, tenant, project,
 	subnets := privatev1.NewSubnetsClient(tool.InternalView().AdminConn())
 	subnet, err := subnets.Create(ctx, privatev1.SubnetsCreateRequest_builder{
 		Object: privatev1.Subnet_builder{
-			Metadata: catalogItemFixtureMetadata(tenant, project),
+			Metadata: catalogItemUnmanagedFixtureMetadata(tenant, project),
 			Spec: privatev1.SubnetSpec_builder{
 				VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: networkID}.Build(),
 				Ipv4Cidr:       new("10.100.1.0/24"),
@@ -387,7 +398,7 @@ func createCatalogItemNetworkInClassFixture(ctx context.Context, tenant, project
 	groups := privatev1.NewSecurityGroupsClient(tool.InternalView().AdminConn())
 	group, err := groups.Create(ctx, privatev1.SecurityGroupsCreateRequest_builder{
 		Object: privatev1.SecurityGroup_builder{
-			Metadata: catalogItemFixtureMetadata(tenant, project),
+			Metadata: catalogItemUnmanagedFixtureMetadata(tenant, project),
 			Spec: privatev1.SecurityGroupSpec_builder{
 				VirtualNetwork: privatev1.VirtualNetworkLocalReference_builder{Id: network.virtualNetworkID}.Build(),
 			}.Build(),
@@ -543,27 +554,7 @@ func createCatalogItemTenantAdminFixture(ctx context.Context) (string, *grpc.Cli
 	Expect(err).NotTo(HaveOccurred())
 	id := created.GetObject().GetId()
 	DeferCleanup(func(ctx context.Context) {
-		// Authentication creates fulfillment User records in the tenant's root project.
-		users := privatev1.NewUsersClient(tool.InternalView().AdminConn())
-		listed, err := users.List(ctx, privatev1.UsersListRequest_builder{Filter: new("this.metadata.tenant == '" + name + "'")}.Build())
-		Expect(err).NotTo(HaveOccurred())
-		for _, user := range listed.GetItems() {
-			_, err = users.Delete(ctx, privatev1.UsersDeleteRequest_builder{Id: user.GetId()}.Build())
-			Expect(err).NotTo(HaveOccurred())
-			Eventually(func(g Gomega) bool {
-				_, err := users.Get(ctx, privatev1.UsersGetRequest_builder{Id: user.GetId()}.Build())
-				if status.Code(err) == codes.NotFound {
-					return true
-				}
-				g.Expect(err).NotTo(HaveOccurred())
-				_, err = users.Signal(ctx, privatev1.UsersSignalRequest_builder{Id: user.GetId()}.Build())
-				if status.Code(err) == codes.NotFound {
-					return true
-				}
-				g.Expect(err).NotTo(HaveOccurred())
-				return false
-			}, time.Minute, time.Second).Should(BeTrue())
-		}
+		deleteTenantUsers(ctx, name)
 		deleteTenant(ctx, tenants, privatev1.NewProjectsClient(tool.InternalView().AdminConn()), id, name)
 	})
 
