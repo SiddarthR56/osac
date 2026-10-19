@@ -54,6 +54,17 @@
   ansible.builtin.set_fact:
     _existing_ipam_subnet: "{{ _existing_ipam_subnets | first | default(none) }}"
 
+- name: Validate existing IPAM subnet summary has an ID
+  ansible.builtin.assert:
+    that:
+      - _existing_ipam_subnet.id is defined
+      - _existing_ipam_subnet.id is not none
+      - _existing_ipam_subnet.id | string | length > 0
+    fail_msg: >-
+      Netris IPAM subnet '{{ ipam_name }}' was found but its list response
+      omitted the ID; refusing to continue without a stable provider identifier.
+  when: _existing_ipam_subnet is not none
+
 - name: Set IPAM facts from existing subnet (skip creation)
   ansible.builtin.set_fact:
     ipam_subnet_id: "{{ _existing_ipam_subnet.id }}"
@@ -65,12 +76,31 @@
     - _existing_ipam_subnet is not none
     - ipam_cidr is defined
   block:
+    - name: Build expected IPAM subnet fields
+      ansible.builtin.set_fact:
+        _ipam_subnet_expected_fields:
+          prefix: "{{ ipam_cidr }}"
+          "tenant.id": "{{ ipam_tenant_id }}"
+          "sites.ids": ["{{ ipam_site_id }}"]
+
+    - name: Add IPAM subnet purpose expectation
+      ansible.builtin.set_fact:
+        _ipam_subnet_expected_fields: >-
+          {{ _ipam_subnet_expected_fields | combine({'purpose': ipam_purpose}) }}
+      when: ipam_purpose is defined
+
+    - name: Add IPAM subnet VPC ownership expectation
+      ansible.builtin.set_fact:
+        _ipam_subnet_expected_fields: >-
+          {{ _ipam_subnet_expected_fields | combine({'vpc.id': ipam_vpc_id}) }}
+      when: ipam_vpc_id is defined
+
     - name: Compute IPAM subnet immutable mismatches
       ansible.builtin.set_fact:
         _ipam_subnet_mismatches: >-
-          {{ _existing_ipam_subnet | netris.controller.netris_immutable_mismatch({
-               'prefix': ipam_cidr
-             }) }}
+          {{ _existing_ipam_subnet | netris.controller.netris_immutable_mismatch(
+               _ipam_subnet_expected_fields
+             ) }}
 
     - name: Fail on IPAM subnet immutable mismatch
       ansible.builtin.fail:
@@ -108,6 +138,22 @@
   register: _ipam_create_resp
   when: _existing_ipam_subnet is none
   no_log: true
+
+- name: Validate IPAM subnet create response includes an ID
+  ansible.builtin.assert:
+    that:
+      - _ipam_create_resp.json is mapping
+      - _ipam_create_resp.json.data is defined
+      - not ((_ipam_create_resp.json.data.id | default(_ipam_create_resp.json.data, true)) is mapping)
+      - (_ipam_create_resp.json.data.id | default(_ipam_create_resp.json.data, true)) is not none
+      - (_ipam_create_resp.json.data.id | default(_ipam_create_resp.json.data, true)) | string | length > 0
+    fail_msg: >-
+      Netris accepted IPAM subnet '{{ ipam_name }}' creation but returned no
+      usable ID; retry after checking whether the subnet was created.
+  when:
+    - _existing_ipam_subnet is none
+    - _ipam_create_resp is not skipped
+    - _ipam_create_resp is changed or (_ipam_create_resp.status | default(0)) in [200, 201]
 
 - name: Set IPAM facts from create response
   ansible.builtin.set_fact:

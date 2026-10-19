@@ -64,6 +64,56 @@ class TestNetrisImmutableMismatch:
         assert mismatches[0]["actual"] == "7"
         assert mismatches[0]["expected"] == "9"
 
+    def test_scalar_vpc_id(self):
+        existing = {"name": "vnet1", "vpc": 7}
+        assert idempotency.netris_immutable_mismatch(existing, {"vpc.id": "7"}) == []
+
+    def test_scalar_tenant_site_and_site_list_ids(self):
+        existing = {"tenant": 77, "site": 3, "sites": [3, 7]}
+        assert idempotency.netris_immutable_mismatch(
+            existing,
+            {"tenant.id": "77", "site.id": 3, "sites.ids": [7, 3]},
+        ) == []
+
+    def test_scalar_admin_tenant_id(self):
+        assert idempotency.netris_immutable_mismatch(
+            {"adminTenant": 77}, {"adminTenant.id": "77"}
+        ) == []
+
+    def test_missing_value_is_unverifiable(self):
+        mismatches = idempotency.netris_immutable_mismatch(
+            {"name": "vpc1"}, {"adminTenant.id": 3}
+        )
+        assert mismatches == [
+            {
+                "field": "adminTenant.id",
+                "expected": "3",
+                "actual": "<missing>",
+                "unverifiable": True,
+            }
+        ]
+
+    def test_missing_fields_are_reported_for_detail_lookup(self):
+        assert idempotency.netris_immutable_missing_fields(
+            {"name": "vnet1", "vpc": 7}, {"vpc.id": 7, "tenant.id": 9}
+        ) == ["tenant.id"]
+
+    def test_nested_list_paths_and_site_ids_are_normalized(self):
+        existing = {
+            "gateways": [{"prefix": "10.0.0.1/24"}],
+            "sites": [{"id": 3}, {"id": 7}],
+        }
+        assert idempotency.netris_immutable_mismatch(
+            existing,
+            {"gateways.0.prefix": "10.0.0.1/24", "sites.ids": [7, 3]},
+        ) == []
+
+    def test_action_value_object_is_normalized(self):
+        assert idempotency.netris_immutable_mismatch(
+            {"action": {"label": "SNAT", "value": "snat"}},
+            {"action": "SNAT"},
+        ) == []
+
     def test_admin_tenant_nested(self):
         existing = {"name": "vpc1", "adminTenant": {"id": 3}}
         assert (
@@ -160,6 +210,69 @@ class TestFormatImmutableMismatchMessage:
         assert "actual=10.1.0.0/24" in msg
         assert "Refusing delete-and-recreate" in msg
 
+    def test_unverifiable_fields_are_not_described_as_actual_drift(self):
+        msg = idempotency.format_immutable_mismatch_message(
+            "VPC",
+            "vpc-a",
+            [
+                {
+                    "field": "adminTenant.id",
+                    "expected": "3",
+                    "actual": "<missing>",
+                    "unverifiable": True,
+                }
+            ],
+        )
+        assert "could not be verified from the response" in msg
+        assert "actual=<missing> (unverifiable)" in msg
+        assert "did not treat the resource as a match" in msg
+        assert "immutable field mismatch" not in msg
+
+
+class TestNetrisSafeErrorDetail:
+    def test_includes_http_status_and_redacts_credentials(self):
+        detail = idempotency.netris_safe_error_detail(
+            {
+                "status": 503,
+                "json": {
+                    "message": "connect.sid=abc Cookie: secret Authorization: Bearer token"
+                },
+            }
+        )
+        assert detail.startswith("HTTP 503;")
+        assert "connect.sid=<redacted>" in detail
+        assert "Cookie=<redacted>" in detail
+        assert "Authorization=<redacted>" in detail
+        assert "abc" not in detail
+        assert "secret" not in detail
+        assert "token" not in detail
+
+    def test_reports_transport_failure_without_http_status(self):
+        detail = idempotency.netris_safe_error_detail(
+            {"msg": "TLS certificate verification failed"}
+        )
+        assert detail == "no HTTP status was received; TLS certificate verification failed"
+
+    def test_truncates_long_error(self):
+        detail = idempotency.netris_safe_error_detail({"msg": "x" * 400})
+        assert len(detail) == len("no HTTP status was received; ") + 240
+
+
+class TestNetrisIPInCIDRs:
+    def test_host_address_and_host_prefix_are_in_pool(self):
+        assert idempotency.netris_ip_in_cidrs(
+            "198.51.100.3/32", ["198.51.100.0/29"]
+        )
+
+    def test_address_outside_pool_is_rejected(self):
+        assert not idempotency.netris_ip_in_cidrs(
+            "198.51.101.3/32", ["198.51.100.0/29"]
+        )
+
+    def test_invalid_address_and_cidr_are_rejected(self):
+        assert not idempotency.netris_ip_in_cidrs("not-an-ip", ["198.51.100.0/29"])
+        assert not idempotency.netris_ip_in_cidrs("198.51.100.3", ["invalid"])
+
 
 class TestFilterModuleRegistration:
     def test_filters_registered(self):
@@ -169,3 +282,6 @@ class TestFilterModuleRegistration:
         assert "netris_port_on_vnet" in filters
         assert "netris_ports_excluding" in filters
         assert "format_immutable_mismatch_message" in filters
+        assert "netris_immutable_missing_fields" in filters
+        assert "netris_safe_error_detail" in filters
+        assert "netris_ip_in_cidrs" in filters

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ipaddress
+import re
 from typing import Any
 
 
@@ -13,6 +15,11 @@ def _dig(obj: Any, path: str) -> Any:
             return None
         if isinstance(cur, dict):
             cur = cur.get(part)
+        elif isinstance(cur, list):
+            try:
+                cur = cur[int(part)]
+            except (ValueError, IndexError):
+                return None
         else:
             return None
     return cur
@@ -22,7 +29,57 @@ def _norm(value: Any) -> str:
     """Normalize a Netris field value for type-insensitive comparison."""
     if value is None:
         return ""
+    if isinstance(value, (list, tuple)):
+        return ",".join(sorted(_norm(item) for item in value))
     return str(value).strip()
+
+
+def _actual_value(existing: dict[str, Any], field: str) -> Any:
+    """Read a comparable field, accepting Netris' known ID representations."""
+    if field == "sites.ids":
+        sites = existing.get("sites")
+        if isinstance(sites, list):
+            return [
+                site.get("id") if isinstance(site, dict) else site
+                for site in sites
+            ]
+        return None
+    actual = _dig(existing, field)
+    if actual is None and field == "tenant.id":
+        actual = existing.get("tenantID", existing.get("tenant_id"))
+        if actual is None and existing.get("tenant") is not None:
+            tenant = existing["tenant"]
+            actual = tenant if not isinstance(tenant, dict) else None
+    if actual is None and field == "adminTenant.id":
+        tenant = existing.get("adminTenant")
+        actual = tenant if tenant is not None and not isinstance(tenant, dict) else None
+    if actual is None and field == "site.id":
+        site = existing.get("site")
+        actual = site if site is not None and not isinstance(site, dict) else None
+    if actual is None and field == "vpc.id":
+        vpc_value = existing.get("vpc")
+        if vpc_value is not None and not isinstance(vpc_value, dict):
+            return vpc_value
+        return existing.get("vpcId", existing.get("vpc_id"))
+    if isinstance(actual, dict) and "id" in actual:
+        return actual.get("id")
+    if isinstance(actual, dict) and field in {"action", "protocol", "state"}:
+        return actual.get("value", actual.get("label"))
+    return actual
+
+
+def netris_immutable_missing_fields(
+    existing: Any,
+    expected_fields: dict[str, Any] | None,
+) -> list[str]:
+    """Return expected field paths absent from a Netris response."""
+    if not isinstance(existing, dict) or not expected_fields:
+        return list(expected_fields or {}) if isinstance(existing, dict) else []
+    return [
+        field
+        for field in expected_fields
+        if _actual_value(existing, field) is None
+    ]
 
 
 def netris_immutable_mismatch(
@@ -32,34 +89,30 @@ def netris_immutable_mismatch(
     """Compare expected immutable fields against an existing Netris object.
 
     ``expected_fields`` maps dotted paths on ``existing`` to desired values.
-    Returns a list of mismatch dicts ``{field, expected, actual}``. Empty list
-    means no mismatch (safe no-op).
+    Returns differing or missing field dicts. A missing value has
+    ``unverifiable=True`` and is not considered a safe no-op.
     """
-    if not existing or not isinstance(existing, dict):
+    if not isinstance(existing, dict):
         return []
     if not expected_fields:
         return []
 
     mismatches: list[dict[str, str]] = []
     for field, expected in expected_fields.items():
-        actual = _dig(existing, field)
-        # Netris may nest vpc as {id: N} or expose vpcId
-        if actual is None and field == "vpc.id":
-            actual = existing.get("vpcId", existing.get("vpc_id"))
+        actual = _actual_value(existing, field)
         exp_s = _norm(expected)
         act_s = _norm(actual)
-        if isinstance(actual, dict) and "id" in actual:
-            act_s = _norm(actual.get("id"))
         # Netris may return tenant/vpc ids as ints; normalize for compare
         if field == "action":
             exp_s = exp_s.upper()
             act_s = act_s.upper()
-        if exp_s != act_s:
+        if actual is None or exp_s != act_s:
             mismatches.append(
                 {
                     "field": field,
                     "expected": exp_s,
-                    "actual": act_s if act_s else "<missing>",
+                    "actual": act_s if actual is not None else "<missing>",
+                    "unverifiable": actual is None,
                 }
             )
     return mismatches
@@ -110,19 +163,80 @@ def format_immutable_mismatch_message(
     object_name: str,
     mismatches: list[dict[str, str]],
 ) -> str:
-    """Build an actionable fail message for immutable field drift."""
-    lines = [
-        f"Netris {object_type} '{object_name}' already exists with immutable field mismatch:"
-    ]
+    """Build an actionable fail message for drift or unverifiable fields."""
+    unverifiable = [m for m in mismatches if m.get("unverifiable")]
+    drift = [m for m in mismatches if not m.get("unverifiable")]
+    if unverifiable and drift:
+        heading = "has immutable drift and fields that could not be verified"
+    elif unverifiable:
+        heading = "has immutable fields that could not be verified from the response"
+    else:
+        heading = "already exists with immutable field mismatch"
+    lines = [f"Netris {object_type} '{object_name}' {heading}:"]
     for m in mismatches:
+        state = " (unverifiable)" if m.get("unverifiable") else ""
+        lines.append(f"  field={m['field']} expected={m['expected']} actual={m['actual']}{state}.")
+    if unverifiable:
         lines.append(
-            f"  field={m['field']} expected={m['expected']} actual={m['actual']}."
+            "Read the Netris resource details or verify the provider response contract; "
+            "the playbook did not treat the resource as a match."
         )
-    lines.append(
-        "Refusing delete-and-recreate. Correct Netris state or recreate the OSAC "
-        "resource with a new name after cleanup."
-    )
+    if drift:
+        lines.append(
+            "Refusing delete-and-recreate. Correct Netris state or recreate the OSAC "
+            "resource with a new name after cleanup."
+        )
     return "\n".join(lines)
+
+
+def netris_safe_error_detail(result: Any) -> str:
+    """Return a bounded provider/task error summary without request secrets."""
+    if not isinstance(result, dict):
+        return "provider response details are unavailable"
+
+    status = result.get("status")
+    body = result.get("json")
+    detail = body.get("message") if isinstance(body, dict) else None
+    if not isinstance(detail, str) or not detail.strip():
+        detail = result.get("msg")
+    if not isinstance(detail, str) or not detail.strip():
+        detail = "provider returned no diagnostic message"
+
+    detail = re.sub(r"[\r\n\t]+", " ", detail).strip()
+    detail = re.sub(
+        r"(?i)\b(connect\.sid|cookie|authorization|token|password|secret)\b\s*[:=]\s*(?:Bearer\s+)?[^\s,;]+",
+        r"\1=<redacted>",
+        detail,
+    )
+    detail = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer <redacted>", detail)
+    detail = detail[:240]
+
+    if status is None:
+        return f"no HTTP status was received; {detail}"
+    return f"HTTP {status}; {detail}"
+
+
+def netris_ip_in_cidrs(address: Any, cidrs: Any) -> bool:
+    """Return whether an address or host prefix belongs to any allocation CIDR."""
+    if not isinstance(address, str) or not isinstance(cidrs, (list, tuple)):
+        return False
+    try:
+        try:
+            ip = ipaddress.ip_interface(address).ip
+        except ValueError:
+            ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    for cidr in cidrs:
+        if not isinstance(cidr, str):
+            continue
+        try:
+            network = ipaddress.ip_network(cidr, strict=False)
+        except ValueError:
+            continue
+        if ip.version == network.version and ip in network:
+            return True
+    return False
 
 
 class FilterModule:
@@ -132,8 +246,11 @@ class FilterModule:
         """Return the filter name → callable map for Ansible."""
         return {
             "netris_immutable_mismatch": netris_immutable_mismatch,
+            "netris_immutable_missing_fields": netris_immutable_missing_fields,
             "osac_is_default_networking_resource": osac_is_default_networking_resource,
             "netris_port_on_vnet": netris_port_on_vnet,
             "netris_ports_excluding": netris_ports_excluding,
             "format_immutable_mismatch_message": format_immutable_mismatch_message,
+            "netris_safe_error_detail": netris_safe_error_detail,
+            "netris_ip_in_cidrs": netris_ip_in_cidrs,
         }
