@@ -69,6 +69,7 @@ ROLE_TESTS=(
   "netris_subnet_delete"
   "netris_parent_delete"
   "netris_protected_launch"
+  "external_ip_contract"
 )
 
 ROLE_SCENARIO_TESTS=(
