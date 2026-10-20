@@ -343,6 +343,15 @@ class NetrisIdempotencyPlaybookTests(unittest.TestCase):
         }
         job_vars.update(extra_vars or {})
         env = os.environ.copy()
+        env.update(
+            {
+                "NETRIS_CONTROLLER_URL": job_vars["netris_controller_url"],
+                "NETRIS_VALIDATE_CERTS": str(
+                    job_vars["netris_validate_certs"]
+                ).lower(),
+                "NETRIS_CA_PATH": job_vars.get("netris_ca_path", "") or "",
+            }
+        )
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as vars_file:
             json.dump(job_vars, vars_file)
             vars_path = Path(vars_file.name)

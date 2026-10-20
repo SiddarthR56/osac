@@ -203,7 +203,7 @@
       Netris accepted V-Net '{{ vnet_name }}' creation but returned no usable ID;
       retry after checking whether the V-Net was created.
   when:
-    - _existing_vnet is not defined or _existing_vnet is none
+    - _existing_vnet | length == 0
     - _vnet_create_resp is not skipped
     - _vnet_create_resp is changed or (_vnet_create_resp.status | default(0)) in [200, 201]
 
