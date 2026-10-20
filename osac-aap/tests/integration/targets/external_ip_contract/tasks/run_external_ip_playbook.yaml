@@ -42,6 +42,9 @@
     ANSIBLE_SHOW_CUSTOM_STATS: "true"
     KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') }}"
     K8S_AUTH_KUBECONFIG: "{{ lookup('env', 'K8S_AUTH_KUBECONFIG') }}"
+    NETRIS_CONTROLLER_URL: "{{ eip_contract_netris_url }}"
+    NETRIS_VALIDATE_CERTS: "false"
+    NETRIS_CA_PATH: ""
   register: eip_contract_playbook_result
   changed_when: false
   failed_when: false

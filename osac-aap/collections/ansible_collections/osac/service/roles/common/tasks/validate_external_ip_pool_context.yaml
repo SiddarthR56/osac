@@ -5,18 +5,23 @@
       - external_ip.metadata.uid is defined
       - external_ip.metadata.uid | length > 0
       - external_ip.metadata.generation is number
-      - external_ip.metadata.labels['osac.openshift.io/externalip-uuid'] is defined
-      - external_ip.metadata.labels['osac.openshift.io/externalip-uuid'] | length > 0
-      - external_ip.metadata.annotations['osac.openshift.io/tenant'] is defined
-      - external_ip.metadata.annotations['osac.openshift.io/tenant'] | length > 0
-      - external_ip.metadata.annotations['osac.openshift.io/externalip-contract-version'] == 'v1'
+      - >-
+        (external_ip.metadata.labels | default({}, true)).get(
+        'osac.openshift.io/externalip-uuid', '') | default('', true) | length > 0
+      - >-
+        (external_ip.metadata.annotations | default({}, true)).get(
+        'osac.openshift.io/tenant', '') | default('', true) | length > 0
+      - >-
+        (external_ip.metadata.annotations | default({}, true)).get(
+        'osac.openshift.io/externalip-contract-version', '') == 'v1'
       - osac_job_vars.external_ip_pool.fulfillment_id == external_ip.spec.pool
       - osac_job_vars.external_ip_pool.kubernetes_uid is defined
       - osac_job_vars.external_ip_pool.kubernetes_uid | length > 0
       - osac_job_vars.external_ip_pool.tenant_id is defined
       - >-
         osac_job_vars.external_ip_pool.tenant_id ==
-        external_ip.metadata.annotations['osac.openshift.io/tenant'] or
+        (external_ip.metadata.annotations | default({}, true)).get(
+        'osac.openshift.io/tenant', '') or
         osac_job_vars.external_ip_pool.tenant_id == 'shared'
       - osac_job_vars.external_ip_pool.cidr is defined
       - osac_job_vars.external_ip_pool.phase is defined
@@ -27,7 +32,6 @@
     fail_msg: >-
       ExternalIP v1 operations require the current resource identity and its
       matching pool snapshot; allocations also require a ready pool.
-  no_log: true
 
 - name: Normalize the submitted ExternalIPPool snapshot
   ansible.builtin.set_fact:

@@ -213,6 +213,61 @@
             eip_contract_legacy_metallb: "{{ eip_contract_cr_reads.results[4].resources[0] }}"
             eip_contract_first_before: "{{ eip_contract_cr_reads.results[1].resources[0] }}"
 
+        - name: Verify no pool allocation Lease exists in the fresh namespace
+          kubernetes.core.k8s_info:
+            api_version: coordination.k8s.io/v1
+            kind: Lease
+            namespace: "{{ eip_contract_namespace }}"
+            name: "external-ip-{{ eip_contract_pool.metadata.uid | hash('sha1') }}"
+          register: eip_contract_lease_before_unallocated_release
+
+        - name: Assert the fresh namespace has no allocation Lease yet
+          ansible.builtin.assert:
+            that:
+              - eip_contract_lease_before_unallocated_release.resources | length == 0
+
+        - name: Release an ExternalIP without a prior allocation in the fresh namespace
+          ansible.builtin.include_tasks: run_external_ip_playbook.yaml
+          vars:
+            eip_contract_operation: delete
+            eip_contract_resource: "{{ eip_contract_first }}"
+            eip_contract_netris_url: "{{ netris_url }}"
+            eip_contract_should_succeed: true
+
+        - name: Read the pool allocation Lease after no-op release
+          kubernetes.core.k8s_info:
+            api_version: coordination.k8s.io/v1
+            kind: Lease
+            namespace: "{{ eip_contract_namespace }}"
+            name: "external-ip-{{ eip_contract_pool.metadata.uid | hash('sha1') }}"
+          register: eip_contract_lease_after_unallocated_release
+
+        - name: Assert release created and left the pool allocation Lease unlocked
+          ansible.builtin.assert:
+            that:
+              - eip_contract_lease_after_unallocated_release.resources | length == 1
+              - >-
+                eip_contract_lease_after_unallocated_release.resources[0].spec.holderIdentity
+                | default('') == ''
+
+        - name: Build an ExternalIP snapshot with an absent labels map
+          ansible.builtin.set_fact:
+            eip_contract_missing_labels: >-
+              {{ eip_contract_first | combine(
+                   {'metadata': eip_contract_first.metadata | combine({'labels': none})},
+                   recursive=true) }}
+
+        - name: Report a clear validation error for absent ExternalIP labels
+          ansible.builtin.include_tasks: run_external_ip_playbook.yaml
+          vars:
+            eip_contract_operation: create
+            eip_contract_resource: "{{ eip_contract_missing_labels }}"
+            eip_contract_netris_url: "{{ netris_url }}"
+            eip_contract_should_succeed: false
+            eip_contract_expected_failure: >-
+              ExternalIP v1 operations require the current resource identity
+              and its matching pool snapshot
+
         - name: Configure a concurrent claim on the first Netris candidate
           ansible.builtin.uri:
             url: "{{ netris_url }}/_config"

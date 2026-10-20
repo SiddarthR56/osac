@@ -36,6 +36,9 @@
     name: netris.controller.auth
   when: netris_session_cookie is not defined
 
+- name: Ensure the pool allocation Lease exists before release
+  ansible.builtin.include_tasks: _ensure_external_ip_allocation_lease.yaml
+
 - name: Release only the UID-owned Netris reservation while holding the pool Lease
   block:
     - name: Acquire the pool allocation Lease

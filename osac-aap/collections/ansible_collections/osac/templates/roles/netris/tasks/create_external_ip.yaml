@@ -73,26 +73,7 @@
   when: netris_session_cookie is not defined
 
 - name: Ensure the pool allocation Lease exists
-  kubernetes.core.k8s:
-    state: present
-    apply: true
-    server_side_apply:
-      field_manager: osac-externalip-allocation-lock
-    definition:
-      apiVersion: coordination.k8s.io/v1
-      kind: Lease
-      metadata:
-        name: "{{ eip_lock_name }}"
-        namespace: "{{ eip_lock_namespace }}"
-        annotations:
-          osac.openshift.io/tenant: >-
-            {{ (external_ip.metadata.annotations | default({})).get(
-                 'osac.openshift.io/tenant',
-                 (_eip_pool.metadata.annotations | default({})).get(
-                   'osac.openshift.io/tenant', 'shared')) }}
-          osac.openshift.io/owner-reference: "ExternalIPPool/{{ _eip_pool.metadata.name }}"
-      spec:
-        leaseDurationSeconds: 1200
+  ansible.builtin.include_tasks: _ensure_external_ip_allocation_lease.yaml
 
 - name: Allocate and publish the Netris reservation while holding the pool Lease
   block:
