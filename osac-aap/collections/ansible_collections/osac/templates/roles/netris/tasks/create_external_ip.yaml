@@ -15,6 +15,10 @@
       ExternalIP UID, generation, namespace, pool reference, and pool-name
       annotation are required to allocate an address.
 
+- name: Select the Netris pool validation operation
+  ansible.builtin.set_fact:
+    _eip_pool_action: allocate
+
 - name: Resolve and validate the ExternalIPPool
   ansible.builtin.include_tasks: _resolve_external_ip_pool.yaml
 
@@ -146,6 +150,17 @@
               }
             ]
           }}
+      when: eip_contract_version != 'v1'
+
+    - name: Publish the v1 allocation result
+      ansible.builtin.include_role:
+        name: osac.service.common
+        tasks_from: publish_external_ip_result
+      vars:
+        osac_external_ip_operation: external_ip.allocate
+        osac_external_ip_result_data:
+          address: "{{ eip_allocated_address }}"
+      when: eip_contract_version == 'v1'
 
     - name: Display ExternalIP creation result
       ansible.builtin.debug:

@@ -17,6 +17,29 @@ def validate_single_ipv4_cidr(cidrs):
     return cidrs[0]
 
 
+def validate_ipv4_address_in_cidr(address, cidr):
+    """Validate a canonical IPv4 address against one canonical IPv4 CIDR."""
+    if not isinstance(address, str):
+        raise ValueError("ExternalIP address must be a canonical IPv4 address")
+
+    try:
+        parsed_address = ipaddress.ip_address(address)
+        network = ipaddress.ip_network(validate_single_ipv4_cidr([cidr]), strict=True)
+    except ValueError as error:
+        raise ValueError("ExternalIP address or ExternalIPPool CIDR is invalid") from error
+
+    if (
+        not isinstance(parsed_address, ipaddress.IPv4Address)
+        or str(parsed_address) != address
+        or parsed_address.is_unspecified
+    ):
+        raise ValueError("ExternalIP address must be a canonical IPv4 address")
+    if parsed_address not in network:
+        raise ValueError("ExternalIP address is outside the selected pool")
+
+    return address
+
+
 def next_available_ip(cidrs, allocated_ips):
     """Return the first free IPv4 host from one or more CIDR ranges.
 
@@ -55,6 +78,7 @@ def next_available_ip(cidrs, allocated_ips):
 class FilterModule:
     def filters(self):
         return {
+            "validate_ipv4_address_in_cidr": validate_ipv4_address_in_cidr,
             "validate_single_ipv4_cidr": validate_single_ipv4_cidr,
             "next_available_ip": next_available_ip,
         }

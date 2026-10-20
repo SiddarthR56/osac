@@ -21,6 +21,25 @@ def test_validate_single_ipv4_cidr_rejects_unsupported_pool_values(cidrs):
         filter_plugin.validate_single_ipv4_cidr(cidrs)
 
 
+def test_validate_ipv4_address_in_cidr_accepts_canonical_member():
+    assert filter_plugin.validate_ipv4_address_in_cidr("192.0.2.10", "192.0.2.0/24") == "192.0.2.10"
+
+
+@pytest.mark.parametrize(
+    ("address", "cidr"),
+    [
+        ("192.0.3.10", "192.0.2.0/24"),
+        ("192.0.2.010", "192.0.2.0/24"),
+        ("2001:db8::1", "192.0.2.0/24"),
+        ("0.0.0.0", "0.0.0.0/0"),
+        ("192.0.2.10", "192.0.2.1/24"),
+    ],
+)
+def test_validate_ipv4_address_in_cidr_rejects_nonmembers_and_invalid_values(address, cidr):
+    with pytest.raises(ValueError):
+        filter_plugin.validate_ipv4_address_in_cidr(address, cidr)
+
+
 def test_next_available_ip_returns_first_free_host():
     assert filter_plugin.next_available_ip("192.0.2.0/30", []) == "192.0.2.1"
 

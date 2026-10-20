@@ -14,6 +14,10 @@
       ExternalIP UID, generation, namespace, and pool reference are required
       to release its provider reservation.
 
+- name: Select the Netris pool validation operation
+  ansible.builtin.set_fact:
+    _eip_pool_action: release
+
 - name: Resolve and validate the ExternalIPPool for release
   ansible.builtin.include_tasks: _resolve_external_ip_pool.yaml
 
@@ -82,3 +86,12 @@
         vnet_lock_name: "{{ eip_lock_name }}"
         vnet_lock_namespace: "{{ eip_lock_namespace }}"
         vnet_lock_holder: "{{ eip_lock_holder }}"
+
+- name: Publish the v1 release result
+  ansible.builtin.include_role:
+    name: osac.service.common
+    tasks_from: publish_external_ip_result
+  vars:
+    osac_external_ip_operation: external_ip.release
+    osac_external_ip_result_data: {}
+  when: eip_contract_version == 'v1'

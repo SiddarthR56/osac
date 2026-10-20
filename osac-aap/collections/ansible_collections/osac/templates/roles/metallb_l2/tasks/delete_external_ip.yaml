@@ -16,11 +16,22 @@
   ansible.builtin.set_fact:
     ip_name: "{{ external_ip.metadata.name }}"
     ip_uid: "{{ external_ip.metadata.uid }}"
+    ip_contract_version: >-
+      {{ (external_ip.metadata.annotations | default({})).get(
+           'osac.openshift.io/externalip-contract-version', '') }}
     ip_service_name: "osac-eip-{{ external_ip.metadata.uid }}"
     ip_legacy_service_name: "osac-eip-{{ external_ip.metadata.name }}"
     ip_tenant: >-
       {{ (external_ip.metadata.annotations | default({})).get(
            'osac.openshift.io/tenant', 'shared') }}
+
+- name: Validate the submitted v1 ExternalIPPool snapshot for release
+  ansible.builtin.include_role:
+    name: osac.service.common
+    tasks_from: validate_external_ip_pool_context
+  vars:
+    osac_external_ip_pool_action: release
+  when: ip_contract_version == 'v1'
 
 - name: Read any legacy display-name MetalLB Service
   kubernetes.core.k8s_info:
@@ -97,3 +108,12 @@
 - name: Display confirmed MetalLB release
   ansible.builtin.debug:
     msg: "MetalLB reservation for ExternalIP UID '{{ ip_uid }}' is absent"
+
+- name: Publish the v1 release result
+  ansible.builtin.include_role:
+    name: osac.service.common
+    tasks_from: publish_external_ip_result
+  vars:
+    osac_external_ip_operation: external_ip.release
+    osac_external_ip_result_data: {}
+  when: ip_contract_version == 'v1'

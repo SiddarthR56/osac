@@ -23,12 +23,23 @@
     ip_name: "{{ external_ip.metadata.name }}"
     ip_uid: "{{ external_ip.metadata.uid }}"
     ip_generation: "{{ external_ip.metadata.generation | int }}"
+    ip_contract_version: >-
+      {{ (external_ip.metadata.annotations | default({})).get(
+           'osac.openshift.io/externalip-contract-version', '') }}
     ip_service_name: "osac-eip-{{ external_ip.metadata.uid }}"
     ip_legacy_service_name: "osac-eip-{{ external_ip.metadata.name }}"
     ip_pool_name: "{{ external_ip.metadata.annotations['osac.openshift.io/externalippool-name'] }}"
     ip_tenant: >-
       {{ (external_ip.metadata.annotations | default({})).get(
            'osac.openshift.io/tenant', 'shared') }}
+
+- name: Validate the submitted v1 ExternalIPPool snapshot
+  ansible.builtin.include_role:
+    name: osac.service.common
+    tasks_from: validate_external_ip_pool_context
+  vars:
+    osac_external_ip_pool_action: allocate
+  when: ip_contract_version == 'v1'
 
 - name: Read the current ExternalIP before creating a MetalLB reservation
   kubernetes.core.k8s_info:
@@ -144,9 +155,17 @@
     lb_service_info.resources[0].status.loadBalancer.ingress[0].ip | default('')
       is ansible.utils.ipv4
 
-- name: Extract the assigned address
+- name: Validate and extract the v1 address from the selected pool
+  ansible.builtin.set_fact:
+    assigned_ip: >-
+      {{ lb_service_info.resources[0].status.loadBalancer.ingress[0].ip
+         | osac.service.validate_ipv4_address_in_cidr(osac_external_ip_pool_cidr) }}
+  when: ip_contract_version == 'v1'
+
+- name: Extract the assigned address for an unversioned manager
   ansible.builtin.set_fact:
     assigned_ip: "{{ lb_service_info.resources[0].status.loadBalancer.ingress[0].ip }}"
+  when: ip_contract_version != 'v1'
 
 - name: Write the allocated address with UID and generation preconditions
   kubernetes.core.k8s_json_patch:
@@ -172,6 +191,17 @@
           }
         ]
       }}
+  when: ip_contract_version != 'v1'
+
+- name: Publish the v1 allocation result
+  ansible.builtin.include_role:
+    name: osac.service.common
+    tasks_from: publish_external_ip_result
+  vars:
+    osac_external_ip_operation: external_ip.allocate
+    osac_external_ip_result_data:
+      address: "{{ assigned_ip }}"
+  when: ip_contract_version == 'v1'
 
 - name: Display assigned MetalLB address
   ansible.builtin.debug:

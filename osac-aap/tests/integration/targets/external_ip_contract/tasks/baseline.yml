@@ -9,6 +9,7 @@
     pool_name: "external-ip-contract-pool"
     pool_fulfillment_id: "11111111-1111-4111-8111-111111111111"
     pool_cidr: "198.51.100.0/29"
+    tenant_id: "external-ip-contract-tenant"
   tasks:
     - name: Run the Netris ExternalIP contract scenarios
       block:
@@ -91,6 +92,8 @@
                 namespace: "{{ eip_contract_namespace }}"
                 labels:
                   osac.openshift.io/externalippool-uuid: "{{ pool_fulfillment_id }}"
+                annotations:
+                  osac.openshift.io/tenant: "{{ tenant_id }}"
               spec:
                 ipFamily: IPv4
                 cidrs:
@@ -105,9 +108,13 @@
               metadata:
                 name: external-ip-contract-one
                 namespace: "{{ eip_contract_namespace }}"
+                labels:
+                  osac.openshift.io/externalip-uuid: "22222222-2222-4222-8222-222222222222"
                 annotations:
                   osac.openshift.io/externalippool-name: "{{ pool_name }}"
                   osac.openshift.io/implementation-strategy: netris
+                  osac.openshift.io/tenant: "{{ tenant_id }}"
+                  osac.openshift.io/externalip-contract-version: v1
               spec:
                 pool: "{{ pool_fulfillment_id }}"
 
@@ -194,6 +201,13 @@
         - name: Save the persisted objects
           ansible.builtin.set_fact:
             eip_contract_first: "{{ eip_contract_cr_reads.results[1].resources[0] }}"
+            eip_contract_pool: "{{ eip_contract_cr_reads.results[0].resources[0] }}"
+            eip_contract_pool_context:
+              fulfillment_id: "{{ pool_fulfillment_id }}"
+              kubernetes_uid: "{{ eip_contract_cr_reads.results[0].resources[0].metadata.uid }}"
+              tenant_id: "{{ tenant_id }}"
+              cidr: "{{ pool_cidr }}"
+              phase: Ready
             eip_contract_second: "{{ eip_contract_cr_reads.results[2].resources[0] }}"
             eip_contract_legacy_netris: "{{ eip_contract_cr_reads.results[3].resources[0] }}"
             eip_contract_legacy_metallb: "{{ eip_contract_cr_reads.results[4].resources[0] }}"
@@ -282,19 +296,14 @@
             status_code: 200
           register: eip_contract_first_netris_state
 
-        - name: Verify conflict retry, UID ownership, and annotation-only mutation
-          vars:
-            _eip_first_annotations_without_allocation: >-
-              {{ eip_contract_first_after_create.resources[0].metadata.annotations
-                 | dict2items
-                 | rejectattr('key', 'equalto', 'osac.openshift.io/allocated-address')
-                 | items2dict }}
+        - name: Verify conflict retry, UID ownership, and artifact-only handoff
           ansible.builtin.assert:
             that:
+              - eip_contract_result.data.address == '198.51.100.2'
+              - eip_contract_first_after_create.resources[0].metadata.annotations == eip_contract_first_before.metadata.annotations
               - >-
-                eip_contract_first_after_create.resources[0].metadata.annotations[
-                  'osac.openshift.io/allocated-address'] == '198.51.100.2'
-              - _eip_first_annotations_without_allocation == eip_contract_first_before.metadata.annotations
+                'osac.openshift.io/allocated-address' not in
+                eip_contract_first_after_create.resources[0].metadata.annotations
               - eip_contract_first_after_create.resources[0].spec == eip_contract_first_before.spec
               - eip_contract_first_after_create.resources[0].status.phase == 'Progressing'
               - >-
@@ -462,9 +471,13 @@
               metadata:
                 name: external-ip-contract-metallb
                 namespace: "{{ eip_contract_namespace }}"
+                labels:
+                  osac.openshift.io/externalip-uuid: "33333333-3333-4333-8333-333333333333"
                 annotations:
                   osac.openshift.io/externalippool-name: "{{ pool_name }}"
                   osac.openshift.io/implementation-strategy: k8s_only
+                  osac.openshift.io/tenant: "{{ tenant_id }}"
+                  osac.openshift.io/externalip-contract-version: v1
               spec:
                 pool: "{{ pool_fulfillment_id }}"
 
@@ -476,7 +489,7 @@
             name: external-ip-contract-metallb
           register: eip_contract_metallb_before
 
-        - name: Create and annotate the k8s_only ExternalIP through the top-level playbook
+        - name: Create the v1 k8s_only ExternalIP through the top-level playbook
           ansible.builtin.include_tasks: run_external_ip_playbook.yaml
           vars:
             eip_contract_operation: create
@@ -502,12 +515,14 @@
                 name: "osac-eip-{{ eip_contract_metallb_before.resources[0].metadata.uid }}"
               register: eip_contract_metallb_service
 
-        - name: Verify MetalLB UID ownership, allocation annotation, and pool selection
+        - name: Verify MetalLB UID ownership, result artifact, and pool selection
           ansible.builtin.assert:
             that:
+              - eip_contract_result.data.address == '198.51.100.6'
+              - eip_contract_metallb_after_create.resources[0].metadata.annotations == eip_contract_metallb_before.resources[0].metadata.annotations
               - >-
-                eip_contract_metallb_after_create.resources[0].metadata.annotations[
-                  'osac.openshift.io/allocated-address'] == '198.51.100.6'
+                'osac.openshift.io/allocated-address' not in
+                eip_contract_metallb_after_create.resources[0].metadata.annotations
               - eip_contract_metallb_after_create.resources[0].status.phase == 'Progressing'
               - >-
                 eip_contract_metallb_after_create.resources[0].metadata.resourceVersion !=
