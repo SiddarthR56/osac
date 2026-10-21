@@ -68,6 +68,35 @@
                 virtualNetwork: "{{ vnet_uuid }}"
                 ipv4Cidr: 10.231.1.0/24
 
+        - name: Mark the fixture Subnet ready for attachment move tests
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - patch
+              - subnet
+              - "{{ tenant_vnet_name }}"
+              - --namespace
+              - "{{ fixture_namespace }}"
+              - --subresource=status
+              - --type=merge
+              - --patch
+              - '{"status":{"phase":"Ready"}}'
+          changed_when: true
+
+        - name: Verify the fixture Subnet is ready
+          kubernetes.core.k8s_info:
+            api_version: osac.openshift.io/v1alpha1
+            kind: Subnet
+            namespace: "{{ fixture_namespace }}"
+            name: "{{ tenant_vnet_name }}"
+          register: fixture_subnet_read
+
+        - name: Assert the fixture Subnet is ready before moving attachments
+          ansible.builtin.assert:
+            that:
+              - fixture_subnet_read.resources | length == 1
+              - fixture_subnet_read.resources[0].status.phase == 'Ready'
+
         - name: Create the allocated ExternalIP used by SNAT and DNAT tests
           kubernetes.core.k8s:
             state: present
