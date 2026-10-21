@@ -1500,7 +1500,10 @@ class NetrisIdempotencyPlaybookTests(unittest.TestCase):
         metadata = {
             "name": "netris-idem-move-request",
             "namespace": NAMESPACE,
-            "annotations": {"osac.openshift.io/implementation-strategy": "netris"},
+            "annotations": {
+                "osac.openshift.io/tenant": TENANT_ID,
+                "osac.openshift.io/implementation-strategy": "netris",
+            },
         }
         if offboard:
             metadata["deletionTimestamp"] = "2026-01-01T00:00:00Z"
