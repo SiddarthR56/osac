@@ -615,6 +615,138 @@
             that:
               - eip_contract_metallb_service_after_retry.resources | length == 1
 
+        - name: Create a ComputeInstance for the MetalLB attachment lifecycle
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: osac.openshift.io/v1alpha1
+              kind: ComputeInstance
+              metadata:
+                name: external-ip-contract-vm
+                namespace: "{{ eip_contract_namespace }}"
+                labels:
+                  osac.openshift.io/computeinstance-uuid: "44444444-4444-4444-8444-444444444444"
+                annotations:
+                  osac.openshift.io/tenant: "{{ tenant_id }}"
+              spec:
+                templateID: osac.templates.ocp_virt_vm
+                vcpus: 2
+                memoryGiB: 4
+                bootDisk:
+                  sizeGiB: 20
+                  storageTier: local
+                image:
+                  sourceType: registry
+                  sourceRef: quay.io/containerdisks/fedora:latest
+                runStrategy: Always
+
+        - name: Build the ExternalIPAttachment fixture with the parent UID
+          ansible.builtin.set_fact:
+            eip_contract_attachment:
+              apiVersion: osac.openshift.io/v1alpha1
+              kind: ExternalIPAttachment
+              metadata:
+                name: external-ip-contract-metallb-attachment
+                namespace: "{{ eip_contract_namespace }}"
+                annotations:
+                  osac.openshift.io/implementation-strategy: k8s_only
+                  osac.openshift.io/externalip-name: external-ip-contract-metallb
+                  osac.openshift.io/externalip-uid: >-
+                    {{ eip_contract_metallb_before.resources[0].metadata.uid }}
+                  osac.openshift.io/externalippool-name: "{{ pool_name }}"
+                  osac.openshift.io/externalip-target-namespace: "{{ eip_contract_namespace }}"
+                  osac.openshift.io/tenant: "{{ tenant_id }}"
+              spec:
+                externalIP: "33333333-3333-4333-8333-333333333333"
+                computeInstance: "44444444-4444-4444-8444-444444444444"
+
+        - name: Attach the ExternalIP using its Kubernetes UID
+          ansible.builtin.include_tasks: run_external_ip_attachment_playbook.yaml
+          vars:
+            eip_contract_attachment_operation: attach
+
+        - name: Wait for the ingress Service address before detaching
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Service
+            namespace: "{{ eip_contract_namespace }}"
+            name: osac-eip-external-ip-contract-metallb-ingress
+          register: eip_contract_ingress_service
+          retries: 20
+          delay: 1
+          until: >-
+            eip_contract_ingress_service.resources | length == 1 and
+            eip_contract_ingress_service.resources[0].status.loadBalancer.ingress
+            | default([]) | length == 1
+
+        - name: Verify attach moved the UID-owned reservation to the ingress Service
+          block:
+            - name: Read the parking Service after attach
+              kubernetes.core.k8s_info:
+                api_version: v1
+                kind: Service
+                namespace: metallb-system
+                name: "osac-eip-{{ eip_contract_metallb_before.resources[0].metadata.uid }}"
+              register: eip_contract_parking_after_attach
+
+            - name: Verify the reservation moved to the ingress Service
+              ansible.builtin.assert:
+                that:
+                  - eip_contract_parking_after_attach.resources | length == 0
+                  - eip_contract_ingress_service.resources | length == 1
+                  - >-
+                    eip_contract_ingress_service.resources[0].metadata.labels[
+                      'osac.openshift.io/externalip-uid'] ==
+                    eip_contract_metallb_before.resources[0].metadata.uid
+                  - >-
+                    eip_contract_ingress_service.resources[0].metadata.annotations[
+                      'osac.openshift.io/tenant'] == tenant_id
+                  - >-
+                    eip_contract_ingress_service.resources[0].metadata.annotations[
+                      'osac.openshift.io/owner-reference'] ==
+                    'ExternalIP/external-ip-contract-metallb'
+
+        - name: Detach the ExternalIP and restore its UID-owned reservation
+          ansible.builtin.include_tasks: run_external_ip_attachment_playbook.yaml
+          vars:
+            eip_contract_attachment_operation: detach
+
+        - name: Read the restored UID-owned parking Service
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Service
+            namespace: metallb-system
+            name: "osac-eip-{{ eip_contract_metallb_before.resources[0].metadata.uid }}"
+          register: eip_contract_parking_after_detach
+
+        - name: Read the ingress Service after detach
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Service
+            namespace: "{{ eip_contract_namespace }}"
+            name: osac-eip-external-ip-contract-metallb-ingress
+          register: eip_contract_ingress_after_detach
+
+        - name: Verify detach restored the UID-owned reservation and removed ingress
+          ansible.builtin.assert:
+            that:
+              - eip_contract_parking_after_detach.resources | length == 1
+              - eip_contract_ingress_after_detach.resources | length == 0
+              - >-
+                eip_contract_parking_after_detach.resources[0].metadata.labels[
+                  'osac.openshift.io/externalip-uid'] ==
+                eip_contract_metallb_before.resources[0].metadata.uid
+              - >-
+                eip_contract_parking_after_detach.resources[0].metadata.annotations[
+                  'metallb.universe.tf/loadBalancerIPs'] == '198.51.100.6'
+              - >-
+                eip_contract_parking_after_detach.resources[0].metadata.annotations[
+                  'osac.openshift.io/tenant'] == tenant_id
+              - >-
+                eip_contract_parking_after_detach.resources[0].metadata.annotations[
+                  'osac.openshift.io/owner-reference'] ==
+                'ExternalIP/external-ip-contract-metallb'
+
         - name: Refuse ambiguous legacy MetalLB ownership on create and release
           block:
             - name: Read the legacy MetalLB ExternalIP

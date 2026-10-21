@@ -1,4 +1,4 @@
-"""Assign a deterministic IPv4 address to test parking Services in Kind."""
+"""Assign a deterministic IPv4 address to test ExternalIP Services in Kind."""
 
 import os
 import time
@@ -11,7 +11,6 @@ def main():
     config.load_kube_config(config_file=os.environ["KUBECONFIG"])
     core = client.CoreV1Api()
     custom = client.CustomObjectsApi()
-    namespace = "metallb-system"
     assigned_ip = "198.51.100.6"
     status_namespace = os.environ["OSAC_EIP_STATUS_MUTATION_NAMESPACE"]
     status_name = os.environ["OSAC_EIP_STATUS_MUTATION_NAME"]
@@ -31,13 +30,14 @@ def main():
             time.sleep(0.2)
             continue
         external_ip_uid = external_ip["metadata"]["uid"]
-        for service in core.list_namespaced_service(
-            namespace,
+        for service in core.list_service_for_all_namespaces(
             label_selector=(
                 "osac.openshift.io/managed-by=osac-fulfillment,"
                 f"osac.openshift.io/externalip-uid={external_ip_uid}"
-            ),
+            )
         ).items:
+            if service.spec.type != "LoadBalancer":
+                continue
             ingress = []
             if service.status and service.status.load_balancer:
                 ingress = service.status.load_balancer.ingress or []
@@ -55,7 +55,7 @@ def main():
                 status_update_applied = True
             core.patch_namespaced_service_status(
                 service.metadata.name,
-                namespace,
+                service.metadata.namespace,
                 {"status": {"loadBalancer": {"ingress": [{"ip": assigned_ip}]}}},
             )
         time.sleep(0.2)
