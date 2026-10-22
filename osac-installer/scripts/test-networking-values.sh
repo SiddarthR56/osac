@@ -396,17 +396,20 @@ render_failure \
 
 # The installer advertises an IPv4-only networking contract across all
 # supported profiles, including the legacy k8s_only path.
-render_failure \
+render_failure_with_message \
   ipv6-egress-cidr \
+  'global.networking.networkClass.defaults.egressRules.0: Additional property ipv6Cidr is not allowed' \
   --set global.networking.fabricManager= \
   --set global.networking.k8sManager=k8s_only \
+  --set global.networking.networkClass.defaults.egressRules[0].protocol=PROTOCOL_TCP \
   --set-string global.networking.networkClass.defaults.egressRules[0].ipv6Cidr=2001:db8::/64
 
-render_failure \
+render_failure_with_message \
   ipv6-manager-capability \
+  'operator.networkManagers.k8sManagers.k8s_only.capabilities.0 must be one of the following: "ipv4"' \
   --set global.networking.fabricManager= \
   --set global.networking.k8sManager=k8s_only \
-  --set-string global.networking.networkManagers.k8sManagers.k8s_only.capabilities[0]=ipv6
+  --set-string operator.networkManagers.k8sManagers.k8s_only.capabilities[0]=ipv6
 
 # Required fabric details and unsupported manager combinations must
 # fail before Helm produces installable manifests.
