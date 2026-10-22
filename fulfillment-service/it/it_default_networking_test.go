@@ -141,8 +141,13 @@ var _ = Describe("Default networking provisioning", func() {
 				Filter: &defaultLabelFilter,
 			}.Build())
 			g.Expect(err).ToNot(HaveOccurred())
-			g.Expect(resp.GetItems()).ToNot(BeEmpty())
-			subnetId = resp.GetItems()[0].GetId()
+			items := resp.GetItems()
+			g.Expect(items).To(HaveLen(1))
+			if len(items) != 1 {
+				return
+			}
+			g.Expect(items[0].GetMetadata().GetName()).To(Equal("default-ipv4"))
+			subnetId = items[0].GetId()
 		}, time.Minute, time.Second).Should(Succeed())
 
 		By("Verifying default Subnet K8s CR is created")
