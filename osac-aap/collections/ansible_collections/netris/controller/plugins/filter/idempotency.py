@@ -34,6 +34,21 @@ def _norm(value: Any) -> str:
     return str(value).strip()
 
 
+def _norm_ipv4_host_address(value: Any) -> str | None:
+    """Normalize a bare IPv4 address or /32 host prefix to its address."""
+    text = _norm(value)
+    if not text:
+        return None
+    candidate = text if "/" in text else f"{text}/32"
+    try:
+        interface = ipaddress.ip_interface(candidate)
+    except ValueError:
+        return None
+    if interface.version != 4 or interface.network.prefixlen != 32:
+        return None
+    return str(interface.ip)
+
+
 def _actual_value(existing: dict[str, Any], field: str) -> Any:
     """Read a comparable field, accepting Netris' known ID representations."""
     if field == "sites.ids":
@@ -106,7 +121,24 @@ def netris_immutable_mismatch(
         if field == "action":
             exp_s = exp_s.upper()
             act_s = act_s.upper()
-        if actual is None or exp_s != act_s:
+        same = exp_s == act_s
+        if field == "snatToIP":
+            expected_host = _norm_ipv4_host_address(expected)
+            actual_host = _norm_ipv4_host_address(actual)
+            same = (
+                expected_host is not None
+                and actual_host is not None
+                and expected_host == actual_host
+            )
+        elif field == "destinationAddress":
+            expected_host = _norm_ipv4_host_address(expected)
+            actual_host = _norm_ipv4_host_address(actual)
+            if expected_host is not None and actual_host is not None:
+                same = expected_host == actual_host
+        elif field == "dnatToPort":
+            # Attachment replay sees Netris return 0 for an unset DNAT port.
+            same = same or {exp_s, act_s} == {"", "0"}
+        if actual is None or not same:
             mismatches.append(
                 {
                     "field": field,

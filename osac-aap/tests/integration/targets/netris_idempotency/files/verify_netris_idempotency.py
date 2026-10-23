@@ -1193,6 +1193,30 @@ class NetrisIdempotencyPlaybookTests(unittest.TestCase):
         self._run_playbook("playbook_osac_create_nat_gateway.yml", resource)
         self.assertEqual(self.server.created, [])
 
+    def test_snat_replay_accepts_bare_provider_ip(self):
+        self._set_external_ip_address("198.51.100.25")
+        existing = {
+            "id": 401,
+            "name": "netris-idem-nat-snat",
+            "action": "SNAT",
+            "vpc": {"id": 101},
+            "site": {"id": 1},
+            "protocol": "all",
+            "state": "enabled",
+            "sourceAddress": "10.231.0.0/16",
+            "sourcePort": "1-65535",
+            "destinationAddress": "0.0.0.0/0",
+            "destinationPort": "1-65535",
+            "snatToIP": "198.51.100.25",
+        }
+        self.server.reset(self._parent_provider_state(nat_rules=[existing]))
+
+        self._run_playbook(
+            "playbook_osac_create_nat_gateway.yml", self._nat_resource()
+        )
+
+        self.assertEqual(self._resource_posts(self.server, "/api/v2/nat"), [])
+
     def test_nat_create_uses_detail_when_list_omits_bindings(self):
         self._set_external_ip_address("198.51.100.25")
         resource = self._nat_resource()
@@ -1236,6 +1260,7 @@ class NetrisIdempotencyPlaybookTests(unittest.TestCase):
         resource = self._nat_resource()
         for field, value, message in [
             ("snatToIP", "198.51.100.26/32", "field=snatToIP"),
+            ("snatToIP", "198.51.100.25/24", "field=snatToIP"),
             ("sourceAddress", "10.240.0.0/16", "field=sourceAddress"),
             ("vpc", {"id": 909}, "field=vpc.id"),
         ]:
@@ -1392,6 +1417,24 @@ class NetrisIdempotencyPlaybookTests(unittest.TestCase):
             expected_message="field=dnatToIP",
         )
         self.assertEqual(self.server.created, [])
+
+    def test_dnat_replay_accepts_provider_host_and_empty_port_defaults(self):
+        self._set_external_ip_address("198.51.100.25")
+        resource = self._dnat_resource()
+        self.server.reset(self._parent_provider_state())
+        self._run_playbook("playbook_osac_attach_external_ip.yml", resource)
+        created = self._resource_posts(self.server, "/api/v2/nat")[0]
+        existing = {
+            **created,
+            "id": 401,
+            "destinationAddress": "198.51.100.25",
+            "dnatToPort": 0,
+        }
+        self.server.reset(self._parent_provider_state(nat_rules=[existing]))
+
+        self._run_playbook("playbook_osac_attach_external_ip.yml", resource)
+
+        self.assertEqual(self._resource_posts(self.server, "/api/v2/nat"), [])
 
     def test_dnat_detach_recovers_after_provider_commit_response_failure(self):
         self._set_external_ip_address("198.51.100.25")

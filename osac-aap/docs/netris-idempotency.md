@@ -78,6 +78,14 @@ has already disappeared, so a retry can finish cleanup after a partial delete.
 - `netris_ports_excluding(ports, port_id)` — ports list without the matching
   id (int/string tolerant; used by detach).
 
+## NAT provider value normalization
+
+Immutable NAT comparisons accept equivalent provider representations for host
+addresses: a bare IPv4 address matches the same `/32` in `snatToIP` or
+`destinationAddress`. Other destination prefixes remain exact. For DNAT,
+an empty `dnatToPort` matches the provider's `0` representation for an unset
+port; configured port values remain exact.
+
 ## Failure message shape
 
 ```text
