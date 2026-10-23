@@ -19,8 +19,36 @@
 
 - name: Find VPC by name
   ansible.builtin.set_fact:
-    _existing_vpc: "{{ (_vpc_list_resp.json.data | default([])) | selectattr('name', 'equalto', vpc_name) | list | first | default(none) }}"
+    _vpcs_by_name: "{{ (_vpc_list_resp.json.data | default([])) | selectattr('name', 'equalto', vpc_name) | list }}"
   when: _vpc_list_resp.json is mapping
+
+- name: Filter VPCs by admin tenant
+  ansible.builtin.set_fact:
+    _existing_vpcs: >-
+      {{ _vpcs_by_name
+         | selectattr('adminTenant.id', 'defined')
+         | selectattr('adminTenant.id', 'equalto', vpc_tenant_id | int)
+         | list }}
+  when: vpc_tenant_id is defined
+
+- name: Keep same-name VPC candidates when tenant filtering found no match
+  ansible.builtin.set_fact:
+    _existing_vpcs: "{{ _vpcs_by_name }}"
+  when:
+    - _existing_vpcs | default([]) | length == 0
+    - _vpcs_by_name | length > 0
+
+- name: Fail if the VPC deletion identity is ambiguous
+  ansible.builtin.assert:
+    that:
+      - _existing_vpcs | default(_vpcs_by_name) | length <= 1
+    fail_msg: >-
+      More than one Netris VPC named '{{ vpc_name }}' matches the deletion
+      identity. Refusing to delete an ambiguous VPC.
+
+- name: Set the matching VPC
+  ansible.builtin.set_fact:
+    _existing_vpc: "{{ (_existing_vpcs | default(_vpcs_by_name)) | first | default(none) }}"
 
 - name: Detect VPC ownership fields omitted from the list response
   ansible.builtin.set_fact:
