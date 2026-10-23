@@ -18,14 +18,33 @@
   register: _vpc_list_resp
   no_log: true
 
-- name: Find VPCs by name and admin tenant
+- name: Find VPCs by name
   ansible.builtin.set_fact:
-    _existing_vpcs: >-
+    _vpcs_by_name: >-
       {{ (_vpc_list_resp.json.data | default([]))
          | selectattr('name', 'equalto', vpc_name)
-         | selectattr('adminTenant.id', 'equalto', vpc_tenant_id | int)
          | list }}
   when: _vpc_list_resp.json is mapping
+
+- name: Initialize VPC candidates
+  ansible.builtin.set_fact:
+    _existing_vpcs: "{{ _vpcs_by_name }}"
+
+- name: Filter VPCs by admin tenant
+  ansible.builtin.set_fact:
+    _existing_vpcs: >-
+      {{ _vpcs_by_name
+         | selectattr('adminTenant.id', 'defined')
+         | selectattr('adminTenant.id', 'equalto', vpc_tenant_id | int)
+         | list }}
+  when: vpc_tenant_id is defined
+
+- name: Keep same-name VPC candidates when tenant filtering found no match
+  ansible.builtin.set_fact:
+    _existing_vpcs: "{{ _vpcs_by_name }}"
+  when:
+    - _existing_vpcs | default([]) | length == 0
+    - _vpcs_by_name | length > 0
 
 - name: Fail if the VPC identity is ambiguous
   ansible.builtin.assert:

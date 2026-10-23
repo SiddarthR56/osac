@@ -20,9 +20,14 @@
 
 - name: Find IPAM subnets by name and CIDR
   ansible.builtin.set_fact:
+    _ipam_subnets_by_name: >-
+      {{ (_ipam_subnets_resp.json.data | default([]))
+         | selectattr('name', 'equalto', ipam_name)
+         | list }}
     _existing_ipam_subnets: >-
       {{ (_ipam_subnets_resp.json.data | default([]))
          | selectattr('name', 'equalto', ipam_name)
+         | selectattr('prefix', 'defined')
          | selectattr('prefix', 'equalto', ipam_cidr)
          | list }}
 
@@ -30,6 +35,7 @@
   ansible.builtin.set_fact:
     _existing_ipam_subnets: >-
       {{ _existing_ipam_subnets
+         | selectattr('vpc.id', 'defined')
          | selectattr('vpc.id', 'equalto', ipam_vpc_id | int)
          | list }}
   when: ipam_vpc_id is defined
@@ -38,9 +44,17 @@
   ansible.builtin.set_fact:
     _existing_ipam_subnets: >-
       {{ _existing_ipam_subnets
+         | selectattr('tenant.id', 'defined')
          | selectattr('tenant.id', 'equalto', ipam_tenant_id | int)
          | list }}
   when: ipam_tenant_id is defined
+
+- name: Keep same-name IPAM subnet candidates when identity filtering found no match
+  ansible.builtin.set_fact:
+    _existing_ipam_subnets: "{{ _ipam_subnets_by_name }}"
+  when:
+    - _existing_ipam_subnets | length == 0
+    - _ipam_subnets_by_name | length > 0
 
 - name: Fail if the IPAM subnet identity is ambiguous
   ansible.builtin.assert:

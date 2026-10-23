@@ -50,6 +50,21 @@
                 networkClass: netris
                 ipv4Cidr: 10.231.0.0/16
 
+        - name: Set the fixture VirtualNetwork Netris VPC ID
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - patch
+              - virtualnetwork
+              - netris-idem-parent
+              - --namespace
+              - "{{ fixture_namespace }}"
+              - --subresource=status
+              - --type=merge
+              - --patch
+              - '{"status":{"backendNetworkId":"101"}}'
+          changed_when: true
+
         - name: Create the Subnet used by create and attachment move tests
           kubernetes.core.k8s:
             state: present

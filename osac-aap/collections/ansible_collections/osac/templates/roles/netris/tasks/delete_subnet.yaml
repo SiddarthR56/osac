@@ -40,11 +40,18 @@
       namespace '{{ subnet.metadata.namespace }}'; refusing to delete unscoped Netris resources.
   when: is_cudn_evpn
 
-- name: Set parent VirtualNetwork identity when it exists
+- name: Set parent VirtualNetwork name
   ansible.builtin.set_fact:
     _subnet_parent_vn_name: "{{ _subnet_parent_vn_lookup.resources[0].metadata.name }}"
+    subnet_virtual_network_name: "{{ _subnet_parent_vn_lookup.resources[0].metadata.name }}"
     subnet_virtual_network_vpc_id: "{{ _subnet_parent_vn_lookup.resources[0].status.backendNetworkId | default('') }}"
+  when: is_cudn_evpn
+
+- name: Set parent VirtualNetwork name when it still exists
+  ansible.builtin.set_fact:
+    _subnet_parent_vn_name: "{{ _subnet_parent_vn_lookup.resources[0].metadata.name }}"
   when:
+    - not is_cudn_evpn
     - _subnet_parent_vn_lookup is defined
     - _subnet_parent_vn_lookup.resources | default([]) | length > 0
 
@@ -112,7 +119,7 @@
       {{ _subnet_ipam_expected_fields | combine({'vpc.id': _subnet_parent_vpc_id}) }}
   when: _subnet_parent_vpc_id is defined and _subnet_parent_vpc_id | string | length > 0
 
-- name: Find the exact IPAM parent for this CUDN EVPN Subnet
+- name: Find the exact IPAM parent for this Subnet
   ansible.builtin.include_role:
     name: netris.controller.ipam
     tasks_from: find_subnet_by_identity
@@ -152,7 +159,7 @@
     - is_cudn_evpn
     - _subnet_ipam_parent is not mapping
 
-- name: Delete V-Net from Netris controller for CUDN EVPN
+- name: Delete V-Net from Netris controller
   ansible.builtin.include_role:
     name: netris.controller.vnet
     tasks_from: delete
@@ -185,7 +192,7 @@
     - is_cudn_evpn
     - _subnet_ipam_parent is mapping
 
-- name: Delete IPAM subnet from Netris controller for CUDN EVPN
+- name: Delete IPAM subnet from Netris controller
   ansible.builtin.include_role:
     name: netris.controller.ipam
     tasks_from: delete_subnet

@@ -19,16 +19,21 @@
 
 - name: Find V-Nets by name
   ansible.builtin.set_fact:
-    _existing_vnets: >-
+    _vnets_by_name: >-
       {{ (_vnet_list_resp.json.data | default([]))
          | selectattr('name', 'equalto', vnet_name)
          | list }}
   when: _vnet_list_resp.json is mapping
 
+- name: Initialize V-Net deletion candidates
+  ansible.builtin.set_fact:
+    _existing_vnets: "{{ _vnets_by_name }}"
+
 - name: Filter V-Nets by VPC
   ansible.builtin.set_fact:
     _existing_vnets: >-
       {{ _existing_vnets
+         | selectattr('vpc.id', 'defined')
          | selectattr('vpc.id', 'equalto', vnet_vpc_id | int)
          | list }}
   when: vnet_vpc_id is defined
@@ -37,9 +42,17 @@
   ansible.builtin.set_fact:
     _existing_vnets: >-
       {{ _existing_vnets
+         | selectattr('tenant.id', 'defined')
          | selectattr('tenant.id', 'equalto', vnet_tenant_id | int)
          | list }}
   when: vnet_tenant_id is defined
+
+- name: Keep same-name V-Net candidates when identity filtering found no match
+  ansible.builtin.set_fact:
+    _existing_vnets: "{{ _vnets_by_name }}"
+  when:
+    - _existing_vnets | length == 0
+    - _vnets_by_name | length > 0
 
 - name: Fail if the V-Net deletion identity is ambiguous
   ansible.builtin.assert:
