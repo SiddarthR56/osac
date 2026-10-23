@@ -53,6 +53,71 @@ class TestNetrisImmutableMismatch:
         assert mismatches[0]["expected"] == "10.1.0.0/24"
         assert mismatches[0]["actual"] == "10.0.0.0/24"
 
+    @pytest.mark.parametrize("actual", ["198.51.100.25", "198.51.100.25/32"])
+    def test_snat_ip_matches_bare_or_host_prefix(self, actual):
+        assert idempotency.netris_immutable_mismatch(
+            {"snatToIP": actual},
+            {"snatToIP": "198.51.100.25/32"},
+        ) == []
+
+    @pytest.mark.parametrize(
+        "actual",
+        ["198.51.100.26/32", "198.51.100.25/24", "not-an-ip"],
+    )
+    def test_snat_ip_rejects_different_or_non_host_value(self, actual):
+        mismatches = idempotency.netris_immutable_mismatch(
+            {"snatToIP": actual},
+            {"snatToIP": "198.51.100.25/32"},
+        )
+        assert len(mismatches) == 1
+        assert mismatches[0]["field"] == "snatToIP"
+
+    @pytest.mark.parametrize("actual", ["198.51.100.25", "198.51.100.25/32"])
+    def test_dnat_destination_address_matches_bare_or_host_prefix(self, actual):
+        assert idempotency.netris_immutable_mismatch(
+            {"destinationAddress": actual},
+            {"destinationAddress": "198.51.100.25/32"},
+        ) == []
+
+    def test_dnat_destination_address_preserves_network_prefix_comparison(self):
+        assert idempotency.netris_immutable_mismatch(
+            {"destinationAddress": "198.51.100.0/24"},
+            {"destinationAddress": "198.51.100.0/24"},
+        ) == []
+        mismatches = idempotency.netris_immutable_mismatch(
+            {"destinationAddress": "198.51.100.25"},
+            {"destinationAddress": "198.51.100.25/24"},
+        )
+        assert len(mismatches) == 1
+        assert mismatches[0]["field"] == "destinationAddress"
+
+    @pytest.mark.parametrize(
+        "actual", ["198.51.100.26/32", "198.51.100.25/24"]
+    )
+    def test_dnat_destination_address_rejects_different_host_or_prefix(self, actual):
+        mismatches = idempotency.netris_immutable_mismatch(
+            {"destinationAddress": actual},
+            {"destinationAddress": "198.51.100.25/32"},
+        )
+        assert len(mismatches) == 1
+        assert mismatches[0]["field"] == "destinationAddress"
+
+    @pytest.mark.parametrize("actual", [0, "0"])
+    def test_dnat_empty_port_matches_provider_zero(self, actual):
+        assert idempotency.netris_immutable_mismatch(
+            {"dnatToPort": actual}, {"dnatToPort": ""}
+        ) == []
+
+    @pytest.mark.parametrize(
+        "expected, actual", [("8080", 0), ("", 8080), ("8080", "8081")]
+    )
+    def test_dnat_port_rejects_explicit_mismatch(self, expected, actual):
+        mismatches = idempotency.netris_immutable_mismatch(
+            {"dnatToPort": actual}, {"dnatToPort": expected}
+        )
+        assert len(mismatches) == 1
+        assert mismatches[0]["field"] == "dnatToPort"
+
     def test_nested_vpc_id(self):
         existing = {"name": "vnet1", "vpc": {"id": 7}}
         assert (
