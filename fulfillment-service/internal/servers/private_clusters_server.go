@@ -465,6 +465,10 @@ func (s *PrivateClustersServer) validateClusterUpdateRequest(ctx context.Context
 
 func (s *PrivateClustersServer) prepareUpdatedCluster(ctx context.Context, current, candidate *privatev1.Cluster,
 	request *privatev1.ClustersUpdateRequest) error {
+	if current.GetMetadata().GetTenant() != candidate.GetMetadata().GetTenant() {
+		return grpcstatus.Error(grpccodes.InvalidArgument, "field 'metadata.tenant' is immutable")
+	}
+
 	// An unmasked metadata-only request omits spec. Keep the stored spec so its
 	// version and node sets are not interpreted as a metering-relevant change.
 	if request.GetUpdateMask() == nil && request.GetObject().GetSpec() == nil && current.GetSpec() != nil {
