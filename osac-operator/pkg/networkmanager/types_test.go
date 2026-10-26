@@ -183,6 +183,19 @@ var _ = Describe("ParseConfigMap", func() {
 		Entry("mixed IPv4 and IPv6", "ipv4,ipv6"),
 	)
 
+	It("rejects unsupported capability combinations", func() {
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "osac"},
+			Data: map[string]string{
+				"name":         "mixed-capabilities",
+				"capabilities": "ipv4,dpuSupport",
+			},
+		}
+
+		_, err := networkmanager.ParseConfigMap(cm, networkmanager.FabricManager)
+		Expect(err).To(MatchError(ContainSubstring("dpuSupport")))
+	})
+
 	It("deduplicates repeated capabilities", func() {
 		cm := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "osac"},
