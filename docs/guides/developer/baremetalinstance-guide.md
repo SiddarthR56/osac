@@ -92,9 +92,15 @@ osac create baremetalinstance \
 
 Bare-metal networking follows the accepted
 [BMaaS networking design](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1437-bmaas-networking/design.md).
-Shared networking resources and gates are described in the
+That design is the target contract; it does not assert every step is already
+enforced in shipping code. Baseline attachment work is under closed OSAC-1448 /
+OSAC-1510; remaining PR #357 delta implementation and deployed verification are
+[OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) and
+[OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820). Shared networking
+resources and gates are described in the
 [networking guide](networking-guide.md); this section covers only the
-BareMetalInstance lifecycle.
+BareMetalInstance lifecycle. Architecture summary:
+[Bare Metal Server Fulfillment](../../architecture/bm-server-fulfillment.md).
 
 **Ownership.** The deployment's Fabric Manager owns Fabric operations (port
 moves, SecurityGroup binding on the physical port, DHCP, and lease lookup).
