@@ -187,12 +187,12 @@ func (r *BareMetalInstanceReconciler) reconcileNetworking(
 		return ctrl.Result{}, err
 	}
 	if deleting {
-		// Keep any create/apply milestone intact for handleDeletion. Only replace
-		// a known pre-create state with an explicit skipped reason.
+		// Keep any create/apply milestone intact for handleDeletion. Mark a known
+		// pre-create state so deletion can safely release the host.
 		if !networkAttachmentMayHaveBeenApplied(bareMetalInstance) &&
 			!networkAttachmentCreateMayBeInFlight(bareMetalInstance) {
 			setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
-				v1alpha1.HostConditionReasonNetworkAttachmentCreationSkipped,
+				v1alpha1.HostConditionReasonNetworkAttachmentNotCreated,
 				"NetworkAttachment creation skipped because deletion has started")
 		}
 		return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
@@ -302,7 +302,7 @@ func (r *BareMetalInstanceReconciler) createNetworkAttachment(
 			return ctrl.Result{}, err
 		}
 		status.MACAddress = mac
-		setNetworkAttachmentsReady(bmi, metav1.ConditionFalse, v1alpha1.HostConditionReasonNetworkAttachmentRecordingMAC,
+		setNetworkAttachmentsReady(bmi, metav1.ConditionFalse, v1alpha1.HostConditionReasonNetworkAttachmentNotCreated,
 			"Recording the selected interface MAC before creating the network attachment")
 		return ctrl.Result{RequeueAfter: r.ProvisionPollIntervalDuration}, nil
 	}
@@ -345,7 +345,7 @@ func (r *BareMetalInstanceReconciler) createNetworkAttachment(
 	if err := r.Create(ctx, na); err != nil && !apierrors.IsAlreadyExists(err) {
 		if !createIntentAlreadyPersisted && networkAttachmentCreateWasRejected(err) {
 			setNetworkAttachmentsReady(bmi, metav1.ConditionFalse,
-				v1alpha1.HostConditionReasonNetworkAttachmentCreateRejected,
+				v1alpha1.HostConditionReasonNetworkAttachmentNotCreated,
 				fmt.Sprintf("NetworkAttachment creation was rejected: %v", err))
 		}
 		return ctrl.Result{}, fmt.Errorf("create NetworkAttachment %s: %w", key.Name, err)
@@ -466,9 +466,11 @@ func networkAttachmentMayHaveBeenApplied(bmi *v1alpha1.BareMetalInstance) bool {
 			"Skipped",
 			v1alpha1.HostConditionReasonTemplateFailed,
 			v1alpha1.HostConditionReasonSelectedPortMACUnavailable,
-			v1alpha1.HostConditionReasonNetworkAttachmentRecordingMAC,
-			v1alpha1.HostConditionReasonNetworkAttachmentCreateRejected,
-			v1alpha1.HostConditionReasonNetworkAttachmentCreationSkipped,
+			v1alpha1.HostConditionReasonNetworkAttachmentNotCreated,
+			// Keep pre-create reasons from older BMF versions safe during upgrades.
+			"NetworkAttachmentRecordingMAC",
+			"NetworkAttachmentCreateRejected",
+			"NetworkAttachmentCreationSkipped",
 			v1alpha1.HostConditionReasonNetworkAttachmentCreating:
 			// These reasons identify a known pre-create state or an uncertain
 			// create request. The latter is handled separately by the deletion
