@@ -94,7 +94,18 @@ func createClusterInState(
 func createBareMetalInstanceInState(
 	ctx context.Context,
 	bareMetalInstanceDao *dao.GenericDAO[*privatev1.BareMetalInstance],
+	state privatev1.BareMetalInstanceState,
+	ipAddress string,
 ) *privatev1.BareMetalInstance {
+	var attachmentStatuses []*privatev1.BareMetalNetworkAttachmentStatus
+	if ipAddress != "" {
+		attachmentStatuses = []*privatev1.BareMetalNetworkAttachmentStatus{
+			privatev1.BareMetalNetworkAttachmentStatus_builder{
+				IpAddress: ipAddress,
+				Primary:   true,
+			}.Build(),
+		}
+	}
 	resp, err := bareMetalInstanceDao.Create().SetObject(
 		privatev1.BareMetalInstance_builder{
 			Metadata: privatev1.Metadata_builder{
@@ -105,16 +116,13 @@ func createBareMetalInstanceInState(
 				CatalogItem: privatev1.BareMetalInstanceCatalogItemReference_builder{Id: "bcm_h100"}.Build(),
 			}.Build(),
 			Status: privatev1.BareMetalInstanceStatus_builder{
-				State: privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_RUNNING,
+				State: state,
 				Hub:   "network-hub-a",
 				Conditions: []*privatev1.BareMetalInstanceCondition{privatev1.BareMetalInstanceCondition_builder{
 					Type:   privatev1.BareMetalInstanceConditionType_BARE_METAL_INSTANCE_CONDITION_TYPE_READY,
 					Status: privatev1.ConditionStatus_CONDITION_STATUS_TRUE,
 				}.Build()},
-				NetworkAttachmentStatuses: []*privatev1.BareMetalNetworkAttachmentStatus{privatev1.BareMetalNetworkAttachmentStatus_builder{
-					IpAddress: "10.0.0.30",
-					Primary:   true,
-				}.Build()},
+				NetworkAttachmentStatuses: attachmentStatuses,
 			}.Build(),
 		}.Build(),
 	).Do(ctx)
@@ -874,7 +882,8 @@ var _ = Describe("Private external IP attachments server", func() {
 		It("Creates an attachment with a BareMetalInstance target", func() {
 			eip := createExternalIPInState(ctx, externalIPDao, sharedPool.GetId(),
 				privatev1.ExternalIPState_EXTERNAL_IP_STATE_ALLOCATED, false)
-			bmi := createBareMetalInstanceInState(ctx, bareMetalInstanceDao)
+			bmi := createBareMetalInstanceInState(ctx, bareMetalInstanceDao,
+				privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_RUNNING, "10.0.0.30")
 
 			response, err := server.Create(ctx, privatev1.ExternalIPAttachmentsCreateRequest_builder{
 				Object: privatev1.ExternalIPAttachment_builder{
@@ -1415,6 +1424,48 @@ var _ = Describe("Private external IP attachments server", func() {
 			Expect(err.Error()).To(ContainSubstring("BareMetalInstance"))
 			Expect(err.Error()).To(ContainSubstring("does not exist"))
 		})
+
+		DescribeTable("Rejects Create when BareMetalInstance endpoint is not ready",
+			func(state privatev1.BareMetalInstanceState, ipAddress string, deleting bool) {
+				eip := createExternalIPInState(ctx, externalIPDao, sharedPool.GetId(),
+					privatev1.ExternalIPState_EXTERNAL_IP_STATE_ALLOCATED, false)
+				bmi := createBareMetalInstanceInState(ctx, bareMetalInstanceDao, state, ipAddress)
+				if deleting {
+					bmi.GetMetadata().SetFinalizers([]string{"test-finalizer"})
+					_, err := bareMetalInstanceDao.Update().SetObject(bmi).Do(ctx)
+					Expect(err).ToNot(HaveOccurred())
+					_, err = bareMetalInstanceDao.Delete().SetId(bmi.GetId()).Do(ctx)
+					Expect(err).ToNot(HaveOccurred())
+					response, err := bareMetalInstanceDao.Get().SetId(bmi.GetId()).Do(ctx)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(response.GetObject().GetMetadata().HasDeletionTimestamp()).To(BeTrue())
+				}
+
+				name := fmt.Sprintf("test-%s", uuid.NewString()[:8])
+				response, err := server.Create(ctx, privatev1.ExternalIPAttachmentsCreateRequest_builder{
+					Object: privatev1.ExternalIPAttachment_builder{
+						Metadata: privatev1.Metadata_builder{Name: name}.Build(),
+						Spec: privatev1.ExternalIPAttachmentSpec_builder{
+							ExternalIp:        privatev1.ExternalIPLocalReference_builder{Id: eip.GetId()}.Build(),
+							BaremetalInstance: privatev1.BareMetalInstanceLocalReference_builder{Id: bmi.GetId()}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build())
+
+				Expect(response).To(BeNil())
+				Expect(err).To(HaveOccurred())
+				Expect(grpcstatus.Code(err)).To(Equal(grpccodes.FailedPrecondition))
+				Expect(err.Error()).To(ContainSubstring("must be RUNNING with its network attachment address"))
+
+				stored, err := server.lifecycle.externalIPAttachmentDao.List().
+					SetFilter(fmt.Sprintf("this.metadata.name == %q", name)).Do(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(stored.GetItems()).To(BeEmpty())
+			},
+			Entry("a stopped BMI", privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_STOPPED, "10.0.0.30", false),
+			Entry("a BMI without a network attachment IP", privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_RUNNING, "", false),
+			Entry("a deleting BMI", privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_RUNNING, "10.0.0.30", true),
+		)
 	})
 
 	Describe("Uniqueness constraints", func() {

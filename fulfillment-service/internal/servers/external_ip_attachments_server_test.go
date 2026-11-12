@@ -247,7 +247,8 @@ var _ = Describe("External IP attachments server", func() {
 		It("Creates and gets object with BareMetalInstance target", func() {
 			eip := createExternalIPInState(ctx, externalIPDao, sharedPoolID,
 				privatev1.ExternalIPState_EXTERNAL_IP_STATE_ALLOCATED, false)
-			bmi := createBareMetalInstanceInState(ctx, bareMetalInstanceDao)
+			bmi := createBareMetalInstanceInState(ctx, bareMetalInstanceDao,
+				privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_RUNNING, "10.0.0.30")
 
 			createResponse, err := externalIPAttachmentsServer.Create(ctx,
 				publicv1.ExternalIPAttachmentsCreateRequest_builder{
