@@ -5,8 +5,13 @@ import (
 	"errors"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+
 	bmfov1alpha1 "github.com/osac-project/osac/bare-metal-fulfillment-operator/api/v1alpha1"
 	v1alpha1 "github.com/osac-project/osac/osac-operator/api/v1alpha1"
+	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -309,6 +314,107 @@ func assertCleanupFinalizer(t *testing.T, c client.Client, want bool) {
 	if got := controllerutil.ContainsFinalizer(getCleanupBMI(t, c), cleanupFinalizer); got != want {
 		t.Fatalf("cleanup finalizer present = %t, want %t", got, want)
 	}
+}
+
+func TestBareMetalInstanceCleanupRequiresAlwaysRunStrategyForAutomaticAttachment(t *testing.T) {
+	target := testAutomaticAttachmentTarget(bareMetalInstanceOwner, cleanupBMID, "tenant-1")
+	for _, tc := range []struct {
+		name        string
+		phase       bmfov1alpha1.BareMetalInstancePhaseType
+		runStrategy bmfov1alpha1.BareMetalInstanceRunStrategy
+		primaryIP   string
+		wantGet     int
+		wantCreate  int
+	}{
+		{name: "ready always with primary IP", phase: bmfov1alpha1.BareMetalInstancePhaseReady,
+			runStrategy: bmfov1alpha1.RunStrategyAlways, primaryIP: "192.0.2.12", wantGet: 1, wantCreate: 1},
+		{name: "ready halted with primary IP", phase: bmfov1alpha1.BareMetalInstancePhaseReady,
+			runStrategy: bmfov1alpha1.RunStrategyHalted, primaryIP: "192.0.2.12"},
+		{name: "ready with unspecified run strategy", phase: bmfov1alpha1.BareMetalInstancePhaseReady,
+			primaryIP: "192.0.2.12"},
+		{name: "not ready", phase: bmfov1alpha1.BareMetalInstancePhaseProgressing,
+			runStrategy: bmfov1alpha1.RunStrategyAlways, primaryIP: "192.0.2.12"},
+		{name: "missing primary IP", phase: bmfov1alpha1.BareMetalInstancePhaseReady,
+			runStrategy: bmfov1alpha1.RunStrategyAlways},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bmi := cleanupTestBMI(cleanupBMID)
+			bmi.Finalizers = []string{cleanupFinalizer}
+			bmi.Status.Phase = tc.phase
+			bmi.Status.RunStrategy = tc.runStrategy
+			if tc.primaryIP != "" {
+				bmi.Status.NetworkAttachmentStatuses = []bmfov1alpha1.BareMetalNetworkAttachmentStatus{{
+					Primary: true, IPAddress: tc.primaryIP,
+				}}
+			}
+			ip := testAutomaticExternalIP("eip-1", target, "", "198.51.100.20")
+			c := cleanupTestClient(t, bmi, ip)
+			instancesClient := &mockBareMetalInstancesClient{getResponse: automaticExternalAccessBMIResponse()}
+			attachmentsClient := &testExternalIPAttachmentsClient{}
+			r := NewBareMetalInstanceCleanupReconciler(c, cleanupBMNamespace, "networking")
+			r.BareMetalInstancesClient = instancesClient
+			r.ExternalIPAttachmentsClient = attachmentsClient
+
+			if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{
+				Name: "instance", Namespace: cleanupBMNamespace,
+			}}); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if instancesClient.getCount != tc.wantGet {
+				t.Errorf("Fulfillment Get calls = %d, want %d", instancesClient.getCount, tc.wantGet)
+			}
+			if len(attachmentsClient.created) != tc.wantCreate {
+				t.Errorf("created attachments = %d, want %d", len(attachmentsClient.created), tc.wantCreate)
+			}
+		})
+	}
+}
+
+func TestBareMetalInstanceCleanupRetriesAutomaticAttachmentReadinessAtThirtySeconds(t *testing.T) {
+	target := testAutomaticAttachmentTarget(bareMetalInstanceOwner, cleanupBMID, "tenant-1")
+	for _, code := range []codes.Code{codes.FailedPrecondition, codes.NotFound} {
+		t.Run(code.String(), func(t *testing.T) {
+			bmi := cleanupTestBMI(cleanupBMID)
+			bmi.Finalizers = []string{cleanupFinalizer}
+			bmi.Status = bmfov1alpha1.BareMetalInstanceStatus{
+				Phase: bmfov1alpha1.BareMetalInstancePhaseReady, RunStrategy: bmfov1alpha1.RunStrategyAlways,
+				NetworkAttachmentStatuses: []bmfov1alpha1.BareMetalNetworkAttachmentStatus{{
+					Primary: true, IPAddress: "192.0.2.12",
+				}},
+			}
+			ip := testAutomaticExternalIP("eip-1", target, "", "198.51.100.20")
+			c := cleanupTestClient(t, bmi, ip)
+			instancesClient := &mockBareMetalInstancesClient{getResponse: automaticExternalAccessBMIResponse()}
+			attachmentsClient := &testExternalIPAttachmentsClient{createErr: status.Error(code, "target is not ready yet")}
+			r := NewBareMetalInstanceCleanupReconciler(c, cleanupBMNamespace, "networking")
+			r.BareMetalInstancesClient = instancesClient
+			r.ExternalIPAttachmentsClient = attachmentsClient
+
+			result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{
+				Name: "instance", Namespace: cleanupBMNamespace,
+			}})
+			if err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if result.RequeueAfter != automaticExternalAccessRecheck {
+				t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, automaticExternalAccessRecheck)
+			}
+			if len(attachmentsClient.created) != 1 {
+				t.Fatalf("Create calls = %d, want 1", len(attachmentsClient.created))
+			}
+		})
+	}
+}
+
+func automaticExternalAccessBMIResponse() *privatev1.BareMetalInstancesGetResponse {
+	return privatev1.BareMetalInstancesGetResponse_builder{
+		Object: privatev1.BareMetalInstance_builder{
+			Metadata: privatev1.Metadata_builder{Tenant: "tenant-1"}.Build(),
+			Spec: privatev1.BareMetalInstanceSpec_builder{
+				AutoExternalIpAttachment: proto.Bool(true),
+			}.Build(),
+		}.Build(),
+	}.Build()
 }
 
 type failCleanupListClient struct {
