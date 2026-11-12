@@ -2501,8 +2501,9 @@ var _ = Describe("BareMetalInstance network handoff reboot (OSAC-1448)", func() 
 	})
 
 	Describe("reconcileNetworkProvisionAndDiscovery IP discovery gate", func() {
-		It("releases the host when the late MAC lookup fails", func() {
-			bareMetalInstance.Spec.TemplateID = shared.OsacNoopTemplate
+		It("keeps an imaged host assigned when the late MAC lookup fails", func() {
+			bareMetalInstance.Spec.TemplateID = "image_template"
+			bareMetalInstance.Spec.ExternalHostID = "host-already-imaged"
 			bareMetalInstance.Spec.NetworkAttachments = []v1alpha1.BareMetalNetworkAttachment{{
 				SubnetRef: "subnet-1", Interface: "eth0", Primary: true,
 			}}
@@ -2519,11 +2520,24 @@ var _ = Describe("BareMetalInstance network handoff reboot (OSAC-1448)", func() 
 					Expect(client.IgnoreNotFound(k8sClient.Delete(cleanupCtx, latest))).To(Succeed())
 				}
 			})
+			bareMetalInstance.SetStatusCondition(v1alpha1.HostConditionProvisionTemplateComplete,
+				metav1.ConditionTrue, "Succeeded", "Provision job completed successfully")
+			bareMetalInstance.Status.ProvisioningJobs = []opv1alpha1.JobStatus{{
+				JobID: "image-job", Type: opv1alpha1.JobTypeProvision,
+				State: opv1alpha1.JobStateSucceeded, Timestamp: metav1.Now(),
+			}}
 			setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionTrue, "Succeeded", "Previously ready")
+			Expect(k8sClient.Status().Update(ctx, bareMetalInstance)).To(Succeed())
 			reconciler.NetworkingEnabled = true
+			reconciler.ProvisioningProvider = &mockProvisioningProvider{}
+			unassigned := false
 			reconciler.InventoryClient = &mockInventoryClient{
 				getHostLogicalPortMACsFunc: func(context.Context, string) (map[string]string, error) {
 					return map[string]string{}, nil
+				},
+				unassignHostFunc: func(context.Context, string, string, []string) error {
+					unassigned = true
+					return nil
 				},
 			}
 
@@ -2532,7 +2546,8 @@ var _ = Describe("BareMetalInstance network handoff reboot (OSAC-1448)", func() 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(ctrl.Result{}))
 			Expect(bareMetalInstance.Status.Phase).To(Equal(v1alpha1.BareMetalInstancePhaseFailed))
-			Expect(bareMetalInstance.Spec.ExternalHostID).To(BeEmpty())
+			Expect(bareMetalInstance.Spec.ExternalHostID).To(Equal("host-already-imaged"))
+			Expect(unassigned).To(BeFalse(), "an imaged host must stay assigned for normal deletion cleanup")
 			allocated := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionAllocated)
 			Expect(allocated.Status).To(Equal(metav1.ConditionFalse))
 			Expect(allocated.Reason).To(Equal(v1alpha1.HostConditionReasonSelectedPortMACUnavailable))

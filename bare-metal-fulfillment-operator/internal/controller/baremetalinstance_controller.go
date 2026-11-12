@@ -396,12 +396,18 @@ func (r *BareMetalInstanceReconciler) reconcileInventory(ctx context.Context, ba
 	}
 	if inventoryHost == nil {
 		log.Info("Host is acquired by a different BareMetalInstance, unsetting ExternalHostID", "InventoryHostID", hostID)
-		bareMetalInstance.Spec.ExternalHostID = ""
 		// The recorded interface MAC belongs to this host. Force a fresh lookup
 		// after another host is selected so the NetworkAttachment cannot reuse it.
 		for i := range bareMetalInstance.Status.NetworkAttachmentStatuses {
 			bareMetalInstance.Status.NetworkAttachmentStatuses[i].MACAddress = ""
 		}
+		// Status is a subresource. Persist the cleared MAC before changing spec so
+		// the spec Update cannot discard the reset and reuse the previous host's MAC.
+		if err = r.persistStatusIfPersisted(ctx, bareMetalInstance); err != nil {
+			log.Error(err, "Failed to clear stale interface MAC status")
+			return ctrl.Result{}, err
+		}
+		bareMetalInstance.Spec.ExternalHostID = ""
 		if err = r.Update(ctx, bareMetalInstance); err != nil {
 			log.Error(err, "Failed to update BareMetalInstance CR")
 			return ctrl.Result{}, err
@@ -428,6 +434,12 @@ func (r *BareMetalInstanceReconciler) reconcileInventory(ctx context.Context, ba
 				return ctrl.Result{}, macErr
 			}
 			status.MACAddress = mac
+			// Persist the selected-port identity before HostClass enables the
+			// provisioning path. A normal spec Update does not write status.
+			if err = r.persistStatusIfPersisted(ctx, bareMetalInstance); err != nil {
+				log.Error(err, "Failed to persist selected interface MAC before provisioning")
+				return ctrl.Result{}, fmt.Errorf("persist selected interface MAC before provisioning: %w", err)
+			}
 		}
 		if inventoryHost.Name != "" {
 			bareMetalInstance.Spec.ExternalHostName = inventoryHost.Name
@@ -463,8 +475,20 @@ func (r *BareMetalInstanceReconciler) reconcileInventory(ctx context.Context, ba
 	return ctrl.Result{}, nil
 }
 
+// persistStatusIfPersisted writes status for API-backed objects. Reconcile
+// always supplies a resource version; the empty-resource-version allowance is
+// retained for direct unit tests that pass an in-memory object.
+func (r *BareMetalInstanceReconciler) persistStatusIfPersisted(
+	ctx context.Context, bmi *v1alpha1.BareMetalInstance,
+) error {
+	if bmi.ResourceVersion == "" {
+		return nil
+	}
+	return r.Status().Update(ctx, bmi)
+}
+
 // failSelectedPortMAC records the selected-interface failure and releases the
-// assigned host, preserving the caller's inventory-lock ownership.
+// host only when provisioning has not started, preserving inventory-lock ownership.
 func (r *BareMetalInstanceReconciler) failSelectedPortMAC(
 	ctx context.Context, bmi *v1alpha1.BareMetalInstance, diagnostic string, inventoryLocked bool,
 ) (ctrl.Result, error) {
@@ -479,8 +503,9 @@ func (r *BareMetalInstanceReconciler) failSelectedPortMAC(
 	return r.releaseHostWithoutSelectedPortMAC(ctx, bmi, diagnostic)
 }
 
-// releaseHostWithoutSelectedPortMAC returns an assigned host to inventory
-// after the selected physical port cannot be used for tenant networking.
+// releaseHostWithoutSelectedPortMAC returns an assigned host to inventory after
+// the selected physical port cannot be used for tenant networking, provided
+// provisioning has not started.
 func (r *BareMetalInstanceReconciler) releaseHostWithoutSelectedPortMAC(
 	ctx context.Context, bmi *v1alpha1.BareMetalInstance, diagnostic string,
 ) (ctrl.Result, error) {
@@ -510,6 +535,11 @@ func (r *BareMetalInstanceReconciler) releaseHostWithoutSelectedPortMACLocked(
 			v1alpha1.HostConditionReasonSelectedPortMACUnavailable, diagnostic)
 		return ctrl.Result{}, nil
 	}
+	if hasProvisioningActivity(bmi) {
+		// Keep ownership of an imaged or potentially-imaged host. The normal
+		// deletion path deprovisions it before releasing inventory ownership.
+		return ctrl.Result{}, nil
+	}
 
 	if r.InventoryClient == nil {
 		return ctrl.Result{}, errors.New("inventory client not configured while releasing host")
@@ -530,6 +560,11 @@ func (r *BareMetalInstanceReconciler) releaseHostWithoutSelectedPortMACLocked(
 	bmi.SetStatusCondition(v1alpha1.HostConditionAllocated, metav1.ConditionFalse,
 		v1alpha1.HostConditionReasonSelectedPortMACUnavailable, diagnostic)
 	return ctrl.Result{}, nil
+}
+
+func hasProvisioningActivity(bmi *v1alpha1.BareMetalInstance) bool {
+	return bmi.IsStatusConditionTrue(v1alpha1.HostConditionProvisionTemplateComplete) ||
+		len(bmi.Status.ProvisioningJobs) > 0
 }
 
 func networkAttachmentStatusFor(
