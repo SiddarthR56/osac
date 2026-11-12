@@ -417,16 +417,7 @@ func (r *BareMetalInstanceReconciler) reconcileInventory(ctx context.Context, ba
 		if status.MACAddress == "" {
 			mac, macErr := r.selectedPortMAC(ctx, bareMetalInstance, attachment.Interface)
 			if errors.Is(macErr, errSelectedPortMACUnavailable) {
-				bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
-				bareMetalInstance.SetStatusCondition(
-					v1alpha1.HostConditionAllocated,
-					metav1.ConditionFalse,
-					v1alpha1.HostConditionReasonSelectedPortMACUnavailable,
-					macErr.Error(),
-				)
-				r.recordBMIEvent(bareMetalInstance, corev1.EventTypeWarning,
-					v1alpha1.HostConditionReasonSelectedPortMACUnavailable, macErr.Error())
-				return r.releaseHostWithoutSelectedPortMACLocked(ctx, bareMetalInstance, macErr.Error())
+				return r.failSelectedPortMAC(ctx, bareMetalInstance, macErr.Error(), true)
 			}
 			if macErr != nil {
 				return ctrl.Result{}, macErr
@@ -465,6 +456,22 @@ func (r *BareMetalInstanceReconciler) reconcileInventory(ctx context.Context, ba
 
 	log.Info("Successfully fulfilled BareMetalInstance", "InventoryHostID", bareMetalInstance.Spec.ExternalHostID)
 	return ctrl.Result{}, nil
+}
+
+// failSelectedPortMAC records the selected-interface failure and releases the
+// assigned host, preserving the caller's inventory-lock ownership.
+func (r *BareMetalInstanceReconciler) failSelectedPortMAC(
+	ctx context.Context, bmi *v1alpha1.BareMetalInstance, diagnostic string, inventoryLocked bool,
+) (ctrl.Result, error) {
+	bmi.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
+	bmi.SetStatusCondition(v1alpha1.HostConditionAllocated, metav1.ConditionFalse,
+		v1alpha1.HostConditionReasonSelectedPortMACUnavailable, diagnostic)
+	r.recordBMIEvent(bmi, corev1.EventTypeWarning,
+		v1alpha1.HostConditionReasonSelectedPortMACUnavailable, diagnostic)
+	if inventoryLocked {
+		return r.releaseHostWithoutSelectedPortMACLocked(ctx, bmi, diagnostic)
+	}
+	return r.releaseHostWithoutSelectedPortMAC(ctx, bmi, diagnostic)
 }
 
 // releaseHostWithoutSelectedPortMAC returns an assigned host to inventory
@@ -995,12 +1002,6 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkHandoffPowerCycle(
 		return ctrl.Result{}, nil
 	}
 
-	setErr := r.ManagementClient.SetPowerState(ctx, bmi.Spec.ExternalHostID, target)
-	if setErr != nil && !errors.Is(setErr, management.ErrTransitioning) {
-		r.failNetworkHandoff(bmi, fmt.Sprintf("SetPowerState(%s) failed: %v", target, setErr))
-		return ctrl.Result{}, nil
-	}
-
 	powerStatus, getErr := r.ManagementClient.GetPowerState(ctx, bmi.Spec.ExternalHostID)
 	if getErr == nil && powerStatus != nil && !powerStatus.IsTransitioning && powerStatus.State == target {
 		if target == management.PowerOff {
@@ -1028,18 +1029,25 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkHandoffPowerCycle(
 		return ctrl.Result{}, nil
 	}
 
-	message := fmt.Sprintf("Waiting to observe host power state %s", target)
-	if errors.Is(setErr, management.ErrTransitioning) {
-		message = "Management backend reports a power transition in progress"
-	}
-	if getErr != nil {
+	var message string
+	switch {
+	case getErr != nil:
 		message = fmt.Sprintf("GetPowerState failed while waiting for %s: %v", target, getErr)
-	} else if powerStatus == nil {
+	case powerStatus == nil:
 		message = "Management backend returned no power status"
-	} else if powerStatus.IsTransitioning {
+	case powerStatus.IsTransitioning:
 		message = fmt.Sprintf("Host is transitioning; waiting for %s", target)
-	} else if powerStatus.State != target {
-		message = fmt.Sprintf("Waiting for %s; observed %s", target, powerStatus.State)
+	default:
+		setErr := r.ManagementClient.SetPowerState(ctx, bmi.Spec.ExternalHostID, target)
+		if setErr != nil && !errors.Is(setErr, management.ErrTransitioning) {
+			r.failNetworkHandoff(bmi, fmt.Sprintf("SetPowerState(%s) failed: %v", target, setErr))
+			return ctrl.Result{}, nil
+		}
+		if errors.Is(setErr, management.ErrTransitioning) {
+			message = "Management backend reports a power transition in progress"
+		} else {
+			message = fmt.Sprintf("Requested power state %s; waiting for confirmation", target)
+		}
 	}
 	bmi.SetStatusCondition(v1alpha1.HostConditionNetworkHandoffComplete, metav1.ConditionFalse, stepReason, message)
 	log.V(1).Info("Network handoff power step is pending", "host", bmi.Spec.ExternalHostID, "target", target)
@@ -1098,6 +1106,15 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkOffboardShutdown(
 		return ctrl.Result{}, nil
 	}
 
+	if powerStatus.State == management.PowerOn && !powerStatus.IsTransitioning &&
+		offboardCond != nil && offboardCond.Status == metav1.ConditionFalse &&
+		offboardCond.Reason == v1alpha1.HostConditionReasonPoweringOff {
+		bmi.SetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete,
+			metav1.ConditionFalse, v1alpha1.HostConditionReasonPoweringOff,
+			"Waiting to observe the requested host power-off")
+		return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
+	}
+
 	if powerStatus.IsTransitioning {
 		log.Info("Host transitioning, waiting for power off", "host", bmi.Spec.ExternalHostID)
 		bmi.SetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete,
@@ -1117,7 +1134,7 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkOffboardShutdown(
 		return r.retryNetworkOffboarding(bmi, fmt.Sprintf("SetPowerState(OFF) failed: %v", err))
 	}
 	bmi.SetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete,
-		metav1.ConditionFalse, v1alpha1.HostConditionReasonOffboarding,
+		metav1.ConditionFalse, v1alpha1.HostConditionReasonPoweringOff,
 		"Powering off host before moving port to provisioning network")
 	log.Info("Triggered offboard shutdown", "host", bmi.Spec.ExternalHostID)
 	return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
@@ -1350,8 +1367,8 @@ func (r *BareMetalInstanceReconciler) handleDeletion(ctx context.Context, bareMe
 			bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseDeleting
 			return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
 		}
-		if len(keys) > 0 {
-			if creating {
+		if len(keys) > 0 || networkAttachmentMayHaveBeenApplied(bareMetalInstance) {
+			if len(keys) > 0 && creating {
 				setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
 					v1alpha1.HostConditionReasonOffboarding, "Waiting for NetworkAttachment cleanup")
 			}
@@ -1428,17 +1445,7 @@ func (r *BareMetalInstanceReconciler) handleDeletion(ctx context.Context, bareMe
 		defer inventory.Unlock(hostID)
 
 		// Collect non-persistent inventory labels to remove
-		var labelsToRemove []string
-		if bareMetalInstance.Spec.InventoryLabels != nil {
-			labelsToRemove = make([]string, 0, len(bareMetalInstance.Spec.InventoryLabels))
-			for key := range bareMetalInstance.Spec.InventoryLabels {
-				labelsToRemove = append(labelsToRemove, key)
-			}
-		}
-		if _, ok := bareMetalInstance.GetPoolID(); ok {
-			labelsToRemove = append(labelsToRemove, shared.OsacBareMetalPoolIDLabel)
-		}
-
+		labelsToRemove := inventoryLabelsToRemove(bareMetalInstance)
 		err := r.InventoryClient.UnassignHost(ctx, hostID, string(bareMetalInstance.UID), labelsToRemove)
 		if err != nil {
 			log.Error(err, "Failed to unassign host in inventory", "InventoryHostID", hostID)

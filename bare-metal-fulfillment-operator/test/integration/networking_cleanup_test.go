@@ -236,6 +236,19 @@ var _ = Describe("BMF networking cleanup ownership", func() {
 		Expect(found).To(BeTrue())
 		Expect(mac).To(Equal("52:54:00:12:34:56"))
 
+		By("rejecting an invalid selected-port MAC at the Kubernetes API boundary")
+		invalidStatus := `{
+		  "status": {
+		    "networkAttachmentStatuses": [
+		      {"interface": "eth0", "subnetRef": "test-subnet", "macAddress": "not-a-mac"}
+		    ]
+		  }
+		}`
+		output, err = exec.Command("kubectl", "patch", "baremetalinstance", name,
+			"-n", namespace, "--subresource=status", "--type=merge", "-p", invalidStatus).CombinedOutput()
+		Expect(err).To(HaveOccurred(), string(output))
+		Expect(string(output)).To(ContainSubstring("match"))
+
 		By("simulating the networking controller owning its cleanup finalizer")
 		finalizers := append(attachment.GetFinalizers(), osacNetworkAttachmentFinalizer)
 		patch, err := json.Marshal(map[string]any{bmfCleanupMetadataKey: map[string]any{

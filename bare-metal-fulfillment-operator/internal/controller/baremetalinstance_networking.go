@@ -187,9 +187,14 @@ func (r *BareMetalInstanceReconciler) reconcileNetworking(
 		return ctrl.Result{}, err
 	}
 	if deleting {
-		setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
-			v1alpha1.HostConditionReasonOffboarding,
-			"NetworkAttachment creation skipped because deletion has started")
+		// Keep any create/apply milestone intact for handleDeletion. Only replace
+		// a known pre-create state with an explicit skipped reason.
+		if !networkAttachmentMayHaveBeenApplied(bareMetalInstance) &&
+			!networkAttachmentCreateMayBeInFlight(bareMetalInstance) {
+			setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
+				v1alpha1.HostConditionReasonNetworkAttachmentCreationSkipped,
+				"NetworkAttachment creation skipped because deletion has started")
+		}
 		return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
 	}
 
@@ -265,7 +270,8 @@ func (r *BareMetalInstanceReconciler) reconcileNetworking(
 		if ready != nil && ready.Message != "" {
 			message = ready.Message
 		}
-		setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse, v1alpha1.HostConditionReasonProgressing, message)
+		setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
+			v1alpha1.HostConditionReasonNetworkAttachmentApplying, message)
 		return ctrl.Result{RequeueAfter: r.ProvisionPollIntervalDuration}, nil
 	}
 }
@@ -290,18 +296,13 @@ func (r *BareMetalInstanceReconciler) createNetworkAttachment(
 	if status.MACAddress == "" {
 		mac, err := r.selectedPortMAC(ctx, bmi, attachment.Interface)
 		if errors.Is(err, errSelectedPortMACUnavailable) {
-			bmi.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
-			bmi.SetStatusCondition(v1alpha1.HostConditionAllocated, metav1.ConditionFalse,
-				v1alpha1.HostConditionReasonSelectedPortMACUnavailable, err.Error())
-			r.recordBMIEvent(bmi, corev1.EventTypeWarning,
-				v1alpha1.HostConditionReasonSelectedPortMACUnavailable, err.Error())
-			return r.releaseHostWithoutSelectedPortMAC(ctx, bmi, err.Error())
+			return r.failSelectedPortMAC(ctx, bmi, err.Error(), false)
 		}
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 		status.MACAddress = mac
-		setNetworkAttachmentsReady(bmi, metav1.ConditionFalse, v1alpha1.HostConditionReasonProgressing,
+		setNetworkAttachmentsReady(bmi, metav1.ConditionFalse, v1alpha1.HostConditionReasonNetworkAttachmentRecordingMAC,
 			"Recording the selected interface MAC before creating the network attachment")
 		return ctrl.Result{RequeueAfter: r.ProvisionPollIntervalDuration}, nil
 	}
@@ -343,7 +344,7 @@ func (r *BareMetalInstanceReconciler) createNetworkAttachment(
 		return ctrl.Result{}, fmt.Errorf("create NetworkAttachment %s: %w", key.Name, err)
 	}
 	log.Info("Ensured NetworkAttachment exists", "networkAttachment", key.Name)
-	setNetworkAttachmentsReady(bmi, metav1.ConditionFalse, v1alpha1.HostConditionReasonProgressing,
+	setNetworkAttachmentsReady(bmi, metav1.ConditionFalse, v1alpha1.HostConditionReasonNetworkAttachmentApplying,
 		"Waiting for the network attachment")
 	return ctrl.Result{RequeueAfter: r.ProvisionPollIntervalDuration}, nil
 }
@@ -402,9 +403,21 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkingDeletion(
 				"Waiting for an uncertain NetworkAttachment create request to resolve")
 			return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, false, nil
 		}
-		if len(keys) > 0 && creating {
+		if len(keys) == 0 && networkAttachmentMayHaveBeenApplied(bareMetalInstance) &&
+			!networkAttachmentCleanupStarted(bareMetalInstance) {
 			setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
-				v1alpha1.HostConditionReasonOffboarding, "Waiting for NetworkAttachment cleanup")
+				v1alpha1.HostConditionReasonNetworkAttachmentMissing,
+				"NetworkAttachment is missing after it may have been applied; retaining host ownership until cleanup is confirmed")
+			return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, false, nil
+		}
+		if len(keys) > 0 && !networkAttachmentCleanupStarted(bareMetalInstance) {
+			setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
+				v1alpha1.HostConditionReasonNetworkAttachmentCleanupStarted,
+				"Persisting NetworkAttachment cleanup intent before releasing host ownership")
+			if err := r.Status().Update(ctx, bareMetalInstance); err != nil {
+				return ctrl.Result{}, false, fmt.Errorf("persist NetworkAttachment cleanup intent: %w", err)
+			}
+			return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, false, nil
 		}
 		allGone := true
 		for _, key := range keys {
@@ -417,13 +430,50 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkingDeletion(
 			allGone = allGone && gone
 		}
 		if !allGone {
-			setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
-				v1alpha1.HostConditionReasonOffboarding, "Waiting for network attachment cleanup")
 			return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, false, nil
 		}
 	}
 
 	return r.removeNetworkingFinalizer(ctx, bareMetalInstance)
+}
+
+func networkAttachmentMayHaveBeenApplied(bmi *v1alpha1.BareMetalInstance) bool {
+	attachmentsReady := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
+	if attachmentsReady != nil {
+		if attachmentsReady.Status == metav1.ConditionTrue &&
+			attachmentsReady.Reason != v1alpha1.HostConditionReasonProvisioningDisabled &&
+			attachmentsReady.Reason != "Skipped" {
+			return true
+		}
+		switch attachmentsReady.Reason {
+		case v1alpha1.HostConditionReasonProvisioningDisabled,
+			"Skipped",
+			v1alpha1.HostConditionReasonTemplateFailed,
+			v1alpha1.HostConditionReasonSelectedPortMACUnavailable,
+			v1alpha1.HostConditionReasonNetworkAttachmentRecordingMAC,
+			v1alpha1.HostConditionReasonNetworkAttachmentCreationSkipped,
+			v1alpha1.HostConditionReasonNetworkAttachmentCreating:
+			// These reasons identify a known pre-create state or an uncertain
+			// create request. The latter is handled separately by the deletion
+			// path, which waits for the request to resolve.
+		default:
+			// Older Progressing conditions are ambiguous: they may have been
+			// written before or after the create request. Fail closed.
+			return true
+		}
+	}
+	handoff := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkHandoffComplete)
+	if handoff != nil && handoff.Status == metav1.ConditionTrue &&
+		handoff.Reason != v1alpha1.HostConditionReasonProvisioningDisabled {
+		return true
+	}
+	return networkAttachmentCleanupStarted(bmi) ||
+		bmi.IsStatusConditionTrue(v1alpha1.HostConditionNetworkOffboardComplete)
+}
+
+func networkAttachmentCleanupStarted(bmi *v1alpha1.BareMetalInstance) bool {
+	condition := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
+	return condition != nil && condition.Reason == v1alpha1.HostConditionReasonNetworkAttachmentCleanupStarted
 }
 
 func networkAttachmentCreateMayBeInFlight(bmi *v1alpha1.BareMetalInstance) bool {

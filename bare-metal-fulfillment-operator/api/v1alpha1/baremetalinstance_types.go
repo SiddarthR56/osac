@@ -237,15 +237,20 @@ const (
 	// reached a final failed state.
 	HostConditionReasonNetworkAttachmentFailed = "NetworkAttachmentFailed"
 
-	HostConditionReasonPoweringOff               = "PoweringOff"
-	HostConditionReasonPoweringOn                = "PoweringOn"
-	HostConditionReasonNetworkHandoffFailed      = "NetworkHandoffFailed"
-	HostConditionReasonNetworkAttachmentCreating = "NetworkAttachmentCreating"
-	HostConditionReasonLeasePending              = "LeasePending"
-	HostConditionReasonIPDiscoveryFailed         = "IPDiscoveryFailed"
-	HostConditionReasonProvisioningDisabled      = "ProvisioningDisabled"
-	HostConditionReasonOffboarding               = "Offboarding"
-	HostConditionReasonPowerOffFailed            = "PowerOffFailed"
+	HostConditionReasonPoweringOff                      = "PoweringOff"
+	HostConditionReasonPoweringOn                       = "PoweringOn"
+	HostConditionReasonNetworkHandoffFailed             = "NetworkHandoffFailed"
+	HostConditionReasonNetworkAttachmentRecordingMAC    = "NetworkAttachmentRecordingMAC"
+	HostConditionReasonNetworkAttachmentCreating        = "NetworkAttachmentCreating"
+	HostConditionReasonNetworkAttachmentApplying        = "NetworkAttachmentApplying"
+	HostConditionReasonNetworkAttachmentCreationSkipped = "NetworkAttachmentCreationSkipped"
+	HostConditionReasonNetworkAttachmentCleanupStarted  = "NetworkAttachmentCleanupStarted"
+	HostConditionReasonNetworkAttachmentMissing         = "NetworkAttachmentMissing"
+	HostConditionReasonLeasePending                     = "LeasePending"
+	HostConditionReasonIPDiscoveryFailed                = "IPDiscoveryFailed"
+	HostConditionReasonProvisioningDisabled             = "ProvisioningDisabled"
+	HostConditionReasonOffboarding                      = "Offboarding"
+	HostConditionReasonPowerOffFailed                   = "PowerOffFailed"
 )
 
 // HostSelectorSpec defines host selection constraints.

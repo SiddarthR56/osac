@@ -207,6 +207,8 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 			Expect(networkAttachmentStatusFor(bmi, "subnet-1").MACAddress).To(Equal("aa:bb:cc:dd:ee:ff"))
+			cond := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
+			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonNetworkAttachmentRecordingMAC))
 
 			result, err = reconciler.reconcileNetworking(ctx, bmi)
 			Expect(err).NotTo(HaveOccurred())
@@ -225,16 +227,16 @@ var _ = Describe("BareMetalInstance Networking", func() {
 				Type: opv1alpha1.NetworkInterfacePhysical, Name: "data-0", MACAddress: "aa:bb:cc:dd:ee:ff",
 			}))
 
-			cond := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
+			cond = bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonProgressing))
+			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonNetworkAttachmentApplying))
 
 			// A second reconcile finds the NetworkAttachment and does not recreate it.
 			macs = map[string]string{}
 			_, err = reconciler.reconcileNetworking(ctx, bmi)
 			Expect(err).NotTo(HaveOccurred())
 			cond = bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
-			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonProgressing))
+			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonNetworkAttachmentApplying))
 		})
 
 		It("does not create an attachment after deletion begins", func() {
@@ -409,11 +411,20 @@ var _ = Describe("BareMetalInstance Networking", func() {
 				BareMetalInstanceNetworkingFinalizer, "osac.openshift.io/networkattachment")
 			Expect(k8sClient.Create(ctx, na)).To(Succeed())
 
-			// The first pass deletes the NetworkAttachment.
+			// Persist cleanup intent before requesting NetworkAttachment deletion.
 			result, done, err := reconciler.reconcileNetworkingDeletion(ctx, bmi)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(done).To(BeFalse())
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+			na, err = getAttachment()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(na.DeletionTimestamp).To(BeNil())
+			Expect(networkAttachmentCleanupStarted(bmi)).To(BeTrue())
+
+			// The next pass requests deletion after the cleanup intent is durable.
+			_, done, err = reconciler.reconcileNetworkingDeletion(ctx, bmi)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(done).To(BeFalse())
 			na, err = getAttachment()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(na.DeletionTimestamp).NotTo(BeNil())
@@ -454,6 +465,54 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(controllerutil.ContainsFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)).To(BeFalse())
 		})
 
+		It("retains host ownership if an applied attachment is missing before cleanup starts", func() {
+			bmi = newBMI(attachments)
+			controllerutil.AddFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)
+			Expect(k8sClient.Create(ctx, bmi)).To(Succeed())
+			setNetworkAttachmentsReady(bmi, metav1.ConditionTrue, "Succeeded", "Network attachment ready")
+
+			result, done, err := reconciler.reconcileNetworkingDeletion(ctx, bmi)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(done).To(BeFalse())
+			Expect(result.RequeueAfter).To(Equal(NetworkOffboardPollInterval))
+			Expect(controllerutil.ContainsFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)).To(BeTrue())
+			cond := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
+			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonNetworkAttachmentMissing))
+			Expect(cond.Message).To(ContainSubstring("retaining host ownership"))
+		})
+
+		DescribeTable("retains host ownership if a possibly applied attachment is missing",
+			func(reason string) {
+				bmi = newBMI(attachments)
+				controllerutil.AddFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)
+				Expect(k8sClient.Create(ctx, bmi)).To(Succeed())
+				setNetworkAttachmentsReady(bmi, metav1.ConditionFalse, reason, "Network attachment may have been applied")
+
+				result, done, err := reconciler.reconcileNetworkingDeletion(ctx, bmi)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(done).To(BeFalse())
+				Expect(result.RequeueAfter).To(Equal(NetworkOffboardPollInterval))
+				Expect(controllerutil.ContainsFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)).To(BeTrue())
+				cond := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
+				Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonNetworkAttachmentMissing))
+			},
+			Entry("legacy Progressing state after create", v1alpha1.HostConditionReasonProgressing),
+			Entry("failed networking apply", v1alpha1.HostConditionReasonNetworkAttachmentFailed),
+		)
+
+		It("releases host ownership when deletion precedes the create request", func() {
+			bmi = newBMI(attachments)
+			controllerutil.AddFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)
+			Expect(k8sClient.Create(ctx, bmi)).To(Succeed())
+			setNetworkAttachmentsReady(bmi, metav1.ConditionFalse,
+				v1alpha1.HostConditionReasonNetworkAttachmentRecordingMAC, "Recording selected MAC")
+
+			_, done, err := reconciler.reconcileNetworkingDeletion(ctx, bmi)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(done).To(BeTrue())
+			Expect(controllerutil.ContainsFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)).To(BeFalse())
+		})
+
 		It("waits for an uncertain create and deletes both current and legacy names", func() {
 			bmi = newBMI(attachments)
 			controllerutil.AddFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)
@@ -474,7 +533,7 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(k8sClient.Create(ctx, suffixed)).To(Succeed())
 			Expect(k8sClient.Create(ctx, legacy)).To(Succeed())
 
-			for range 3 {
+			for range 5 {
 				_, done, err = reconciler.reconcileNetworkingDeletion(ctx, bmi)
 				Expect(err).NotTo(HaveOccurred())
 				if done {
