@@ -118,13 +118,11 @@ func UpdatePoolCapacity(
 type automaticExternalIPEndpoint string
 
 // createAutomaticExternalIPs creates the automatic ExternalIPs of a workload in the transaction that stores it, all
-// from one pool, and reserves their pool slots. With provider networking disabled it creates nothing.
-func createAutomaticExternalIPs(ctx context.Context, logger *slog.Logger, settings NetworkingSettings,
+// from one pool, and reserves their pool slots. Callers decide whether to create logical requests based on their
+// resource-specific provider networking behavior.
+func createAutomaticExternalIPs(ctx context.Context, logger *slog.Logger,
 	poolDao *dao.GenericDAO[*privatev1.ExternalIPPool], externalIPDao *dao.GenericDAO[*privatev1.ExternalIP],
 	owner *privatev1.Metadata, ownerID, kind string, endpoints ...automaticExternalIPEndpoint) error {
-	if !settings.ProvisioningEnabled {
-		return nil
-	}
 	if len(endpoints) == 0 {
 		endpoints = []automaticExternalIPEndpoint{""}
 	}

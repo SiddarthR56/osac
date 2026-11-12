@@ -2114,7 +2114,7 @@ var _ = Describe("Private bare metal instances server", func() {
 			Expect(getResponse.GetObject().GetSpec().GetAutoExternalIpAttachment()).To(BeTrue())
 		})
 
-		It("skips automatic ExternalIPs and pool reservations when provider networking is disabled", func() {
+		It("reserves a Pending automatic ExternalIP when provider networking is disabled", func() {
 			server.settings.ProvisioningEnabled = false
 
 			pools, err := server.externalIPPoolDao.List().Do(ctx)
@@ -2122,7 +2122,7 @@ var _ = Describe("Private bare metal instances server", func() {
 			Expect(pools.GetItems()).To(HaveLen(1))
 			poolID := pools.GetItems()[0].GetId()
 
-			createWithoutExternalIP := func(name string) {
+			createBMI := func(name string) (*privatev1.BareMetalInstancesCreateResponse, error) {
 				response, err := server.Create(ctx, privatev1.BareMetalInstancesCreateRequest_builder{
 					Object: privatev1.BareMetalInstance_builder{
 						Metadata: privatev1.Metadata_builder{Name: name}.Build(),
@@ -2134,15 +2134,7 @@ var _ = Describe("Private bare metal instances server", func() {
 						}.Build(),
 					}.Build(),
 				}.Build())
-				Expect(err).ToNot(HaveOccurred())
-				Expect(response).ToNot(BeNil())
-
-				bmiID := response.GetObject().GetId()
-				eips, err := server.externalIPDao.List().
-					SetFilter(fmt.Sprintf("this.metadata.labels['%s'] == '%s'", autoCreatedForLabel, bmiID)).
-					Do(ctx)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(eips.GetItems()).To(BeEmpty())
+				return response, err
 			}
 
 			poolResponse, err := server.externalIPPoolDao.Get().SetId(poolID).Do(ctx)
@@ -2150,23 +2142,50 @@ var _ = Describe("Private bare metal instances server", func() {
 			available := poolResponse.GetObject().GetStatus().GetAvailable()
 			allocated := poolResponse.GetObject().GetStatus().GetAllocated()
 
-			createWithoutExternalIP(fmt.Sprintf("disabled-auto-eip-%s", uuid.NewString()[:8]))
+			created, err := createBMI(fmt.Sprintf("disabled-auto-eip-%s", uuid.NewString()[:8]))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(created).ToNot(BeNil())
+			bmiID := created.GetObject().GetId()
+			eips, err := server.externalIPDao.List().
+				SetFilter(fmt.Sprintf("this.metadata.labels['%s'] == '%s'", autoCreatedForLabel, bmiID)).
+				Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(eips.GetItems()).To(HaveLen(1))
+			Expect(eips.GetItems()[0].GetMetadata().GetName()).To(Equal(automaticExternalIPPrefix + bmiID))
+			Expect(eips.GetItems()[0].GetStatus().GetState()).To(Equal(
+				privatev1.ExternalIPState_EXTERNAL_IP_STATE_PENDING))
+			Expect(eips.GetItems()[0].GetMetadata().GetLabels()[autoCreatedLabel]).To(Equal("true"))
+			Expect(eips.GetItems()[0].GetMetadata().GetLabels()[autoCreatedKindLabel]).To(Equal("bare_metal_instance"))
+			Expect(eips.GetItems()[0].GetMetadata().GetAnnotations()[tenantAnnotation]).To(Equal(testTenant))
+			Expect(eips.GetItems()[0].GetMetadata().GetAnnotations()[ownerReferenceAnnotation]).To(Equal(bmiID))
+			attachments, err := server.externalIPAttachmentDao.List().
+				SetFilter(fmt.Sprintf("this.metadata.labels['%s'] == '%s'", autoCreatedForLabel, bmiID)).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(attachments.GetItems()).To(BeEmpty())
+
 			poolResponse, err = server.externalIPPoolDao.Get().SetId(poolID).Do(ctx)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(poolResponse.GetObject().GetStatus().GetAvailable()).To(Equal(available))
-			Expect(poolResponse.GetObject().GetStatus().GetAllocated()).To(Equal(allocated))
+			Expect(poolResponse.GetObject().GetStatus().GetAvailable()).To(Equal(available - 1))
+			Expect(poolResponse.GetObject().GetStatus().GetAllocated()).To(Equal(allocated + 1))
 
-			// A non-READY pool cannot prevent the workload from being created.
+			// Logical requests still require a ready pool when provider networking is disabled.
 			pool := poolResponse.GetObject()
 			pool.GetStatus().SetState(privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_PENDING)
 			_, err = server.externalIPPoolDao.Update().SetObject(pool).Do(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			createWithoutExternalIP(fmt.Sprintf("disabled-auto-eip-%s", uuid.NewString()[:8]))
+			before, err := server.externalIPDao.List().Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			_, err = createBMI(fmt.Sprintf("disabled-auto-eip-%s", uuid.NewString()[:8]))
+			Expect(grpcstatus.Code(err)).To(Equal(grpccodes.FailedPrecondition))
+			after, err := server.externalIPDao.List().Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(after.GetTotal()).To(Equal(before.GetTotal()))
+
 			poolResponse, err = server.externalIPPoolDao.Get().SetId(poolID).Do(ctx)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(poolResponse.GetObject().GetStatus().GetAvailable()).To(Equal(available))
-			Expect(poolResponse.GetObject().GetStatus().GetAllocated()).To(Equal(allocated))
+			Expect(poolResponse.GetObject().GetStatus().GetAvailable()).To(Equal(available - 1))
+			Expect(poolResponse.GetObject().GetStatus().GetAllocated()).To(Equal(allocated + 1))
 		})
 
 		It("auto_external_ip_attachment leaves attachment creation to the ready BareMetalInstance reconciler", func() {
@@ -2195,7 +2214,13 @@ var _ = Describe("Private bare metal instances server", func() {
 				Do(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(eipList.GetItems()).To(HaveLen(1))
-			Expect(eipList.GetItems()[0].GetMetadata().GetLabels()[autoCreatedKindLabel]).To(Equal("bare_metal_instance"))
+			eip := eipList.GetItems()[0]
+			Expect(eip.GetMetadata().GetName()).To(Equal(automaticExternalIPPrefix + bmiID))
+			Expect(eip.GetMetadata().GetLabels()[autoCreatedLabel]).To(Equal("true"))
+			Expect(eip.GetMetadata().GetLabels()[autoCreatedKindLabel]).To(Equal("bare_metal_instance"))
+			Expect(eip.GetMetadata().GetAnnotations()[ownerReferenceAnnotation]).To(Equal(bmiID))
+			Expect(eip.GetMetadata().GetAnnotations()[tenantAnnotation]).To(Equal(testTenant))
+			Expect(eip.GetStatus().GetState()).To(Equal(privatev1.ExternalIPState_EXTERNAL_IP_STATE_PENDING))
 
 			attDao, err := dao.NewGenericDAO[*privatev1.ExternalIPAttachment]().
 				SetLogger(logger).SetTenancyLogic(tenancy).Build()

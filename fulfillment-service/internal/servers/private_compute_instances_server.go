@@ -322,9 +322,9 @@ func (s *PrivateComputeInstancesServer) Create(ctx context.Context, request *pri
 	if err != nil {
 		return
 	}
-	if !isDryRun(ctx) && response.GetObject().GetSpec().GetAutoExternalIpAttachment() {
+	if !isDryRun(ctx) && s.settings.ProvisioningEnabled && response.GetObject().GetSpec().GetAutoExternalIpAttachment() {
 		created := response.GetObject()
-		err = createAutomaticExternalIPs(ctx, s.logger, s.settings, s.externalIPPoolDao, s.externalIPDao,
+		err = createAutomaticExternalIPs(ctx, s.logger, s.externalIPPoolDao, s.externalIPDao,
 			created.GetMetadata(), created.GetId(), "compute_instance")
 		if err != nil {
 			if tx, txErr := database.TxFromContext(ctx); txErr == nil {
