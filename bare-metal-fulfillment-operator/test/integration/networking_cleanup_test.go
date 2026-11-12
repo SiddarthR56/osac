@@ -338,6 +338,7 @@ spec:
   selector:
     hostSelector:
       hostType: %s
+  externalHostID: ""
   templateID: noop
   runStrategy: Always
   networkAttachments:
