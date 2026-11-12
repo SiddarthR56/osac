@@ -108,6 +108,41 @@ var _ = Describe("DeriveProvisioningProgress", func() {
 				condFalse(HostConditionProvisionTemplateComplete, HostConditionReasonProgressing),
 			},
 			ProvisioningProgress{State: StateInProgress, Step: StepProvisioning}),
+		Entry("NetworkAttachmentsReady False+NetworkAttachmentNotCreated -> attachment pending, not failed",
+			[]metav1.Condition{
+				condTrue(HostConditionAllocated),
+				condTrue(HostConditionProvisionTemplateComplete),
+				condFalse(HostConditionNetworkAttachmentsReady, HostConditionReasonNetworkAttachmentNotCreated),
+			},
+			ProvisioningProgress{State: StateInProgress, Step: StepNetworkSetupAttachment}),
+		Entry("NetworkAttachmentsReady False+NetworkAttachmentCreating -> create pending, not failed",
+			[]metav1.Condition{
+				condTrue(HostConditionAllocated),
+				condTrue(HostConditionProvisionTemplateComplete),
+				condFalse(HostConditionNetworkAttachmentsReady, HostConditionReasonNetworkAttachmentCreating),
+			},
+			ProvisioningProgress{State: StateInProgress, Step: StepNetworkSetupAttachment}),
+		Entry("NetworkAttachmentsReady False+NetworkDetaching -> cleanup pending, not failed",
+			[]metav1.Condition{
+				condTrue(HostConditionAllocated),
+				condTrue(HostConditionProvisionTemplateComplete),
+				condFalse(HostConditionNetworkAttachmentsReady, HostConditionReasonNetworkDetaching),
+			},
+			ProvisioningProgress{State: StateInProgress, Step: StepNetworkSetupAttachment}),
+		Entry("NetworkAttachmentsReady False+Offboarding -> cleanup pending, not failed",
+			[]metav1.Condition{
+				condTrue(HostConditionAllocated),
+				condTrue(HostConditionProvisionTemplateComplete),
+				condFalse(HostConditionNetworkAttachmentsReady, HostConditionReasonOffboarding),
+			},
+			ProvisioningProgress{State: StateInProgress, Step: StepNetworkSetupAttachment}),
+		Entry("NetworkAttachmentsReady False+NetworkAttachmentMissing -> cleanup unresolved, not failed",
+			[]metav1.Condition{
+				condTrue(HostConditionAllocated),
+				condTrue(HostConditionProvisionTemplateComplete),
+				condFalse(HostConditionNetworkAttachmentsReady, HostConditionReasonNetworkAttachmentMissing),
+			},
+			ProvisioningProgress{State: StateInProgress, Step: StepNetworkSetupAttachment}),
 		Entry("ProvisionTemplateComplete False+Retrying -> retrying provisioning, not failed",
 			[]metav1.Condition{
 				condTrue(HostConditionAllocated),
@@ -149,6 +184,13 @@ var _ = Describe("DeriveProvisioningProgress", func() {
 				condFalse(HostConditionIPDiscoveryComplete, HostConditionReasonLeasePending),
 			},
 			ProvisioningProgress{State: StateInProgress, Step: StepNetworkSetupIPDiscovery}),
+		Entry("PoweringOff on attachment condition remains a failure",
+			[]metav1.Condition{
+				condTrue(HostConditionAllocated),
+				condTrue(HostConditionProvisionTemplateComplete),
+				condFalse(HostConditionNetworkAttachmentsReady, HostConditionReasonPoweringOff),
+			},
+			ProvisioningProgress{State: StateFailed, Step: StepNetworkSetupAttachment, Failure: FailureNetworkAttachment}),
 
 		// --- Terminal states ---
 		Entry("network trio all True -> Provisioned, Ready axis live (power-neutral in-flight step)",

@@ -209,9 +209,9 @@ func DeriveProvisioningProgress(conds []metav1.Condition) ProvisioningProgress {
 	//    Failure detection is a denylist: a False condition is a hard failure unless
 	//    its reason is a known benign one. Benign reasons are the in-progress marker
 	//    (Progressing), Retrying on the provision-template condition, the empty
-	//    reason, PowerSyncRequired, and the network handoff and lease discovery
-	//    pending reasons. Those stage-specific reasons mean the operation is still
-	//    in flight, not a provisioning failure.
+	//    reason, PowerSyncRequired, and the network attachment, handoff, and IP
+	//    discovery pending reasons. Those stage-specific reasons mean the operation
+	//    is still in flight, not a provisioning failure.
 	//    A new benign False reason MUST be added to this skip set, or it will be
 	//    misclassified as a hard failure (the exhaustiveness test guards condition
 	//    types, not reason values).
@@ -274,14 +274,19 @@ func DeriveProvisioningProgress(conds []metav1.Condition) ProvisioningProgress {
 	return ProvisioningProgress{State: StateInProgress, Step: step}
 }
 
-// isPendingNetworkConditionReason recognizes network operations that have not
-// completed yet. Keep each reason tied to its condition so a malformed status
-// cannot turn an unrelated failure into pending work.
+// isPendingNetworkConditionReason recognizes stage-specific network operations
+// that have not completed yet. Keep these reasons tied to their condition so a
+// malformed condition cannot turn an unrelated failure into pending work.
 func isPendingNetworkConditionReason(condition BareMetalInstanceConditionType, reason string) bool {
 	switch condition {
+	case HostConditionNetworkAttachmentsReady:
+		return reason == HostConditionReasonNetworkAttachmentNotCreated ||
+			reason == HostConditionReasonNetworkAttachmentCreating ||
+			reason == HostConditionReasonNetworkAttachmentMissing ||
+			reason == HostConditionReasonNetworkDetaching ||
+			reason == HostConditionReasonOffboarding
 	case HostConditionNetworkHandoffComplete:
-		return reason == HostConditionReasonPoweringOff ||
-			reason == HostConditionReasonPoweringOn
+		return reason == HostConditionReasonPoweringOff || reason == HostConditionReasonPoweringOn
 	case HostConditionIPDiscoveryComplete:
 		return reason == HostConditionReasonLeasePending
 	default:
