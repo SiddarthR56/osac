@@ -255,14 +255,14 @@ var _ = Describe("BareMetalInstance Networking", func() {
 
 			cond = bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonNetworkAttachmentApplying))
+			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonProgressing))
 
 			// A second reconcile finds the NetworkAttachment and does not recreate it.
 			macs = map[string]string{}
 			_, err = reconciler.reconcileNetworking(ctx, bmi)
 			Expect(err).NotTo(HaveOccurred())
 			cond = bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
-			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonNetworkAttachmentApplying))
+			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonProgressing))
 		})
 
 		It("records a rejected first create as known not to be applied", func() {

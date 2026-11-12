@@ -2567,7 +2567,7 @@ var _ = Describe("BareMetalInstance network handoff reboot (OSAC-1448)", func() 
 			reconciler.NetworkingEnabled = true
 			bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
 			setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
-				v1alpha1.HostConditionReasonNetworkAttachmentApplying, "Previous apply attempt failed transiently")
+				v1alpha1.HostConditionReasonProgressing, "Previous apply attempt failed transiently")
 
 			result, err := reconciler.reconcileNetworkProvisionAndDiscovery(ctx, bareMetalInstance)
 

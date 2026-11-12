@@ -271,7 +271,7 @@ func (r *BareMetalInstanceReconciler) reconcileNetworking(
 			message = ready.Message
 		}
 		setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
-			v1alpha1.HostConditionReasonNetworkAttachmentApplying, message)
+			v1alpha1.HostConditionReasonProgressing, message)
 		return ctrl.Result{RequeueAfter: r.ProvisionPollIntervalDuration}, nil
 	}
 }
@@ -351,7 +351,7 @@ func (r *BareMetalInstanceReconciler) createNetworkAttachment(
 		return ctrl.Result{}, fmt.Errorf("create NetworkAttachment %s: %w", key.Name, err)
 	}
 	log.Info("Ensured NetworkAttachment exists", "networkAttachment", key.Name)
-	setNetworkAttachmentsReady(bmi, metav1.ConditionFalse, v1alpha1.HostConditionReasonNetworkAttachmentApplying,
+	setNetworkAttachmentsReady(bmi, metav1.ConditionFalse, v1alpha1.HostConditionReasonProgressing,
 		"Waiting for the network attachment")
 	return ctrl.Result{RequeueAfter: r.ProvisionPollIntervalDuration}, nil
 }

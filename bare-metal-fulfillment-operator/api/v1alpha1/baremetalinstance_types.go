@@ -242,7 +242,6 @@ const (
 	HostConditionReasonNetworkHandoffFailed             = "NetworkHandoffFailed"
 	HostConditionReasonNetworkAttachmentRecordingMAC    = "NetworkAttachmentRecordingMAC"
 	HostConditionReasonNetworkAttachmentCreating        = "NetworkAttachmentCreating"
-	HostConditionReasonNetworkAttachmentApplying        = "NetworkAttachmentApplying"
 	HostConditionReasonNetworkAttachmentCreateRejected  = "NetworkAttachmentCreateRejected"
 	HostConditionReasonNetworkAttachmentCreationSkipped = "NetworkAttachmentCreationSkipped"
 	HostConditionReasonNetworkDetaching                 = "NetworkDetaching"
