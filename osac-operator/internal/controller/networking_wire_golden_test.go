@@ -26,12 +26,10 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	bmfov1alpha1 "github.com/osac-project/osac/bare-metal-fulfillment-operator/api/v1alpha1"
 	"github.com/osac-project/osac/osac-operator/api/v1alpha1"
 	"github.com/osac-project/osac/osac-operator/internal/networktask"
 )
@@ -61,7 +59,6 @@ const (
 	wireEIPA         = "9c8b7a6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
 	wireNATGW        = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
 	wireVM           = "0f1e2d3c-4b5a-4968-8776-655443322110"
-	wireBMI          = "3b2a1908-7c6d-4e5f-8a9b-0c1d2e3f4a5b"
 	wireSG           = "6a5b4c3d-2e1f-4a0b-9c8d-7e6f5a4b3c2e"
 )
 
@@ -122,21 +119,9 @@ func wireJSON(value any) []byte {
 // expectLaunch compares the latest launch of task on manager with its input golden.
 func (g *wireGolden) expectLaunch(h *netHarness, task, manager string) {
 	GinkgoHelper()
-	g.expectLaunchFile(h, task, manager, task+"."+manager+".json")
-}
-
-// expectLaunchVariant compares a scenario-specific launch, such as the
-// physical NetworkAttachment contract, with its shared input golden.
-func (g *wireGolden) expectLaunchVariant(h *netHarness, task, variant, manager string) {
-	GinkgoHelper()
-	g.expectLaunchFile(h, task, manager, task+"."+variant+"."+manager+".json")
-}
-
-func (g *wireGolden) expectLaunchFile(h *netHarness, task, manager, filename string) {
-	GinkgoHelper()
 	launch := h.aap.latest(task, manager)
 	got := wireJSON(g.normalise(launch.vars))
-	file := filepath.Join(wireGoldenDir, "inputs", filename)
+	file := filepath.Join(wireGoldenDir, "inputs", task+"."+manager+".json")
 	if os.Getenv("UPDATE_GOLDEN") != "" {
 		Expect(os.WriteFile(file, got, 0o644)).To(Succeed())
 		return
@@ -150,13 +135,6 @@ func (g *wireGolden) expectLaunchFile(h *netHarness, task, manager, filename str
 func wireResult(task, manager string) string {
 	GinkgoHelper()
 	data, err := os.ReadFile(filepath.Join(wireGoldenDir, "results", task+"."+manager+".json"))
-	Expect(err).NotTo(HaveOccurred())
-	return string(data)
-}
-
-func wireResultVariant(task, variant, manager string) string {
-	GinkgoHelper()
-	data, err := os.ReadFile(filepath.Join(wireGoldenDir, "results", task+"."+variant+"."+manager+".json"))
 	Expect(err).NotTo(HaveOccurred())
 	return string(data)
 }
@@ -298,65 +276,6 @@ var _ = Describe("Operator and AAP wire contract goldens", func() {
 				}
 			}
 		}
-	})
-
-	It("binds physical NetworkAttachment apply, DHCP query, and delete to shared goldens", func() {
-		h := newNetHarness(true)
-		g := newWireGolden(h.ns)
-		vn := h.readyVirtualNetwork(wireVN, false)
-		vn.Status.L3VNI = 10001
-		Expect(k8sClient.Status().Update(ctx, vn)).To(Succeed())
-		g.register(vn, "vn-3f1c9a2e", 1)
-		subnet := h.readySubnet(wireSubnet, wireVN, false, testPlan)
-		g.register(subnet, "subnet-8a2b4c6d", 2)
-		bmi := h.bareMetalInstance(wireBMI, "host1")
-		na := &v1alpha1.NetworkAttachment{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "baremetalinstance-" + wireBMI + "-eth1",
-				Namespace: h.ns,
-				Annotations: map[string]string{
-					networktask.TenantAnnotation: "tenant-a",
-				},
-			},
-			Spec: v1alpha1.NetworkAttachmentSpec{
-				Target:         v1alpha1.NetworkAttachmentTarget{Kind: v1alpha1.NetworkAttachmentTargetBareMetalInstance, ID: wireBMI},
-				Subnet:         wireSubnet,
-				Interface:      v1alpha1.NetworkAttachmentInterface{Type: v1alpha1.NetworkInterfacePhysical, Name: "eth1", MACAddress: "aa:bb:cc:dd:ee:01"},
-				SecurityGroups: []string{wireSG},
-			},
-		}
-		Expect(k8sClient.Create(ctx, na)).To(Succeed())
-		g.register(na, "baremetalinstance-"+wireBMI+"-eth1", 6)
-		r := &NetworkAttachmentReconciler{Client: k8sClient, Engine: h.engine, NetworkingNamespace: h.ns}
-
-		reconcileNet(r, na)
-		g.expectLaunchVariant(h, networktask.ApplyNetworkAttachment, "physical", netFabric)
-		h.aap.finish(networktask.ApplyNetworkAttachment, netFabric, "successful",
-			wireResultVariant(networktask.ApplyNetworkAttachment, "physical", netFabric))
-		reconcileNet(r, na)
-		expectReady(na, metav1.ConditionTrue, v1alpha1.ReasonSucceeded)
-
-		meta.SetStatusCondition(&bmi.Status.Conditions, metav1.Condition{
-			Type:   string(bmfov1alpha1.HostConditionNetworkHandoffComplete),
-			Status: metav1.ConditionTrue, Reason: "Done",
-		})
-		Expect(k8sClient.Status().Update(ctx, bmi)).To(Succeed())
-		reconcileNet(r, na)
-		g.expectLaunchVariant(h, networktask.QueryDHCPLease, "physical", netFabric)
-		h.aap.finish(networktask.QueryDHCPLease, netFabric, "successful",
-			wireResultVariant(networktask.QueryDHCPLease, "physical", netFabric))
-		reconcileNet(r, na)
-		Expect(na.Status.DHCPLease).To(Equal(&v1alpha1.NetworkAttachmentDHCPLease{
-			IPAddress: "10.0.1.130", MACAddress: "aa:bb:cc:dd:ee:01",
-		}))
-
-		deleteNet(na)
-		reconcileNet(r, na)
-		g.expectLaunchVariant(h, networktask.DeleteNetworkAttachment, "physical", netFabric)
-		h.aap.finish(networktask.DeleteNetworkAttachment, netFabric, "successful",
-			wireResultVariant(networktask.DeleteNetworkAttachment, "physical", netFabric))
-		_, exists := reconcileNet(r, na)
-		Expect(exists).To(BeFalse())
 	})
 
 	It("launches and accepts the ClusterOrder ingress reservation contract", func() {

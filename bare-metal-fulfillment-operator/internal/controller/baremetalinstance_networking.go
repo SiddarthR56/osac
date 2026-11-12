@@ -308,7 +308,9 @@ func (r *BareMetalInstanceReconciler) createNetworkAttachment(
 	}
 
 	creation := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
-	if creation == nil || creation.Reason != v1alpha1.HostConditionReasonNetworkAttachmentCreating {
+	createIntentAlreadyPersisted := creation != nil &&
+		creation.Reason == v1alpha1.HostConditionReasonNetworkAttachmentCreating
+	if !createIntentAlreadyPersisted {
 		setNetworkAttachmentsReady(bmi, metav1.ConditionFalse,
 			v1alpha1.HostConditionReasonNetworkAttachmentCreating,
 			"Persisting the NetworkAttachment create intent")
@@ -341,12 +343,26 @@ func (r *BareMetalInstanceReconciler) createNetworkAttachment(
 		},
 	}
 	if err := r.Create(ctx, na); err != nil && !apierrors.IsAlreadyExists(err) {
+		if !createIntentAlreadyPersisted && networkAttachmentCreateWasRejected(err) {
+			setNetworkAttachmentsReady(bmi, metav1.ConditionFalse,
+				v1alpha1.HostConditionReasonNetworkAttachmentCreateRejected,
+				fmt.Sprintf("NetworkAttachment creation was rejected: %v", err))
+		}
 		return ctrl.Result{}, fmt.Errorf("create NetworkAttachment %s: %w", key.Name, err)
 	}
 	log.Info("Ensured NetworkAttachment exists", "networkAttachment", key.Name)
 	setNetworkAttachmentsReady(bmi, metav1.ConditionFalse, v1alpha1.HostConditionReasonNetworkAttachmentApplying,
 		"Waiting for the network attachment")
 	return ctrl.Result{RequeueAfter: r.ProvisionPollIntervalDuration}, nil
+}
+
+func networkAttachmentCreateWasRejected(err error) bool {
+	return apierrors.IsBadRequest(err) ||
+		apierrors.IsForbidden(err) ||
+		apierrors.IsInvalid(err) ||
+		apierrors.IsMethodNotSupported(err) ||
+		apierrors.IsNotFound(err) ||
+		apierrors.IsUnauthorized(err)
 }
 
 func (r *BareMetalInstanceReconciler) getExistingNetworkAttachment(
@@ -451,6 +467,7 @@ func networkAttachmentMayHaveBeenApplied(bmi *v1alpha1.BareMetalInstance) bool {
 			v1alpha1.HostConditionReasonTemplateFailed,
 			v1alpha1.HostConditionReasonSelectedPortMACUnavailable,
 			v1alpha1.HostConditionReasonNetworkAttachmentRecordingMAC,
+			v1alpha1.HostConditionReasonNetworkAttachmentCreateRejected,
 			v1alpha1.HostConditionReasonNetworkAttachmentCreationSkipped,
 			v1alpha1.HostConditionReasonNetworkAttachmentCreating:
 			// These reasons identify a known pre-create state or an uncertain

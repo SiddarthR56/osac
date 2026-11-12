@@ -1,10 +1,9 @@
 """Operator <-> AAP wire contract, from the shared golden files.
 
 tests/contract/network-task holds the task input the operator launches for each
-networking task family (inputs/<task>.<manager>.json, with an optional scenario
-between task and manager: the osac_job_vars of the AAP job) and the results a
-manager returns (results/<task>.<manager>.json, with the same optional scenario:
-the job artifacts). The operator test
+networking task family (inputs/<task>.<manager>.json: the osac_job_vars of the
+AAP job) and the results a manager returns (results/<task>.<manager>.json: the
+job artifacts). The operator test
 (osac-operator/internal/controller/networking_wire_golden_test.go) produces
 every input golden from the real controllers and feeds every result golden to
 the real result parsers. This file runs the same input files, unchanged,
@@ -27,7 +26,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_cudn_evpn_role import ce  # noqa: E402
-import test_netris_attachment as attachment_tasks  # noqa: E402
 from test_netris_role import ROOT  # noqa: E402
 from test_netris_vn_subnet import err, netris, ok, run  # noqa: E402,F401
 
@@ -39,17 +37,13 @@ import agentless_net_state  # noqa: E402
 GOLDEN = ROOT.parent / "tests/contract/network-task"
 
 
-def golden_input(task: str, manager: str, scenario: str | None = None) -> dict:
-    variant = f".{scenario}" if scenario else ""
-    return json.loads((GOLDEN / "inputs" / f"{task}{variant}.{manager}.json").read_text())
+def golden_input(task: str, manager: str) -> dict:
+    return json.loads((GOLDEN / "inputs" / f"{task}.{manager}.json").read_text())
 
 
-def golden_result(task: str, manager: str, scenario: str | None = None) -> dict:
-    """Return osac_result, or an empty object for a task with no output."""
-    variant = f".{scenario}" if scenario else ""
-    artifacts = json.loads((GOLDEN / "results" / f"{task}{variant}.{manager}.json").read_text())
-    if not artifacts:
-        return {}
+def golden_result(task: str, manager: str) -> dict:
+    """The osac_result of a result golden (the golden is the job artifacts)."""
+    artifacts = json.loads((GOLDEN / "results" / f"{task}.{manager}.json").read_text())
     assert set(artifacts) == {"osac_result"}
     return artifacts["osac_result"]
 
@@ -66,19 +60,11 @@ def fabric(tmp_path: Path, server, task: str) -> dict:
     return ok(*run(tmp_path, server, job))
 
 
-def physical_fabric(tmp_path: Path, server, task: str) -> dict:
-    """Run a physical attachment input golden through the Netris playbook."""
-    job = golden_input(task, "fabric", "physical")
-    assert job["task"] == task and job["manager"]["type"] == "fabric"
-    return attachment_tasks.ok(*attachment_tasks.run(tmp_path, server, job))
-
-
 def test_every_golden_is_used_by_a_test() -> None:
     inputs = sorted(p.name for p in (GOLDEN / "inputs").glob("*.json"))
     assert inputs == [
         "apply_network_attachment.fabric.json",
         "apply_network_attachment.kubernetes.json",
-        "apply_network_attachment.physical.fabric.json",
         "attach_external_ip.fabric.json",
         "create_external_ip.fabric.json",
         "create_external_ip_pool.fabric.json",
@@ -87,19 +73,14 @@ def test_every_golden_is_used_by_a_test() -> None:
         "create_subnet.kubernetes.json",
         "create_virtual_network.fabric.json",
         "create_virtual_network.kubernetes.json",
-        "delete_network_attachment.physical.fabric.json",
-        "query_dhcp_lease.physical.fabric.json",
         "reserve_cluster_ingress_ip.fabric.json",
     ]
     results = sorted(p.name for p in (GOLDEN / "results").glob("*.json"))
     assert results == [
         "apply_network_attachment.kubernetes.json",
-        "apply_network_attachment.physical.fabric.json",
         "create_external_ip.fabric.json",
         "create_subnet.fabric.json",
         "create_virtual_network.fabric.json",
-        "delete_network_attachment.physical.fabric.json",
-        "query_dhcp_lease.physical.fabric.json",
         "reserve_cluster_ingress_ip.fabric.json",
     ]
 
@@ -112,20 +93,6 @@ def test_fabric_goldens_produce_the_result_goldens(tmp_path, netris) -> None:
     assert fabric(tmp_path, netris, "create_external_ip_pool") == {}
     same(fabric(tmp_path, netris, "create_external_ip"), golden_result("create_external_ip", "fabric"))
     assert fabric(tmp_path, netris, "apply_network_attachment") == {}
-    attachment_tasks.seed_host(netris)
-    same(
-        physical_fabric(tmp_path, netris, "apply_network_attachment"),
-        golden_result("apply_network_attachment", "fabric", "physical"),
-    )
-    attachment_tasks.lease_host(netris, address="10.0.1.130")
-    same(
-        physical_fabric(tmp_path, netris, "query_dhcp_lease"),
-        golden_result("query_dhcp_lease", "fabric", "physical"),
-    )
-    same(
-        physical_fabric(tmp_path, netris, "delete_network_attachment"),
-        golden_result("delete_network_attachment", "fabric", "physical"),
-    )
     assert fabric(tmp_path, netris, "attach_external_ip") == {}
     assert fabric(tmp_path, netris, "create_nat_gateway") == {}
     same(

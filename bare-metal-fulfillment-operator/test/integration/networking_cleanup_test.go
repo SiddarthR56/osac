@@ -218,6 +218,9 @@ var _ = Describe("BMF networking cleanup ownership", func() {
 		Eventually(func() (string, error) {
 			return kubectlJSONPath("networkattachment", attachmentName, namespace, "{.metadata.name}")
 		}, 2*time.Minute, 2*time.Second).Should(Equal(attachmentName))
+		Eventually(func() (string, error) {
+			return kubectlJSONPath("baremetalhost", hostName, namespace, "{.spec.online}")
+		}, time.Minute, time.Second).Should(Equal("true"), "host must be online before the offboarding assertion")
 
 		attachment, err := bmfCleanupGet("NetworkAttachment", attachmentName)
 		Expect(err).NotTo(HaveOccurred())

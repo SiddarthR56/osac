@@ -243,6 +243,7 @@ const (
 	HostConditionReasonNetworkAttachmentRecordingMAC    = "NetworkAttachmentRecordingMAC"
 	HostConditionReasonNetworkAttachmentCreating        = "NetworkAttachmentCreating"
 	HostConditionReasonNetworkAttachmentApplying        = "NetworkAttachmentApplying"
+	HostConditionReasonNetworkAttachmentCreateRejected  = "NetworkAttachmentCreateRejected"
 	HostConditionReasonNetworkAttachmentCreationSkipped = "NetworkAttachmentCreationSkipped"
 	HostConditionReasonNetworkAttachmentCleanupStarted  = "NetworkAttachmentCleanupStarted"
 	HostConditionReasonNetworkAttachmentMissing         = "NetworkAttachmentMissing"

@@ -26,6 +26,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -61,6 +62,20 @@ func setTestNetworkAttachmentReady(ctx context.Context, na *opv1alpha1.NetworkAt
 	})
 	na.Status.Jobs = jobs
 	ExpectWithOffset(1, k8sClient.Status().Update(ctx, na)).To(Succeed())
+}
+
+type networkAttachmentCreateErrorClient struct {
+	client.Client
+	err error
+}
+
+func (c networkAttachmentCreateErrorClient) Create(
+	ctx context.Context, obj client.Object, opts ...client.CreateOption,
+) error {
+	if _, ok := obj.(*opv1alpha1.NetworkAttachment); ok {
+		return c.err
+	}
+	return c.Client.Create(ctx, obj, opts...)
 }
 
 var _ = Describe("BareMetalInstance Networking", func() {
@@ -109,28 +124,39 @@ var _ = Describe("BareMetalInstance Networking", func() {
 	}
 
 	removeAttachment := func() {
+		if bmi == nil {
+			return
+		}
 		keys := []client.ObjectKey{
 			attachmentKey(),
 			{Namespace: namespace, Name: opv1alpha1.NetworkAttachmentName(opv1alpha1.NetworkAttachmentTargetBareMetalInstance, bmiID, "")},
 		}
 		for _, key := range keys {
 			na := &opv1alpha1.NetworkAttachment{}
-			if err := k8sClient.Get(ctx, key, na); err != nil {
+			if err := k8sClient.Get(ctx, key, na); apierrors.IsNotFound(err) {
 				continue
+			} else {
+				Expect(err).NotTo(HaveOccurred())
 			}
 			na.Finalizers = nil
-			_ = k8sClient.Update(ctx, na)
-			_ = k8sClient.Delete(ctx, na)
+			Expect(k8sClient.Update(ctx, na)).To(Succeed())
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, na))).To(Succeed())
 		}
 	}
 
 	removeBMI := func() {
-		latest := &v1alpha1.BareMetalInstance{}
-		if k8sClient.Get(ctx, client.ObjectKeyFromObject(bmi), latest) == nil {
-			latest.Finalizers = nil
-			_ = k8sClient.Update(ctx, latest)
-			_ = k8sClient.Delete(ctx, latest)
+		if bmi == nil {
+			return
 		}
+		latest := &v1alpha1.BareMetalInstance{}
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bmi), latest)
+		if apierrors.IsNotFound(err) {
+			return
+		}
+		Expect(err).NotTo(HaveOccurred())
+		latest.Finalizers = nil
+		Expect(k8sClient.Update(ctx, latest)).To(Succeed())
+		Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, latest))).To(Succeed())
 	}
 
 	attachments := []v1alpha1.BareMetalNetworkAttachment{{
@@ -239,6 +265,52 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonNetworkAttachmentApplying))
 		})
 
+		It("records a rejected first create as known not to be applied", func() {
+			bmi = newBMI(attachments)
+			Expect(k8sClient.Create(ctx, bmi)).To(Succeed())
+			_, err := reconciler.reconcileNetworking(ctx, bmi)
+			Expect(err).NotTo(HaveOccurred()) // Add the networking finalizer.
+			_, err = reconciler.reconcileNetworking(ctx, bmi)
+			Expect(err).NotTo(HaveOccurred()) // Record the selected interface MAC.
+
+			createErr := apierrors.NewForbidden(
+				schema.GroupResource{Resource: "networkattachments"}, "attachment",
+				errors.New("access denied"),
+			)
+			reconciler.Client = networkAttachmentCreateErrorClient{Client: k8sClient, err: createErr}
+
+			_, err = reconciler.reconcileNetworking(ctx, bmi)
+			Expect(err).To(MatchError(ContainSubstring("access denied")))
+			cond := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
+			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonNetworkAttachmentCreateRejected))
+			Expect(networkAttachmentMayHaveBeenApplied(bmi)).To(BeFalse())
+			Expect(networkAttachmentCreateMayBeInFlight(bmi)).To(BeFalse())
+		})
+
+		It("keeps a rejected retry uncertain when an earlier create may still be in flight", func() {
+			bmi = newBMI(attachments)
+			Expect(k8sClient.Create(ctx, bmi)).To(Succeed())
+			_, err := reconciler.reconcileNetworking(ctx, bmi)
+			Expect(err).NotTo(HaveOccurred()) // Add the networking finalizer.
+			_, err = reconciler.reconcileNetworking(ctx, bmi)
+			Expect(err).NotTo(HaveOccurred()) // Record the selected interface MAC.
+			setNetworkAttachmentsReady(bmi, metav1.ConditionFalse,
+				v1alpha1.HostConditionReasonNetworkAttachmentCreating, "Previous request may be in flight")
+			Expect(k8sClient.Status().Update(ctx, bmi)).To(Succeed())
+
+			createErr := apierrors.NewForbidden(
+				schema.GroupResource{Resource: "networkattachments"}, "attachment",
+				errors.New("access denied"),
+			)
+			reconciler.Client = networkAttachmentCreateErrorClient{Client: k8sClient, err: createErr}
+
+			_, err = reconciler.reconcileNetworking(ctx, bmi)
+			Expect(err).To(MatchError(ContainSubstring("access denied")))
+			cond := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
+			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonNetworkAttachmentCreating))
+			Expect(networkAttachmentCreateMayBeInFlight(bmi)).To(BeTrue())
+		})
+
 		It("does not create an attachment after deletion begins", func() {
 			bmi = newBMI(attachments)
 			Expect(k8sClient.Create(ctx, bmi)).To(Succeed())
@@ -261,10 +333,11 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
 
-		It("fails the attachment when the inventory has no MAC for the interface", func() {
+		It("releases the host when the inventory has no MAC for the interface", func() {
 			bmi = newBMI(attachments)
 			controllerutil.AddFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)
 			Expect(k8sClient.Create(ctx, bmi)).To(Succeed())
+			setNetworkAttachmentsReady(bmi, metav1.ConditionTrue, "Succeeded", "Previously ready")
 			macs = map[string]string{"data-1": "aa:bb:cc:dd:ee:01"}
 
 			result, err := reconciler.reconcileNetworking(ctx, bmi)
@@ -276,6 +349,10 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonSelectedPortMACUnavailable))
 			Expect(cond.Message).To(ContainSubstring(`"data-0"`))
 			Expect(bmi.Status.Phase).To(Equal(v1alpha1.BareMetalInstancePhaseFailed))
+			Expect(bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady).Reason).
+				To(Equal("Succeeded"), "preserve prior network history")
+			Expect(bmi.Spec.ExternalHostID).To(BeEmpty(),
+				"release the host when the selected-port MAC is unavailable")
 			_, err = getAttachment()
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
@@ -356,7 +433,7 @@ var _ = Describe("BareMetalInstance Networking", func() {
 
 			cond := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-			Expect(<-recorder.Events).To(ContainSubstring("Normal NetworkAttached Network attachment is ready"))
+			Eventually(recorder.Events).Should(Receive(ContainSubstring("Normal NetworkAttached Network attachment is ready")))
 		})
 
 		It("fails when the NetworkAttachment failed", func() {
@@ -381,7 +458,7 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonNetworkAttachmentFailed))
 			Expect(cond.Message).To(Equal("no free port"))
-			Expect(<-recorder.Events).To(ContainSubstring("Warning NetworkAttachmentFailed no free port"))
+			Eventually(recorder.Events).Should(Receive(ContainSubstring("Warning NetworkAttachmentFailed no free port")))
 		})
 
 		It("reuses a legacy BMI-only NetworkAttachment and records its MAC", func() {

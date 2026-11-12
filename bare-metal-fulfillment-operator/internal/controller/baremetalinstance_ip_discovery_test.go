@@ -79,7 +79,7 @@ var _ = Describe("BareMetalInstance IP Discovery", func() {
 
 	AfterEach(func() {
 		if attachment != nil {
-			_ = k8sClient.Delete(ctx, attachment)
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, attachment))).To(Succeed())
 		}
 	})
 
@@ -212,7 +212,7 @@ var _ = Describe("BareMetalInstance IP Discovery", func() {
 
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result.RequeueAfter).To(BeNumerically(">", 0))
-		Expect(<-recorder.Events).To(ContainSubstring("Warning LeaseNotFound"))
+		Eventually(recorder.Events).Should(Receive(ContainSubstring("Warning LeaseNotFound")))
 		cond := bmi.GetStatusCondition(v1alpha1.HostConditionIPDiscoveryComplete)
 		Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonLeasePending))
 		Expect(cond.Message).To(ContainSubstring(leaseNotFoundMarker))

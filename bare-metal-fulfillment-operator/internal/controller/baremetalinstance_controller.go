@@ -397,6 +397,11 @@ func (r *BareMetalInstanceReconciler) reconcileInventory(ctx context.Context, ba
 	if inventoryHost == nil {
 		log.Info("Host is acquired by a different BareMetalInstance, unsetting ExternalHostID", "InventoryHostID", hostID)
 		bareMetalInstance.Spec.ExternalHostID = ""
+		// The recorded interface MAC belongs to this host. Force a fresh lookup
+		// after another host is selected so the NetworkAttachment cannot reuse it.
+		for i := range bareMetalInstance.Status.NetworkAttachmentStatuses {
+			bareMetalInstance.Status.NetworkAttachmentStatuses[i].MACAddress = ""
+		}
 		if err = r.Update(ctx, bareMetalInstance); err != nil {
 			log.Error(err, "Failed to update BareMetalInstance CR")
 			return ctrl.Result{}, err
@@ -801,10 +806,18 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkProvisionAndDiscovery(ctx 
 		bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseProgressing
 		return result, nil
 	}
-	if bareMetalInstance.Status.Phase == v1alpha1.BareMetalInstancePhaseFailed {
+	netCond := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
+	if bareMetalInstance.Status.Phase == v1alpha1.BareMetalInstancePhaseFailed &&
+		isSelectedPortMACFailure(bareMetalInstance) {
 		return ctrl.Result{}, nil
 	}
-	netCond := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
+	if bareMetalInstance.Status.Phase == v1alpha1.BareMetalInstancePhaseFailed &&
+		netCond != nil && netCond.Status == metav1.ConditionTrue {
+		// A prior network retry may have failed while the provisioning and
+		// handoff conditions remain recoverable. Let the terminal condition
+		// checks below decide whether to stay failed or continue the lifecycle.
+		bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseProgressing
+	}
 	if netCond == nil || netCond.Status != metav1.ConditionTrue {
 		if netCond != nil && isFinalNetworkAttachmentFailure(netCond.Reason) {
 			bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
@@ -863,6 +876,12 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkHandoffAndIPDiscovery(
 func isFinalNetworkAttachmentFailure(reason string) bool {
 	return reason == v1alpha1.HostConditionReasonTemplateFailed ||
 		reason == v1alpha1.HostConditionReasonNetworkAttachmentFailed
+}
+
+func isSelectedPortMACFailure(bmi *v1alpha1.BareMetalInstance) bool {
+	allocated := bmi.GetStatusCondition(v1alpha1.HostConditionAllocated)
+	return allocated != nil && allocated.Status == metav1.ConditionFalse &&
+		allocated.Reason == v1alpha1.HostConditionReasonSelectedPortMACUnavailable
 }
 
 func (r *BareMetalInstanceReconciler) recordBMIEvent(
@@ -974,7 +993,8 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkHandoffPowerCycle(
 	}
 
 	handoffCond := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkHandoffComplete)
-	if handoffCond != nil && handoffCond.Status == metav1.ConditionTrue {
+	if handoffCond != nil && handoffCond.Status == metav1.ConditionTrue &&
+		handoffCond.Reason != v1alpha1.HostConditionReasonProvisioningDisabled {
 		return ctrl.Result{}, nil
 	}
 	if handoffCond != nil && handoffCond.Reason == v1alpha1.HostConditionReasonNetworkHandoffFailed {
@@ -1087,15 +1107,15 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkOffboardShutdown(
 		return ctrl.Result{}, nil
 	}
 	if r.ManagementClient == nil {
-		return r.retryNetworkOffboarding(bmi, "management client is not configured")
+		return r.pendingNetworkOffboarding(bmi, "management client is not configured")
 	}
 
 	powerStatus, err := r.ManagementClient.GetPowerState(ctx, bmi.Spec.ExternalHostID)
 	if err != nil {
-		return r.retryNetworkOffboarding(bmi, fmt.Sprintf("GetPowerState failed: %v", err))
+		return r.pendingNetworkOffboarding(bmi, fmt.Sprintf("GetPowerState failed: %v", err))
 	}
 	if powerStatus == nil {
-		return r.retryNetworkOffboarding(bmi, "management backend returned no power status")
+		return r.pendingNetworkOffboarding(bmi, "management backend returned no power status")
 	}
 
 	if powerStatus.State == management.PowerOff && !powerStatus.IsTransitioning {
@@ -1106,43 +1126,45 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkOffboardShutdown(
 		return ctrl.Result{}, nil
 	}
 
-	if powerStatus.State == management.PowerOn && !powerStatus.IsTransitioning &&
-		offboardCond != nil && offboardCond.Status == metav1.ConditionFalse &&
-		offboardCond.Reason == v1alpha1.HostConditionReasonPoweringOff {
-		bmi.SetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete,
-			metav1.ConditionFalse, v1alpha1.HostConditionReasonPoweringOff,
-			"Waiting to observe the requested host power-off")
-		return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
-	}
-
 	if powerStatus.IsTransitioning {
 		log.Info("Host transitioning, waiting for power off", "host", bmi.Spec.ExternalHostID)
-		bmi.SetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete,
-			metav1.ConditionFalse, v1alpha1.HostConditionReasonOffboarding,
+		return r.pendingNetworkOffboarding(bmi,
 			"Waiting for the host power transition to finish before network cleanup")
-		return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
 	}
 
 	// Host is powered on — power it off
 	if err := r.ManagementClient.SetPowerState(ctx, bmi.Spec.ExternalHostID, management.PowerOff); err != nil {
 		if errors.Is(err, management.ErrTransitioning) {
-			bmi.SetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete,
-				metav1.ConditionFalse, v1alpha1.HostConditionReasonOffboarding,
+			return r.pendingNetworkOffboarding(bmi,
 				"Management backend reports a transition; waiting to retry power off")
-			return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
 		}
 		return r.retryNetworkOffboarding(bmi, fmt.Sprintf("SetPowerState(OFF) failed: %v", err))
 	}
 	bmi.SetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete,
-		metav1.ConditionFalse, v1alpha1.HostConditionReasonPoweringOff,
+		metav1.ConditionFalse, v1alpha1.HostConditionReasonOffboarding,
 		"Powering off host before moving port to provisioning network")
 	log.Info("Triggered offboard shutdown", "host", bmi.Spec.ExternalHostID)
+	return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
+}
+
+func (r *BareMetalInstanceReconciler) pendingNetworkOffboarding(
+	bmi *v1alpha1.BareMetalInstance, diagnostic string,
+) (ctrl.Result, error) {
+	bmi.SetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete,
+		metav1.ConditionFalse, v1alpha1.HostConditionReasonOffboarding, diagnostic)
 	return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
 }
 
 func (r *BareMetalInstanceReconciler) retryNetworkOffboarding(
 	bmi *v1alpha1.BareMetalInstance, diagnostic string,
 ) (ctrl.Result, error) {
+	r.recordNetworkOffboardingFailure(bmi, diagnostic)
+	return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
+}
+
+func (r *BareMetalInstanceReconciler) recordNetworkOffboardingFailure(
+	bmi *v1alpha1.BareMetalInstance, diagnostic string,
+) {
 	previous := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete)
 	if previous == nil || previous.Reason != v1alpha1.HostConditionReasonPowerOffFailed {
 		r.recordBMIEvent(bmi, corev1.EventTypeWarning,
@@ -1150,7 +1172,6 @@ func (r *BareMetalInstanceReconciler) retryNetworkOffboarding(
 	}
 	bmi.SetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete,
 		metav1.ConditionFalse, v1alpha1.HostConditionReasonPowerOffFailed, diagnostic)
-	return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
 }
 
 func (r *BareMetalInstanceReconciler) syncBareMetalInstanceStatus(bareMetalInstance *v1alpha1.BareMetalInstance, powerStatus *management.PowerStatus, reconcileErr error, log logr.Logger) {
