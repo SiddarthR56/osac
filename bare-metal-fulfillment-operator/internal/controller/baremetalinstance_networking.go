@@ -428,7 +428,7 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkingDeletion(
 		}
 		if len(keys) > 0 && !networkAttachmentCleanupStarted(bareMetalInstance) {
 			setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
-				v1alpha1.HostConditionReasonNetworkAttachmentCleanupStarted,
+				v1alpha1.HostConditionReasonNetworkDetaching,
 				"Persisting NetworkAttachment cleanup intent before releasing host ownership")
 			if err := r.Status().Update(ctx, bareMetalInstance); err != nil {
 				return ctrl.Result{}, false, fmt.Errorf("persist NetworkAttachment cleanup intent: %w", err)
@@ -490,7 +490,7 @@ func networkAttachmentMayHaveBeenApplied(bmi *v1alpha1.BareMetalInstance) bool {
 
 func networkAttachmentCleanupStarted(bmi *v1alpha1.BareMetalInstance) bool {
 	condition := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
-	return condition != nil && condition.Reason == v1alpha1.HostConditionReasonNetworkAttachmentCleanupStarted
+	return condition != nil && condition.Reason == v1alpha1.HostConditionReasonNetworkDetaching
 }
 
 func networkAttachmentCreateMayBeInFlight(bmi *v1alpha1.BareMetalInstance) bool {

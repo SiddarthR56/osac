@@ -497,6 +497,8 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(na.DeletionTimestamp).To(BeNil())
 			Expect(networkAttachmentCleanupStarted(bmi)).To(BeTrue())
+			Expect(bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady).Reason).
+				To(Equal(v1alpha1.HostConditionReasonNetworkDetaching))
 
 			// The next pass requests deletion after the cleanup intent is durable.
 			_, done, err = reconciler.reconcileNetworkingDeletion(ctx, bmi)

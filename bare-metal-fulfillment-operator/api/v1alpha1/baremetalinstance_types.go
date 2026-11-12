@@ -245,7 +245,7 @@ const (
 	HostConditionReasonNetworkAttachmentApplying        = "NetworkAttachmentApplying"
 	HostConditionReasonNetworkAttachmentCreateRejected  = "NetworkAttachmentCreateRejected"
 	HostConditionReasonNetworkAttachmentCreationSkipped = "NetworkAttachmentCreationSkipped"
-	HostConditionReasonNetworkAttachmentCleanupStarted  = "NetworkAttachmentCleanupStarted"
+	HostConditionReasonNetworkDetaching                 = "NetworkDetaching"
 	HostConditionReasonNetworkAttachmentMissing         = "NetworkAttachmentMissing"
 	HostConditionReasonLeasePending                     = "LeasePending"
 	HostConditionReasonIPDiscoveryFailed                = "IPDiscoveryFailed"
