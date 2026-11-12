@@ -47,6 +47,7 @@ See [suite boundaries and coverage gaps](../docs/INTEGRATION-TESTING.md#osac-ope
 | Touched area | Required validation | Command / follow-up |
 |---|---|---|
 | Pure helpers, validation, or state calculations | Unit | `make test` |
+| Shared NetworkAttachment deletion and owner-finalizer handling for ComputeInstance | Unit / Envtest | `pkg/networkattachment/delete_test.go`, existing ComputeInstance cleanup tests, and `make test` |
 | NATGateway dependency snapshot, tenant and identity checks, result rejection on changed dependencies, and Subnet-independent input | Unit / Envtest | `internal/controller/natgateway_contract_test.go` and the NATGateway specs in `internal/controller/networking_attachments_test.go`; run `make test` |
 | Fulfillment client CA parsing, TLS verification, or bundle rotation | Unit with local TLS endpoint; component integration for deployment | `make test`, then [installer Kind target](../docs/INTEGRATION-TESTING.md#osac-operator) and `make -C ../osac-installer fulfillment-trust-render-test` |
 | Controller reconciliation, finalizers, status, or CRD interactions | Envtest | `make test` |

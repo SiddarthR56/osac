@@ -2356,6 +2356,10 @@ var _ = Describe("BareMetalInstance network handoff reboot (OSAC-1448)", func() 
 
 	Describe("reconcileIPDiscovery gating", func() {
 		It("does not run before the handoff power cycle completes", func() {
+			reconciler.NetworkingEnabled = true
+			bareMetalInstance.Spec.NetworkAttachments = []v1alpha1.BareMetalNetworkAttachment{{
+				SubnetRef: "subnet-1", Interface: "eth0", Primary: true,
+			}}
 			// Handoff is NOT complete
 			Expect(bareMetalInstance.IsStatusConditionTrue(v1alpha1.HostConditionNetworkHandoffComplete)).To(BeFalse())
 
@@ -2377,11 +2381,11 @@ var _ = Describe("BareMetalInstance network handoff reboot (OSAC-1448)", func() 
 			// IP discovery should run (will fail because no provider, but that's OK for this test)
 			_, err := reconciler.reconcileIPDiscovery(ctx, bareMetalInstance)
 			Expect(err).NotTo(HaveOccurred())
-			// It sets the condition to True/Skipped when no provider is configured
+			// It marks all networking conditions disabled when networking is off.
 			cond := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionIPDiscoveryComplete)
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-			Expect(cond.Reason).To(Equal("Skipped"))
+			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonProvisioningDisabled))
 		})
 	})
 
@@ -2484,21 +2488,21 @@ var _ = Describe("BareMetalInstance network offboard shutdown (OSAC-1448)", func
 		}
 	})
 
-	It("powers off a running host and sets condition to Progressing", func() {
+	It("powers off a running host and marks it Offboarding", func() {
 		mockMgmtClient.getPowerStateFunc = func(_ context.Context, _ string) (*management.PowerStatus, error) {
 			return &management.PowerStatus{State: management.PowerOn, IsTransitioning: false}, nil
 		}
 
 		result, err := reconciler.reconcileNetworkOffboardShutdown(ctx, bareMetalInstance)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.RequeueAfter).To(Equal(5 * time.Second))
+		Expect(result.RequeueAfter).To(Equal(NetworkOffboardPollInterval))
 		Expect(setPowerCallCount).To(Equal(1))
 		Expect(setPowerTarget).To(Equal(management.PowerOff))
 
 		cond := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete)
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-		Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonProgressing))
+		Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonOffboarding))
 	})
 
 	It("completes immediately for a powered-off host", func() {
@@ -2524,11 +2528,38 @@ var _ = Describe("BareMetalInstance network offboard shutdown (OSAC-1448)", func
 
 		result, err := reconciler.reconcileNetworkOffboardShutdown(ctx, bareMetalInstance)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.RequeueAfter).To(Equal(5 * time.Second))
+		Expect(result.RequeueAfter).To(Equal(NetworkOffboardPollInterval))
 		Expect(setPowerCallCount).To(Equal(0))
 
 		cond := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete)
-		Expect(cond).To(BeNil())
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonOffboarding))
+	})
+
+	It("keeps retrying management failures without releasing the host", func() {
+		mockMgmtClient.getPowerStateFunc = func(_ context.Context, _ string) (*management.PowerStatus, error) {
+			return nil, errors.New("BMC unavailable")
+		}
+		recorder := events.NewFakeRecorder(1)
+		reconciler.EventRecorder = recorder
+
+		result, err := reconciler.reconcileNetworkOffboardShutdown(ctx, bareMetalInstance)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(NetworkOffboardPollInterval))
+		cond := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete)
+		Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonPowerOffFailed))
+		Expect(cond.Message).To(ContainSubstring("BMC unavailable"))
+		Expect(<-recorder.Events).To(ContainSubstring("Warning PowerOffFailed"))
+
+		mockMgmtClient.getPowerStateFunc = func(_ context.Context, _ string) (*management.PowerStatus, error) {
+			return &management.PowerStatus{State: management.PowerOff}, nil
+		}
+		result, err = reconciler.reconcileNetworkOffboardShutdown(ctx, bareMetalInstance)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.IsZero()).To(BeTrue())
+		Expect(bareMetalInstance.IsStatusConditionTrue(v1alpha1.HostConditionNetworkOffboardComplete)).To(BeTrue())
 	})
 
 	It("is a no-op when already complete", func() {
@@ -2545,11 +2576,25 @@ var _ = Describe("BareMetalInstance network offboard shutdown (OSAC-1448)", func
 
 	It("runs before networking deletion in handleDeletion", func() {
 		reconciler.NetworkingEnabled = true
+		bareMetalInstance.Labels = map[string]string{bareMetalInstanceIDLabel: "offboard-bmi-id"}
 		controllerutil.AddFinalizer(bareMetalInstance, BareMetalInstanceManagementFinalizer)
 		controllerutil.AddFinalizer(bareMetalInstance, BareMetalInstanceNetworkingFinalizer)
 		controllerutil.AddFinalizer(bareMetalInstance, BareMetalInstanceInventoryFinalizer)
 		Expect(k8sClient.Create(ctx, bareMetalInstance)).To(Succeed())
-		defer func() { _ = k8sClient.Delete(ctx, bareMetalInstance) }()
+		na := newTestNetworkAttachment(bareMetalInstance.Namespace, "offboard-bmi-id", "eth0",
+			BareMetalInstanceNetworkingFinalizer, "osac.openshift.io/networkattachment")
+		Expect(k8sClient.Create(ctx, na)).To(Succeed())
+		defer func() {
+			na.Finalizers = nil
+			_ = k8sClient.Update(ctx, na)
+			_ = k8sClient.Delete(ctx, na)
+			latest := &v1alpha1.BareMetalInstance{}
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bareMetalInstance), latest); err == nil {
+				latest.Finalizers = nil
+				_ = k8sClient.Update(ctx, latest)
+				_ = k8sClient.Delete(ctx, latest)
+			}
+		}()
 
 		now := metav1.Now()
 		bareMetalInstance.DeletionTimestamp = &now
@@ -2571,27 +2616,32 @@ var _ = Describe("BareMetalInstance network offboard shutdown (OSAC-1448)", func
 			To(BeTrue(), "networking finalizer should still be present — shutdown runs before networking deletion")
 	})
 
-	It("does not enter offboard shutdown when networking provisioning is disabled", func() {
+	It("does not power off or clean up attachments when networking is disabled", func() {
 		Expect(reconciler.NetworkingEnabled).To(BeFalse(), "precondition: networking must be disabled")
 
 		mockMgmtClient.getPowerStateFunc = func(_ context.Context, _ string) (*management.PowerStatus, error) {
 			return &management.PowerStatus{State: management.PowerOn, IsTransitioning: false}, nil
 		}
 
-		// The handleDeletion guard: NetworkAttachments > 0 && ManagementClient != nil && networking enabled.
-		// With networking disabled, the offboard shutdown block is skipped entirely.
-		// Verify by checking that even with a powered-on host, no power-off is triggered.
-		Expect(bareMetalInstance.Spec.NetworkAttachments).ToNot(BeEmpty(),
-			"precondition: BMI must have network attachments")
-		Expect(reconciler.ManagementClient).NotTo(BeNil(),
-			"precondition: management client must be set")
-
-		// Directly verify the guard condition that was changed
-		shouldRunOffboard := len(bareMetalInstance.Spec.NetworkAttachments) > 0 &&
-			reconciler.ManagementClient != nil &&
-			reconciler.NetworkingEnabled
-		Expect(shouldRunOffboard).To(BeFalse(),
-			"offboard shutdown guard must be false when networking is disabled")
+		controllerutil.AddFinalizer(bareMetalInstance, BareMetalInstanceManagementFinalizer)
+		controllerutil.AddFinalizer(bareMetalInstance, BareMetalInstanceNetworkingFinalizer)
+		controllerutil.AddFinalizer(bareMetalInstance, BareMetalInstanceInventoryFinalizer)
+		bareMetalInstance.Spec.TemplateID = shared.OsacNoopTemplate
+		Expect(k8sClient.Create(ctx, bareMetalInstance)).To(Succeed())
+		DeferCleanup(func() {
+			latest := &v1alpha1.BareMetalInstance{}
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bareMetalInstance), latest); err == nil {
+				latest.Finalizers = nil
+				_ = k8sClient.Update(ctx, latest)
+				_ = k8sClient.Delete(ctx, latest)
+			}
+		})
+		reconciler.InventoryClient = &mockInventoryClient{unassignHostFunc: func(context.Context, string, string, []string) error {
+			return nil
+		}}
+		_, err := reconciler.handleDeletion(ctx, bareMetalInstance)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete)).To(BeNil())
 		Expect(setPowerCallCount).To(Equal(0), "must not power off when networking is disabled")
 	})
 })
@@ -2652,7 +2702,7 @@ var _ = Describe("BareMetalInstance networking feature gate (OSAC_ENABLE_NETWORK
 			)
 		})
 
-		It("skips move, reboot, and IP discovery in reconcileNetworkProvisionAndDiscovery", func() {
+		It("marks all network conditions disabled without network actions", func() {
 			result, err := reconciler.reconcileNetworkProvisionAndDiscovery(ctx, bareMetalInstance)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(ctrl.Result{}))
@@ -2661,17 +2711,18 @@ var _ = Describe("BareMetalInstance networking feature gate (OSAC_ENABLE_NETWORK
 			netCond := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
 			Expect(netCond).NotTo(BeNil())
 			Expect(netCond.Status).To(Equal(metav1.ConditionTrue))
-			Expect(netCond.Reason).To(Equal("Skipped"))
+			Expect(netCond.Reason).To(Equal(v1alpha1.HostConditionReasonProvisioningDisabled))
 
 			handoffCond := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionNetworkHandoffComplete)
 			Expect(handoffCond).NotTo(BeNil())
 			Expect(handoffCond.Status).To(Equal(metav1.ConditionTrue))
-			Expect(handoffCond.Reason).To(Equal("Skipped"))
+			Expect(handoffCond.Reason).To(Equal(v1alpha1.HostConditionReasonProvisioningDisabled))
 
 			ipCond := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionIPDiscoveryComplete)
 			Expect(ipCond).NotTo(BeNil())
 			Expect(ipCond.Status).To(Equal(metav1.ConditionTrue))
-			Expect(ipCond.Reason).To(Equal("Skipped"))
+			Expect(ipCond.Reason).To(Equal(v1alpha1.HostConditionReasonProvisioningDisabled))
+			Expect(bareMetalInstance.Status.NetworkAttachmentStatuses).To(BeEmpty())
 		})
 	})
 

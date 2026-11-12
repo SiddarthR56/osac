@@ -188,7 +188,7 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			cond := bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady)
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-			Expect(cond.Reason).To(Equal("Skipped"))
+			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonProvisioningDisabled))
 			_, err = getAttachment()
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
@@ -237,6 +237,28 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonProgressing))
 		})
 
+		It("does not create an attachment after deletion begins", func() {
+			bmi = newBMI(attachments)
+			Expect(k8sClient.Create(ctx, bmi)).To(Succeed())
+
+			_, err := reconciler.reconcileNetworking(ctx, bmi)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.reconcileNetworking(ctx, bmi)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(networkAttachmentStatusFor(bmi, "subnet-1").MACAddress).To(Equal("aa:bb:cc:dd:ee:ff"))
+			Expect(k8sClient.Status().Update(ctx, bmi)).To(Succeed())
+
+			Expect(k8sClient.Delete(ctx, bmi)).To(Succeed())
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(bmi), bmi)).To(Succeed())
+
+			result, err := reconciler.reconcileNetworking(ctx, bmi)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(NetworkOffboardPollInterval))
+			_, err = getAttachment()
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
+
 		It("fails the attachment when the inventory has no MAC for the interface", func() {
 			bmi = newBMI(attachments)
 			controllerutil.AddFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)
@@ -264,6 +286,8 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(k8sClient.Create(ctx, bmi)).To(Succeed())
 
 			_, err := reconciler.reconcileNetworking(ctx, bmi)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.reconcileNetworking(ctx, bmi)
 			Expect(err).NotTo(HaveOccurred())
 			_, err = reconciler.reconcileNetworking(ctx, bmi)
 			Expect(err).NotTo(HaveOccurred())
@@ -428,6 +452,41 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(done).To(BeTrue())
 			Expect(controllerutil.ContainsFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)).To(BeFalse())
+		})
+
+		It("waits for an uncertain create and deletes both current and legacy names", func() {
+			bmi = newBMI(attachments)
+			controllerutil.AddFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)
+			Expect(k8sClient.Create(ctx, bmi)).To(Succeed())
+			setNetworkAttachmentsReady(bmi, metav1.ConditionFalse,
+				v1alpha1.HostConditionReasonNetworkAttachmentCreating, "Create request may be in flight")
+
+			result, done, err := reconciler.reconcileNetworkingDeletion(ctx, bmi)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(done).To(BeFalse())
+			Expect(result.RequeueAfter).To(Equal(NetworkOffboardPollInterval))
+			Expect(controllerutil.ContainsFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)).To(BeTrue())
+
+			suffixed := newTestNetworkAttachment(namespace, bmiID, "data-0", BareMetalInstanceNetworkingFinalizer)
+			legacy := suffixed.DeepCopy()
+			legacy.Name = opv1alpha1.NetworkAttachmentName(
+				opv1alpha1.NetworkAttachmentTargetBareMetalInstance, bmiID, "")
+			Expect(k8sClient.Create(ctx, suffixed)).To(Succeed())
+			Expect(k8sClient.Create(ctx, legacy)).To(Succeed())
+
+			for range 3 {
+				_, done, err = reconciler.reconcileNetworkingDeletion(ctx, bmi)
+				Expect(err).NotTo(HaveOccurred())
+				if done {
+					break
+				}
+			}
+			Expect(done).To(BeTrue())
+			Expect(controllerutil.ContainsFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)).To(BeFalse())
+			_, err = getAttachment()
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+			legacyKey := client.ObjectKey{Namespace: namespace, Name: legacy.Name}
+			Expect(k8sClient.Get(ctx, legacyKey, &opv1alpha1.NetworkAttachment{})).To(Satisfy(apierrors.IsNotFound))
 		})
 
 		It("is done when the networking finalizer is absent", func() {
