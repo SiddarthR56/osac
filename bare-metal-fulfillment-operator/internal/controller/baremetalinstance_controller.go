@@ -970,24 +970,24 @@ func (r *BareMetalInstanceReconciler) handleDeletion(ctx context.Context, bareMe
 	var done bool
 	var err error
 
-	// Resolve both the current and legacy attachment names before deciding whether
-	// the host needs offboarding. A persisted create intent with no object yet is
-	// uncertain, so retain ownership and retry the fresh lookup.
+	// Resolve the interface-suffixed attachment before deciding whether the host
+	// needs offboarding. A persisted create intent with no object yet is uncertain,
+	// so retain ownership and retry the fresh lookup.
 	if r.networkingRequested(bareMetalInstance) {
-		keys, lookupErr := r.existingNetworkAttachmentKeys(ctx, bareMetalInstance)
+		_, exists, lookupErr := r.existingNetworkAttachmentKey(ctx, bareMetalInstance)
 		if lookupErr != nil {
 			return ctrl.Result{}, lookupErr
 		}
 		creating := networkAttachmentCreateMayBeInFlight(bareMetalInstance)
-		if len(keys) == 0 && creating {
+		if !exists && creating {
 			setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
 				v1alpha1.HostConditionReasonNetworkAttachmentCreating,
 				"Waiting for an uncertain NetworkAttachment create request to resolve")
 			bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseDeleting
 			return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
 		}
-		if len(keys) > 0 || networkAttachmentMayHaveBeenApplied(bareMetalInstance) {
-			if len(keys) > 0 && creating {
+		if exists || networkAttachmentMayHaveBeenApplied(bareMetalInstance) {
+			if exists && creating {
 				setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
 					v1alpha1.HostConditionReasonOffboarding, "Waiting for NetworkAttachment cleanup")
 			}

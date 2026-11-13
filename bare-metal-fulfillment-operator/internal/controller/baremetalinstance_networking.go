@@ -88,21 +88,6 @@ func networkAttachmentKey(
 	}, true
 }
 
-// legacyNetworkAttachmentKey returns the BMI-only key used before interface
-// names were included in NetworkAttachment names.
-func legacyNetworkAttachmentKey(
-	bmi *v1alpha1.BareMetalInstance,
-) (client.ObjectKey, bool) {
-	id := bmi.Labels[bareMetalInstanceIDLabel]
-	if id == "" {
-		return client.ObjectKey{}, false
-	}
-	return client.ObjectKey{
-		Namespace: bmi.Namespace,
-		Name:      opv1alpha1.NetworkAttachmentName(opv1alpha1.NetworkAttachmentTargetBareMetalInstance, id, ""),
-	}, true
-}
-
 // getNetworkAttachment reads a NetworkAttachment directly from the API server.
 // It returns nil when the NetworkAttachment does not exist.
 func (r *BareMetalInstanceReconciler) getNetworkAttachment(
@@ -228,7 +213,7 @@ func (r *BareMetalInstanceReconciler) reconcileNetworking(
 	}
 
 	r.initNetworkAttachmentStatuses(bareMetalInstance)
-	na, resolvedKey, err := r.getExistingNetworkAttachment(ctx, bareMetalInstance, attachment)
+	na, err := r.getNetworkAttachment(ctx, key)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -237,12 +222,12 @@ func (r *BareMetalInstanceReconciler) reconcileNetworking(
 		return r.createNetworkAttachment(ctx, bareMetalInstance, attachment, key)
 	}
 
-	// Existing BMI-only attachments are reused through upgrades. Mirror their
-	// recorded port identity into status without changing the NetworkAttachment.
+	// Mirror the selected port identity from the existing NetworkAttachment into
+	// status without changing the NetworkAttachment.
 	if status := networkAttachmentStatusFor(bareMetalInstance, attachment.SubnetRef); status != nil && status.MACAddress == "" {
 		mac, err := normalizeMAC(na.Spec.Interface.MACAddress)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("existing NetworkAttachment %s has invalid interface MAC: %w", resolvedKey.Name, err)
+			return ctrl.Result{}, fmt.Errorf("existing NetworkAttachment %s has invalid interface MAC: %w", key.Name, err)
 		}
 		status.MACAddress = mac
 	}
@@ -372,33 +357,6 @@ func networkAttachmentCreateWasRejected(err error) bool {
 		apierrors.IsUnauthorized(err)
 }
 
-func (r *BareMetalInstanceReconciler) getExistingNetworkAttachment(
-	ctx context.Context,
-	bmi *v1alpha1.BareMetalInstance,
-	attachment *v1alpha1.BareMetalNetworkAttachment,
-) (*opv1alpha1.NetworkAttachment, client.ObjectKey, error) {
-	suffixedKey, ok := networkAttachmentKey(bmi, attachment)
-	if !ok {
-		return nil, client.ObjectKey{}, fmt.Errorf("the BareMetalInstance has no %s label", bareMetalInstanceIDLabel)
-	}
-	na, err := r.getNetworkAttachment(ctx, suffixedKey)
-	if err != nil || na != nil {
-		return na, suffixedKey, err
-	}
-	legacyKey, ok := legacyNetworkAttachmentKey(bmi)
-	if !ok || legacyKey == suffixedKey {
-		return nil, suffixedKey, nil
-	}
-	na, err = r.getNetworkAttachment(ctx, legacyKey)
-	if err != nil {
-		return nil, legacyKey, err
-	}
-	if na != nil {
-		return na, legacyKey, nil
-	}
-	return nil, suffixedKey, nil
-}
-
 // reconcileNetworkingDeletion deletes the BareMetalInstance's NetworkAttachment
 // and waits until it is gone. The networking controller moves the host's port
 // back to the provisioning network before it removes its own finalizer; BMF
@@ -415,25 +373,25 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkingDeletion(
 	}
 
 	if r.NetworkingEnabled {
-		keys, err := r.existingNetworkAttachmentKeys(ctx, bareMetalInstance)
+		key, exists, err := r.existingNetworkAttachmentKey(ctx, bareMetalInstance)
 		if err != nil {
 			return ctrl.Result{}, false, err
 		}
 		creating := networkAttachmentCreateMayBeInFlight(bareMetalInstance)
-		if len(keys) == 0 && creating {
+		if !exists && creating {
 			setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
 				v1alpha1.HostConditionReasonNetworkAttachmentCreating,
 				"Waiting for an uncertain NetworkAttachment create request to resolve")
 			return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, false, nil
 		}
-		if len(keys) == 0 && networkAttachmentMayHaveBeenApplied(bareMetalInstance) &&
+		if !exists && networkAttachmentMayHaveBeenApplied(bareMetalInstance) &&
 			!networkAttachmentCleanupStarted(bareMetalInstance) {
 			setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
 				v1alpha1.HostConditionReasonNetworkAttachmentMissing,
 				"NetworkAttachment is missing after it may have been applied; retaining host ownership until cleanup is confirmed")
 			return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, false, nil
 		}
-		if len(keys) > 0 && !networkAttachmentCleanupStarted(bareMetalInstance) {
+		if exists && !networkAttachmentCleanupStarted(bareMetalInstance) {
 			setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
 				v1alpha1.HostConditionReasonNetworkDetaching,
 				"Persisting NetworkAttachment cleanup intent before releasing host ownership")
@@ -442,18 +400,16 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkingDeletion(
 			}
 			return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, false, nil
 		}
-		allGone := true
-		for _, key := range keys {
+		if exists {
 			log.Info("Reconciling NetworkAttachment deletion", "networkAttachment", key.Name)
 			gone, err := networkattachment.DeleteOwned(ctx, r.Client, r.apiReaderOrClient(), key,
 				&opv1alpha1.NetworkAttachment{}, BareMetalInstanceNetworkingFinalizer)
 			if err != nil {
 				return ctrl.Result{}, false, err
 			}
-			allGone = allGone && gone
-		}
-		if !allGone {
-			return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, false, nil
+			if !gone {
+				return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, false, nil
+			}
 		}
 	}
 
@@ -508,32 +464,22 @@ func networkAttachmentCreateMayBeInFlight(bmi *v1alpha1.BareMetalInstance) bool 
 	return condition != nil && condition.Reason == v1alpha1.HostConditionReasonNetworkAttachmentCreating
 }
 
-func (r *BareMetalInstanceReconciler) existingNetworkAttachmentKeys(
+func (r *BareMetalInstanceReconciler) existingNetworkAttachmentKey(
 	ctx context.Context, bmi *v1alpha1.BareMetalInstance,
-) ([]client.ObjectKey, error) {
+) (client.ObjectKey, bool, error) {
 	attachment := primaryNetworkAttachment(bmi)
 	if attachment == nil {
-		return nil, nil
+		return client.ObjectKey{}, false, nil
 	}
-	suffixedKey, ok := networkAttachmentKey(bmi, attachment)
+	key, ok := networkAttachmentKey(bmi, attachment)
 	if !ok {
-		return nil, nil
+		return client.ObjectKey{}, false, nil
 	}
-	keys := []client.ObjectKey{suffixedKey}
-	if legacyKey, ok := legacyNetworkAttachmentKey(bmi); ok && legacyKey != suffixedKey {
-		keys = append(keys, legacyKey)
+	na, err := r.getNetworkAttachment(ctx, key)
+	if err != nil {
+		return client.ObjectKey{}, false, err
 	}
-	existing := make([]client.ObjectKey, 0, len(keys))
-	for _, key := range keys {
-		na, err := r.getNetworkAttachment(ctx, key)
-		if err != nil {
-			return nil, err
-		}
-		if na != nil {
-			existing = append(existing, key)
-		}
-	}
-	return existing, nil
+	return key, na != nil, nil
 }
 
 // removeNetworkingFinalizer completes network cleanup of a BareMetalInstance.

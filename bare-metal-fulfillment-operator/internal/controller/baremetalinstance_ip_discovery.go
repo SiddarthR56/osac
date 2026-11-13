@@ -77,13 +77,13 @@ func (r *BareMetalInstanceReconciler) reconcileIPDiscovery(
 			"the BareMetalInstance has no primary network attachment")
 		return ctrl.Result{}, nil
 	}
-	_, ok := networkAttachmentKey(bareMetalInstance, attachment)
+	key, ok := networkAttachmentKey(bareMetalInstance, attachment)
 	if !ok {
 		setIPDiscoveryComplete(bareMetalInstance, metav1.ConditionFalse, v1alpha1.HostConditionReasonIPDiscoveryFailed,
 			"the BareMetalInstance has no NetworkAttachment")
 		return ctrl.Result{}, nil
 	}
-	na, _, err := r.getExistingNetworkAttachment(ctx, bareMetalInstance, attachment)
+	na, err := r.getNetworkAttachment(ctx, key)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

@@ -495,34 +495,15 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Eventually(recorder.Events).Should(Receive(ContainSubstring("Warning NetworkAttachmentFailed no free port")))
 		})
 
-		It("reuses a legacy BMI-only NetworkAttachment and records its MAC", func() {
-			bmi = newBMI(attachments)
-			controllerutil.AddFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)
-			Expect(k8sClient.Create(ctx, bmi)).To(Succeed())
-			legacy := newTestNetworkAttachment(namespace, bmiID, "data-0", BareMetalInstanceNetworkingFinalizer)
-			legacy.Name = opv1alpha1.NetworkAttachmentName(opv1alpha1.NetworkAttachmentTargetBareMetalInstance, bmiID, "")
-			Expect(k8sClient.Create(ctx, legacy)).To(Succeed())
-
-			result, err := reconciler.reconcileNetworking(ctx, bmi)
-
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
-			Expect(networkAttachmentStatusFor(bmi, "subnet-1").MACAddress).To(Equal("aa:bb:cc:dd:ee:ff"))
-			_, err = getAttachment()
-			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "legacy attachment is reused without a suffixed duplicate")
-		})
 	})
 
 	Describe("reconcileNetworkingDeletion", func() {
-		deleteAndWaitForNetworkCleanup := func(legacy bool) {
+		deleteAndWaitForNetworkCleanup := func() {
 			bmi = newBMI(attachments)
 			controllerutil.AddFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)
 			Expect(k8sClient.Create(ctx, bmi)).To(Succeed())
 			na := newTestNetworkAttachment(namespace, bmiID, "data-0",
 				BareMetalInstanceNetworkingFinalizer, "osac.openshift.io/networkattachment")
-			if legacy {
-				na.Name = opv1alpha1.NetworkAttachmentName(opv1alpha1.NetworkAttachmentTargetBareMetalInstance, bmiID, "")
-			}
 			Expect(k8sClient.Create(ctx, na)).To(Succeed())
 			naKey := client.ObjectKeyFromObject(na)
 
@@ -576,11 +557,7 @@ var _ = Describe("BareMetalInstance Networking", func() {
 		}
 
 		It("deletes the NetworkAttachment and waits for the networking controller", func() {
-			deleteAndWaitForNetworkCleanup(false)
-		})
-
-		It("deletes a legacy BMI-only NetworkAttachment before releasing the host", func() {
-			deleteAndWaitForNetworkCleanup(true)
+			deleteAndWaitForNetworkCleanup()
 		})
 
 		It("completes at once when no NetworkAttachment exists", func() {
@@ -668,7 +645,7 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Entry("legacy skipped creation reason", "NetworkAttachmentCreationSkipped"),
 		)
 
-		It("waits for an uncertain create and deletes both current and legacy names", func() {
+		It("waits for an uncertain create and deletes the interface-suffixed name", func() {
 			bmi = newBMI(attachments)
 			controllerutil.AddFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)
 			Expect(k8sClient.Create(ctx, bmi)).To(Succeed())
@@ -682,11 +659,7 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(controllerutil.ContainsFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)).To(BeTrue())
 
 			suffixed := newTestNetworkAttachment(namespace, bmiID, "data-0", BareMetalInstanceNetworkingFinalizer)
-			legacy := suffixed.DeepCopy()
-			legacy.Name = opv1alpha1.NetworkAttachmentName(
-				opv1alpha1.NetworkAttachmentTargetBareMetalInstance, bmiID, "")
 			Expect(k8sClient.Create(ctx, suffixed)).To(Succeed())
-			Expect(k8sClient.Create(ctx, legacy)).To(Succeed())
 
 			for range 5 {
 				_, done, err = reconciler.reconcileNetworkingDeletion(ctx, bmi)
@@ -699,8 +672,6 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(controllerutil.ContainsFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)).To(BeFalse())
 			_, err = getAttachment()
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
-			legacyKey := client.ObjectKey{Namespace: namespace, Name: legacy.Name}
-			Expect(k8sClient.Get(ctx, legacyKey, &opv1alpha1.NetworkAttachment{})).To(Satisfy(apierrors.IsNotFound))
 		})
 
 		It("is done when the networking finalizer is absent", func() {
