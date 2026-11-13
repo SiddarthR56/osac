@@ -2711,6 +2711,42 @@ var _ = Describe("BareMetalInstance network offboard shutdown (OSAC-1448)", func
 		}
 	})
 
+	It("skips offboard shutdown when no host is assigned and an attachment must be cleaned up", func() {
+		reconciler.NetworkingEnabled = true
+		bareMetalInstance.Spec.ExternalHostID = ""
+		bareMetalInstance.Spec.ExternalHostName = ""
+		bareMetalInstance.Labels = map[string]string{bareMetalInstanceIDLabel: "offboard-no-host"}
+		controllerutil.AddFinalizer(bareMetalInstance, BareMetalInstanceNetworkingFinalizer)
+		Expect(k8sClient.Create(ctx, bareMetalInstance)).To(Succeed())
+		attachment := newTestNetworkAttachment(bareMetalInstance.Namespace, "offboard-no-host", "eth0")
+		Expect(k8sClient.Create(ctx, attachment)).To(Succeed())
+		DeferCleanup(func(cleanupCtx context.Context) {
+			latest := &v1alpha1.BareMetalInstance{}
+			if err := k8sClient.Get(cleanupCtx, client.ObjectKeyFromObject(bareMetalInstance), latest); !apierrors.IsNotFound(err) {
+				Expect(err).NotTo(HaveOccurred())
+				latest.Finalizers = nil
+				Expect(k8sClient.Update(cleanupCtx, latest)).To(Succeed())
+				Expect(client.IgnoreNotFound(k8sClient.Delete(cleanupCtx, latest))).To(Succeed())
+			}
+			Expect(client.IgnoreNotFound(k8sClient.Delete(cleanupCtx, attachment))).To(Succeed())
+		})
+		bareMetalInstance.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+
+		getPowerCalls := 0
+		mockMgmtClient.getPowerStateFunc = func(_ context.Context, _ string) (*management.PowerStatus, error) {
+			getPowerCalls++
+			return &management.PowerStatus{State: management.PowerOn}, nil
+		}
+
+		result, err := reconciler.handleDeletion(ctx, bareMetalInstance)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(NetworkOffboardPollInterval))
+		Expect(getPowerCalls).To(Equal(0))
+		Expect(setPowerCallCount).To(Equal(0))
+		Expect(bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete)).To(BeNil())
+	})
+
 	It("retries power-off after a stable powered-on observation", func() {
 		mockMgmtClient.getPowerStateFunc = func(_ context.Context, _ string) (*management.PowerStatus, error) {
 			return &management.PowerStatus{State: management.PowerOn, IsTransitioning: false}, nil

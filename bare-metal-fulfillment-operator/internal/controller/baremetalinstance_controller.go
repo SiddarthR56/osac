@@ -978,15 +978,13 @@ func (r *BareMetalInstanceReconciler) handleDeletion(ctx context.Context, bareMe
 		if lookupErr != nil {
 			return ctrl.Result{}, lookupErr
 		}
-		creating := networkAttachmentCreateMayBeInFlight(bareMetalInstance)
-		if len(keys) == 0 && creating {
-			setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
-				v1alpha1.HostConditionReasonNetworkAttachmentCreating,
-				"Waiting for an uncertain NetworkAttachment create request to resolve")
+		if result, waiting := requeueForNetworkAttachmentCreation(bareMetalInstance, keys); waiting {
 			bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseDeleting
-			return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
+			return result, nil
 		}
-		if len(keys) > 0 || networkAttachmentMayHaveBeenApplied(bareMetalInstance) {
+		creating := networkAttachmentCreateMayBeInFlight(bareMetalInstance)
+		if (len(keys) > 0 || networkAttachmentMayHaveBeenApplied(bareMetalInstance)) &&
+			bareMetalInstance.Spec.ExternalHostID != "" {
 			if len(keys) > 0 && creating {
 				setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
 					v1alpha1.HostConditionReasonOffboarding, "Waiting for NetworkAttachment cleanup")

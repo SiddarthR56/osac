@@ -17,7 +17,7 @@ suite (repository-root `make -C osac-installer help`, `.github/workflows/`).
 | Envtest | `internal/controller/` | Kubernetes API, etcd, OSAC and static Metal3 CRDs | Metal3 controller, Ironic/BMC, hardware and some provider clients faked. |
 | Component integration | Deployed `test/integration/` | Deployed operator, CRDs, API, pool/instance flows, status | Static `BareMetalHost` state and simulated transitions; no real Metal3 operator, Ironic, BMC or hardware. |
 | Component integration (CI) | Installer Kind target, BMF suite | Thin Kind install, installation API endpoint unset | Same static Metal3/provider boundary; installation settings need separate deployed coverage. |
-| Contract | None dedicated | No real provider boundary | Static Metal3 CRDs, patched status and simulated transitions do not exercise a real contract; follow [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) for qualifying coverage. |
+| Contract | None dedicated | No real provider boundary | Static Metal3 CRDs, patched status and simulated transitions do not exercise a real contract; component contract coverage follows [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843), and deployed BMaaS provider journeys follow [OSAC-7604](https://redhat.atlassian.net/browse/OSAC-7604). |
 | E2E | Cross-component suites | Fulfillment-to-operator journeys where available | Real hardware and providers remain environment-dependent. |
 
 ## Coverage notes
@@ -40,8 +40,11 @@ readiness, DHCP lease, and fake Metal3 power state to verify BMF mirrors the
 lease and query-job status. This covers the deployed BMF/API wiring; it does not
 run the Fabric Manager or AAP DHCP task, and it does not cover reusing a legacy
 NetworkAttachment. Unit and Envtest cases cover selection, reuse, diagnostics,
-and lease handling in isolation. Real provider and power behavior remains under
-[OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843).
+and lease handling in isolation. Component contract coverage for the real
+provider and power boundary remains under
+[OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843); deployed provider
+and hardware behavior is tracked under
+[OSAC-7604](https://redhat.atlassian.net/browse/OSAC-7604).
 
 ## Networking cleanup ownership (NET-CLEAN-08, NET-CLEAN-09)
 
@@ -63,6 +66,8 @@ live Fabric Manager boundary.
 ## Coverage gaps
 
 The Kind suite stops at static Metal3 resources and simulated provider status.
-Changes to the real Metal3/Ironic/BMC/provider boundary must add qualifying
-coverage under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) or its
+Real-provider cleanup and hardware safety are deployed-only coverage tracked
+under [OSAC-7604](https://redhat.atlassian.net/browse/OSAC-7604). Qualifying
+component contract coverage for the Metal3/Ironic/BMC/provider boundary remains
+tracked under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) or its
 contract-test follow-up; extending the static-fixture suite alone is insufficient.

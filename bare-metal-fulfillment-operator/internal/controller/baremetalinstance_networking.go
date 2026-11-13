@@ -419,12 +419,8 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkingDeletion(
 		if err != nil {
 			return ctrl.Result{}, false, err
 		}
-		creating := networkAttachmentCreateMayBeInFlight(bareMetalInstance)
-		if len(keys) == 0 && creating {
-			setNetworkAttachmentsReady(bareMetalInstance, metav1.ConditionFalse,
-				v1alpha1.HostConditionReasonNetworkAttachmentCreating,
-				"Waiting for an uncertain NetworkAttachment create request to resolve")
-			return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, false, nil
+		if result, waiting := requeueForNetworkAttachmentCreation(bareMetalInstance, keys); waiting {
+			return result, false, nil
 		}
 		if len(keys) == 0 && networkAttachmentMayHaveBeenApplied(bareMetalInstance) &&
 			!networkAttachmentCleanupStarted(bareMetalInstance) {
@@ -458,6 +454,18 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkingDeletion(
 	}
 
 	return r.removeNetworkingFinalizer(ctx, bareMetalInstance)
+}
+
+func requeueForNetworkAttachmentCreation(
+	bmi *v1alpha1.BareMetalInstance, keys []client.ObjectKey,
+) (ctrl.Result, bool) {
+	if len(keys) != 0 || !networkAttachmentCreateMayBeInFlight(bmi) {
+		return ctrl.Result{}, false
+	}
+	setNetworkAttachmentsReady(bmi, metav1.ConditionFalse,
+		v1alpha1.HostConditionReasonNetworkAttachmentCreating,
+		"Waiting for an uncertain NetworkAttachment create request to resolve")
+	return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, true
 }
 
 func networkAttachmentMayHaveBeenApplied(bmi *v1alpha1.BareMetalInstance) bool {
@@ -934,7 +942,9 @@ func (r *BareMetalInstanceReconciler) reconcileNetworkOffboardShutdown(
 			return r.pendingNetworkOffboarding(bmi,
 				"Management backend reports a transition; waiting to retry power off")
 		}
-		return r.retryNetworkOffboarding(bmi, fmt.Sprintf("SetPowerState(OFF) failed: %v", err))
+		diagnostic := fmt.Sprintf("SetPowerState(OFF) failed: %v", err)
+		r.recordNetworkOffboardingFailure(bmi, diagnostic)
+		return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
 	}
 	bmi.SetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete,
 		metav1.ConditionFalse, v1alpha1.HostConditionReasonOffboarding,
@@ -948,13 +958,6 @@ func (r *BareMetalInstanceReconciler) pendingNetworkOffboarding(
 ) (ctrl.Result, error) {
 	bmi.SetStatusCondition(v1alpha1.HostConditionNetworkOffboardComplete,
 		metav1.ConditionFalse, v1alpha1.HostConditionReasonOffboarding, diagnostic)
-	return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
-}
-
-func (r *BareMetalInstanceReconciler) retryNetworkOffboarding(
-	bmi *v1alpha1.BareMetalInstance, diagnostic string,
-) (ctrl.Result, error) {
-	r.recordNetworkOffboardingFailure(bmi, diagnostic)
 	return ctrl.Result{RequeueAfter: NetworkOffboardPollInterval}, nil
 }
 
