@@ -543,7 +543,8 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			_, done, err = reconciler.reconcileNetworkingDeletion(ctx, bmi)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(done).To(BeFalse())
-			na, err = getAttachment()
+			na = &opv1alpha1.NetworkAttachment{}
+			err = k8sClient.Get(ctx, naKey, na)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(na.DeletionTimestamp).NotTo(BeNil())
 

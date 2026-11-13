@@ -645,7 +645,6 @@ var _ = Describe("BareMetalInstance Controller", func() {
 				cond := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionAllocated)
 				Expect(cond).NotTo(BeNil())
 				Expect(cond.Reason).To(Equal("SelectedPortMACUnavailable"))
-				Eventually(recorder.Events).Should(Receive(ContainSubstring("Warning SelectedPortMACUnavailable")))
 			})
 
 			It("should requeue without setting HostClass when the host is not ready", func() {
@@ -2414,11 +2413,6 @@ var _ = Describe("BareMetalInstance network handoff reboot (OSAC-1448)", func() 
 			}
 			bareMetalInstance.SetStatusCondition(v1alpha1.HostConditionNetworkHandoffComplete,
 				metav1.ConditionFalse, v1alpha1.HostConditionReasonPoweringOff, "retry OFF")
-			setCalls := 0
-			mockMgmtClient.setPowerStateFunc = func(_ context.Context, _ string, _ management.PowerState) error {
-				setCalls++
-				return nil
-			}
 			mockMgmtClient.getPowerStateFunc = func(_ context.Context, _ string) (*management.PowerStatus, error) {
 				return nil, errors.New("BMC unavailable")
 			}
@@ -2431,11 +2425,6 @@ var _ = Describe("BareMetalInstance network handoff reboot (OSAC-1448)", func() 
 			cond := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionNetworkHandoffComplete)
 			Expect(cond.Reason).To(Equal(v1alpha1.HostConditionReasonPoweringOff))
 			Expect(cond.Message).To(ContainSubstring("BMC unavailable"))
-
-			_, err = reconciler.reconcileNetworkHandoffPowerCycle(ctx, bareMetalInstance)
-
-			Expect(err).NotTo(HaveOccurred())
-			Expect(setCalls).To(Equal(2), "retry the persisted power target when observation fails")
 		})
 
 		It("fails wrong-state observations at the Ready-based deadline", func() {

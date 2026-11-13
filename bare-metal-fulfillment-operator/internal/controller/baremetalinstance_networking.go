@@ -35,7 +35,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/osac-project/osac/bare-metal-fulfillment-operator/api/v1alpha1"
-	"github.com/osac-project/osac/bare-metal-fulfillment-operator/internal/inventory"
 	"github.com/osac-project/osac/bare-metal-fulfillment-operator/internal/management"
 	"github.com/osac-project/osac/bare-metal-fulfillment-operator/internal/shared"
 	opv1alpha1 "github.com/osac-project/osac/osac-operator/api/v1alpha1"
@@ -565,7 +564,9 @@ func (r *BareMetalInstanceReconciler) failSelectedPortMAC(
 	r.recordBMIEvent(bmi, corev1.EventTypeWarning,
 		v1alpha1.HostConditionReasonSelectedPortMACUnavailable, diagnostic)
 	if inventoryLocked {
-		return r.releaseHostWithoutSelectedPortMACLocked(ctx, bmi, diagnostic)
+		// Persist the failure before releasing the inventory claim. The next
+		// reconcile performs the owner-checked unassign outside the host mutex.
+		return ctrl.Result{RequeueAfter: r.ProvisionPollIntervalDuration}, nil
 	}
 	return r.releaseHostWithoutSelectedPortMAC(ctx, bmi, diagnostic)
 }
@@ -574,25 +575,6 @@ func (r *BareMetalInstanceReconciler) failSelectedPortMAC(
 // the selected physical port cannot be used for tenant networking, provided
 // provisioning has not started.
 func (r *BareMetalInstanceReconciler) releaseHostWithoutSelectedPortMAC(
-	ctx context.Context, bmi *v1alpha1.BareMetalInstance, diagnostic string,
-) (ctrl.Result, error) {
-	hostID := bmi.Spec.ExternalHostID
-	if hostID == "" {
-		bmi.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
-		bmi.SetStatusCondition(v1alpha1.HostConditionAllocated, metav1.ConditionFalse,
-			v1alpha1.HostConditionReasonSelectedPortMACUnavailable, diagnostic)
-		return ctrl.Result{}, nil
-	}
-	if !inventory.TryLock(hostID) {
-		return ctrl.Result{RequeueAfter: r.TryLockFailPollIntervalDuration}, nil
-	}
-	defer inventory.Unlock(hostID)
-	return r.releaseHostWithoutSelectedPortMACLocked(ctx, bmi, diagnostic)
-}
-
-// releaseHostWithoutSelectedPortMACLocked releases the host when the caller
-// already holds its inventory lock.
-func (r *BareMetalInstanceReconciler) releaseHostWithoutSelectedPortMACLocked(
 	ctx context.Context, bmi *v1alpha1.BareMetalInstance, diagnostic string,
 ) (ctrl.Result, error) {
 	hostID := bmi.Spec.ExternalHostID
