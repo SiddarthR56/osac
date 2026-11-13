@@ -281,7 +281,7 @@ func (r *BareMetalInstanceReconciler) createNetworkAttachment(
 	if status.MACAddress == "" {
 		mac, err := r.selectedPortMAC(ctx, bmi, attachment.Interface)
 		if errors.Is(err, errSelectedPortMACUnavailable) {
-			return r.failSelectedPortMAC(ctx, bmi, err.Error(), false)
+			return r.failSelectedPortMAC(bmi, err.Error())
 		}
 		if err != nil {
 			return ctrl.Result{}, err
@@ -499,59 +499,16 @@ func (r *BareMetalInstanceReconciler) networkingRequested(bmi *v1alpha1.BareMeta
 	return r.NetworkingEnabled && len(bmi.Spec.NetworkAttachments) > 0
 }
 
-// failSelectedPortMAC records the selected-interface failure and releases the
-// host only when provisioning has not started. Inventory reconciliation first
-// persists the failure and releases the host on a later pass, outside the lock.
+// failSelectedPortMAC records a terminal selected-interface failure and leaves
+// the host assigned so the error remains tied to the affected host. The
+// inventory finalizer releases it if the BareMetalInstance is deleted.
 func (r *BareMetalInstanceReconciler) failSelectedPortMAC(
-	ctx context.Context, bmi *v1alpha1.BareMetalInstance, diagnostic string, inventoryLocked bool,
+	bmi *v1alpha1.BareMetalInstance, diagnostic string,
 ) (ctrl.Result, error) {
 	bmi.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
 	bmi.SetStatusCondition(v1alpha1.HostConditionAllocated, metav1.ConditionFalse,
 		v1alpha1.HostConditionReasonSelectedPortMACUnavailable, diagnostic)
 	r.recordBMIEvent(bmi, corev1.EventTypeWarning,
-		v1alpha1.HostConditionReasonSelectedPortMACUnavailable, diagnostic)
-	if inventoryLocked {
-		return ctrl.Result{RequeueAfter: r.ProvisionPollIntervalDuration}, nil
-	}
-	return r.releaseHostWithoutSelectedPortMAC(ctx, bmi, diagnostic)
-}
-
-// releaseHostWithoutSelectedPortMAC returns an assigned host to inventory after
-// the selected physical port cannot be used for tenant networking, provided
-// provisioning has not started.
-func (r *BareMetalInstanceReconciler) releaseHostWithoutSelectedPortMAC(
-	ctx context.Context, bmi *v1alpha1.BareMetalInstance, diagnostic string,
-) (ctrl.Result, error) {
-	hostID := bmi.Spec.ExternalHostID
-	if hostID == "" {
-		bmi.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
-		bmi.SetStatusCondition(v1alpha1.HostConditionAllocated, metav1.ConditionFalse,
-			v1alpha1.HostConditionReasonSelectedPortMACUnavailable, diagnostic)
-		return ctrl.Result{}, nil
-	}
-	if hasProvisioningActivity(bmi) {
-		// Keep ownership of an imaged or potentially-imaged host. The normal
-		// deletion path deprovisions it before releasing inventory ownership.
-		return ctrl.Result{}, nil
-	}
-
-	if r.InventoryClient == nil {
-		return ctrl.Result{}, errors.New("inventory client not configured while releasing host")
-	}
-	if err := r.InventoryClient.UnassignHost(ctx, hostID, string(bmi.UID), inventoryLabelsToRemove(bmi)); err != nil {
-		return ctrl.Result{}, fmt.Errorf("release host %s after selected-port MAC failure: %w", hostID, err)
-	}
-
-	updated := bmi.DeepCopy()
-	updated.Spec.ExternalHostID = ""
-	updated.Spec.ExternalHostName = ""
-	updated.Spec.HostClass = ""
-	if err := r.Update(ctx, updated); err != nil {
-		return ctrl.Result{}, fmt.Errorf("clear host assignment after selected-port MAC failure: %w", err)
-	}
-	bmi.Spec = updated.Spec
-	bmi.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
-	bmi.SetStatusCondition(v1alpha1.HostConditionAllocated, metav1.ConditionFalse,
 		v1alpha1.HostConditionReasonSelectedPortMACUnavailable, diagnostic)
 	return ctrl.Result{}, nil
 }

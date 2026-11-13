@@ -367,12 +367,19 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
 
-		It("releases the host when the inventory has no MAC for the interface", func() {
+		It("keeps the host assigned when the inventory has no MAC for the interface", func() {
 			bmi = newBMI(attachments)
 			controllerutil.AddFinalizer(bmi, BareMetalInstanceNetworkingFinalizer)
 			Expect(k8sClient.Create(ctx, bmi)).To(Succeed())
 			setNetworkAttachmentsReady(bmi, metav1.ConditionTrue, "Succeeded", "Previously ready")
 			macs = map[string]string{"data-1": "aa:bb:cc:dd:ee:01"}
+			unassignCalls := 0
+			reconciler.InventoryClient.(*mockInventoryClient).unassignHostFunc = func(
+				_ context.Context, _ string, _ string, _ []string,
+			) error {
+				unassignCalls++
+				return nil
+			}
 
 			result, err := reconciler.reconcileNetworking(ctx, bmi)
 			Expect(err).NotTo(HaveOccurred())
@@ -385,8 +392,8 @@ var _ = Describe("BareMetalInstance Networking", func() {
 			Expect(bmi.Status.Phase).To(Equal(v1alpha1.BareMetalInstancePhaseFailed))
 			Expect(bmi.GetStatusCondition(v1alpha1.HostConditionNetworkAttachmentsReady).Reason).
 				To(Equal("Succeeded"), "preserve prior network history")
-			Expect(bmi.Spec.ExternalHostID).To(BeEmpty(),
-				"release the host when the selected-port MAC is unavailable")
+			Expect(bmi.Spec.ExternalHostID).To(Equal("host-ns/host-123"))
+			Expect(unassignCalls).To(BeZero())
 			_, err = getAttachment()
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})

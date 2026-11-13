@@ -241,10 +241,9 @@ func (r *BareMetalInstanceReconciler) handleUpdate(ctx context.Context, bareMeta
 
 	allocated := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionAllocated)
 	if allocated != nil && allocated.Reason == v1alpha1.HostConditionReasonSelectedPortMACUnavailable {
-		if bareMetalInstance.Spec.ExternalHostID == "" {
-			return ctrl.Result{}, nil
-		}
-		return r.releaseHostWithoutSelectedPortMAC(ctx, bareMetalInstance, allocated.Message)
+		// Keep the host assigned after a terminal MAC failure so operators can
+		// identify the affected host. The inventory finalizer releases it on delete.
+		return ctrl.Result{}, nil
 	}
 
 	if bareMetalInstance.Spec.TemplateID != "" && bareMetalInstance.Spec.TemplateID != shared.OsacNoopTemplate && r.ProvisioningProvider == nil {
@@ -281,7 +280,7 @@ func (r *BareMetalInstanceReconciler) reconcileInventory(ctx context.Context, ba
 
 	allocated := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionAllocated)
 	if allocated != nil && allocated.Reason == v1alpha1.HostConditionReasonSelectedPortMACUnavailable {
-		return r.releaseHostWithoutSelectedPortMAC(ctx, bareMetalInstance, allocated.Message)
+		return ctrl.Result{}, nil
 	}
 
 	bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseAllocating
@@ -427,7 +426,7 @@ func (r *BareMetalInstanceReconciler) reconcileInventory(ctx context.Context, ba
 		if status.MACAddress == "" {
 			mac, macErr := r.selectedPortMAC(ctx, bareMetalInstance, attachment.Interface)
 			if errors.Is(macErr, errSelectedPortMACUnavailable) {
-				return r.failSelectedPortMAC(ctx, bareMetalInstance, macErr.Error(), true)
+				return r.failSelectedPortMAC(bareMetalInstance, macErr.Error())
 			}
 			if macErr != nil {
 				return ctrl.Result{}, macErr
@@ -484,11 +483,6 @@ func (r *BareMetalInstanceReconciler) persistStatusIfPersisted(
 		return nil
 	}
 	return r.Status().Update(ctx, bmi)
-}
-
-func hasProvisioningActivity(bmi *v1alpha1.BareMetalInstance) bool {
-	return bmi.IsStatusConditionTrue(v1alpha1.HostConditionProvisionTemplateComplete) ||
-		len(bmi.Status.ProvisioningJobs) > 0
 }
 
 func inventoryLabelsToRemove(bmi *v1alpha1.BareMetalInstance) []string {
